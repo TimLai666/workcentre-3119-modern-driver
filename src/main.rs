@@ -10,13 +10,38 @@ fn run() -> io::Result<u8> {
     if args.is_empty() || (args.len() == 1 && (args[0] == "--help" || args[0] == "-h")) {
         writeln!(
             out,
-            "wc3119 doctor\n  唯讀檢查 Xerox WorkCentre 3119 的 USB 介面與驅動狀態。\n  本版本提供硬體診斷，尚未提供掃描功能。\n\n結束碼：0 USB 傳輸驅動已就緒；2 裝置未就緒；1 檢查失敗；64 參數錯誤。"
+            "wc3119 doctor\n  唯讀檢查 Xerox WorkCentre 3119 的 USB 介面與驅動狀態。\nwc3119 inquiry\n  核對 USB 描述後查詢機器回報的能力，需要 MI_00 已配對 WinUSB。\n  本版本尚未提供掃描功能。\n\n結束碼：0 指令成功（不代表可以掃描）；2 裝置未就緒；1 檢查失敗；64 參數錯誤。"
         )?;
         return Ok(0);
     }
-    if args.len() != 1 || args[0] != "doctor" {
+    if args.len() != 1 || (args[0] != "doctor" && args[0] != "inquiry") {
         writeln!(out, "不支援的參數。請執行 wc3119 --help。")?;
         return Ok(64);
+    }
+    if args[0] == "inquiry" {
+        let caps = workcentre_3119::inquiry()?;
+        writeln!(out, "裝置回報：{}", caps.identity)?;
+        writeln!(out, "已辨識的回報解析度：{:?} dpi", caps.resolutions())?;
+        writeln!(
+            out,
+            "解析度旗標：0x{:06x}；模式旗標：0x{:02x}",
+            caps.resolution_mask, caps.mode_mask
+        )?;
+        writeln!(
+            out,
+            "回報範圍：寬 {}、最大長 {}、平台長 {}（單位 1/1200 英吋）",
+            caps.width_units, caps.length_units, caps.flatbed_length_units
+        )?;
+        writeln!(
+            out,
+            "影像行序：0x{:02x}；壓縮旗標：0x{:02x}",
+            caps.line_order, caps.compression_mask
+        )?;
+        writeln!(
+            out,
+            "以上是機器回報值，尚未驗證實際掃描、光學解析度或影像品質。未知旗標保留原值。"
+        )?;
+        return Ok(0);
     }
     let devices = workcentre_3119::discover()?;
     writeln!(out, "Xerox WorkCentre 3119 · USB 0924:4265")?;

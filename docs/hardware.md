@@ -45,4 +45,6 @@ Xerox WorkCentre 3119 · USB 0924:4265
 
 ## 未取得的證據
 
+加入能力查詢後，2026-09-13 再次以 release 執行 `doctor`，三個介面的服務、問題碼及啟動狀態與上表相同。`wc3119 inquiry` 回報 `Scanner WinUSB interface is unavailable; MI_00 must be paired and its interface GUID registered before inquiry`，結束碼 1。此次失敗發生在已登錄裝置介面的列舉階段，未開啟 USB 或送出 INQUIRY。
+
 尚未讀取 USB 端點描述、INQUIRY 能力回覆或任何影像。沒有執行掃描、修改驅動綁定、建立 WIA 裝置、建立列印佇列或修改安全設定。

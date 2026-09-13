@@ -2,7 +2,7 @@
 
 ## 目標與現況
 
-目標是在 Windows 11 x64 用 Rust 完成可以長期使用的純驅動，掃描優先，列印接續。不開發 GUI 或掃描 App，操作由 Windows 掃描等既有軟體提供。現有實作只有唯讀裝置診斷。功能的驗收條件與失敗情境由 [工作項目](docs/tickets/) 管理，進度由 [delivery-status.md](delivery-status.md) 管理。
+目標是在 Windows 11 x64 用 Rust 完成可以長期使用的純驅動，掃描優先，列印接續。不開發 GUI 或掃描 App，操作由 Windows 掃描等既有軟體提供。現有實作包含裝置診斷與待實機驗證的 USB 能力查詢。功能的驗收條件與失敗情境由 [工作項目](docs/tickets/) 管理，進度由 [delivery-status.md](delivery-status.md) 管理。
 
 ## 使用流程與架構
 
@@ -25,6 +25,10 @@
 ### 掃描 USB 存取
 
 初期建議用 Windows 內建 WinUSB 搭配 Rust 使用者模式程式。這讓硬體通訊與協定在一般程式內驗證，避免為探索封包新增核心程式碼。精確綁定 MI_00，保留父裝置與 MI_01。
+
+`inquiry` 透過專案的裝置介面 GUID 列舉，再核對完整 MI_00 硬體識別及 USB VID/PID、介面號與類別。端點取自 USB 描述，命令僅限四位元組 INQUIRY。傳輸具有限逾時，失敗直接釋放資源，不重試或清除端點。`protocol::Capabilities` 檢查回覆框架、狀態、產品訊息種類、完整長度及非空能力；未知旗標保留供診斷，不能當成已支援的掃描設定。
+
+能力欄位依 [SANE 1.4.0 INQUIRY](https://gitlab.com/sane-project/backends/-/blob/1.4.0/backend/xerox_mfp.c#L775) 與 [解析度位元定義](https://gitlab.com/sane-project/backends/-/blob/1.4.0/backend/xerox_mfp.c#L403) 獨立實作。能力位元與設定命令的解析度代碼不同，不可互換。幾何值保留 1/1200 英吋單位，尚未依未驗證的機型補償轉成有效掃描範圍。
 
 綁定及正式簽署方式尚未核准。自訂 INF 需要簽章目錄檔，目前只有 [INF 設計稿](driver/wc3119-winusb.inf)，不是可分發的套件。開發機可評估 Microsoft 文件中的內建 WinUSB 手動配對方式，但本機尚未驗證該流程。
 

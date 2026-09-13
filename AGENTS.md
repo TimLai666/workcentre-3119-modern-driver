@@ -13,7 +13,7 @@
 
 ## 開發與驗證
 
-- 根目錄是 Rust Cargo 專案。`src/lib.rs` 負責裝置識別與診斷分類，`src/windows.rs` 封裝 Windows 唯讀 API，`src/main.rs` 提供 `wc3119 doctor`。
+- 根目錄是 Rust Cargo 專案。`src/lib.rs` 負責公開 API、裝置識別與診斷分類，`src/windows.rs` 封裝 Windows 唯讀 API，`src/usb.rs` 封裝 WinUSB 能力查詢，`src/protocol.rs` 驗證與解析能力回覆。`src/main.rs` 提供 `wc3119 doctor` 與 `wc3119 inquiry`。
 - Rust 核心提供硬體控制、影像資料傳輸與 Windows 驅動整合。預覽畫面、影像編輯、PDF 組頁及儲存操作由呼叫端軟體負責，CLI 僅作為開發、診斷與測試工具。
 - 忠實重現掃描明暗及正確映射 WIA 亮度／對比屬於驅動責任。使用者回報原廠驅動掃描偏亮偏白，原因尚未確認。不得預設壓暗整張影像、強制去背或套用固定 gamma 曲線充當修復。
 - 原生 API 的 `unsafe` 必須限縮在封裝內，註明指標、長度、生命週期及資源釋放的依據。

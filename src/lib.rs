@@ -2,6 +2,25 @@
 //!
 //! Transport readiness does not imply that scanning or WIA integration works.
 
+pub mod protocol;
+
+#[cfg(windows)]
+mod usb;
+
+/// Query reported scanner capabilities. This sends INQUIRY but does not start a scan.
+#[cfg(windows)]
+pub fn inquiry() -> std::io::Result<protocol::Capabilities> {
+    protocol::Capabilities::parse(&usb::inquiry()?)
+}
+
+#[cfg(not(windows))]
+pub fn inquiry() -> std::io::Result<protocol::Capabilities> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "USB inquiry requires Windows",
+    ))
+}
+
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]

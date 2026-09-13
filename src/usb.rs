@@ -1,0 +1,656 @@
+//! A single, bounded scanner capability inquiry through Windows WinUSB.
+
+use std::{ffi::c_void, io, mem::size_of, ptr};
+
+// ABI verified against Windows SDK 10.0.26100.0: setupapi.h, winusb.h,
+// winusbio.h and usb.h. These APIs do not install or register a driver.
+type Handle = *mut c_void;
+const INVALID_HANDLE: Handle = -1isize as Handle;
+const ERROR_INSUFFICIENT_BUFFER: i32 = 122;
+const ERROR_NO_MORE_ITEMS: i32 = 259;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct Guid {
+    a: u32,
+    b: u16,
+    c: u16,
+    d: [u8; 8],
+}
+
+const SCANNER_GUID: Guid = Guid {
+    a: 0xc4147e4a,
+    b: 0x9c41,
+    c: 0x4846,
+    d: [0xa5, 0x3c, 0x5e, 0x62, 0x5c, 0x68, 0x02, 0x1a],
+};
+
+// SP_DEVICE_INTERFACE_DATA and SP_DEVINFO_DATA have the same ABI layout.
+// `value` is Flags for interface data and DevInst for device information.
+#[repr(C)]
+#[derive(Default)]
+struct SetupData {
+    size: u32,
+    guid: Guid,
+    value: u32,
+    reserved: usize,
+}
+
+impl SetupData {
+    fn new() -> Self {
+        Self {
+            size: size_of::<Self>() as u32,
+            ..Self::default()
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct PipeInfo {
+    kind: i32,
+    id: u8,
+    maximum_packet: u16,
+    interval: u8,
+}
+
+#[link(name = "Setupapi")]
+unsafe extern "system" {
+    fn SetupDiGetClassDevsW(
+        guid: *const Guid,
+        enumerator: *const u16,
+        parent: Handle,
+        flags: u32,
+    ) -> Handle;
+    fn SetupDiDestroyDeviceInfoList(set: Handle) -> i32;
+    fn SetupDiEnumDeviceInterfaces(
+        set: Handle,
+        device: *const SetupData,
+        guid: *const Guid,
+        index: u32,
+        interface: *mut SetupData,
+    ) -> i32;
+    fn SetupDiGetDeviceInterfaceDetailW(
+        set: Handle,
+        interface: *const SetupData,
+        detail: *mut c_void,
+        bytes: u32,
+        required: *mut u32,
+        device: *mut SetupData,
+    ) -> i32;
+    fn SetupDiGetDeviceInstanceIdW(
+        set: Handle,
+        device: *const SetupData,
+        id: *mut u16,
+        length: u32,
+        required: *mut u32,
+    ) -> i32;
+}
+
+#[link(name = "Kernel32")]
+unsafe extern "system" {
+    fn CreateFileW(
+        path: *const u16,
+        access: u32,
+        share: u32,
+        security: *const c_void,
+        creation: u32,
+        flags: u32,
+        template: Handle,
+    ) -> Handle;
+    fn CloseHandle(handle: Handle) -> i32;
+}
+
+#[link(name = "Winusb")]
+unsafe extern "system" {
+    fn WinUsb_Initialize(file: Handle, interface: *mut Handle) -> i32;
+    fn WinUsb_Free(interface: Handle) -> i32;
+    fn WinUsb_GetDescriptor(
+        interface: Handle,
+        kind: u8,
+        index: u8,
+        language: u16,
+        buffer: *mut u8,
+        length: u32,
+        transferred: *mut u32,
+    ) -> i32;
+    fn WinUsb_GetCurrentAlternateSetting(interface: Handle, setting: *mut u8) -> i32;
+    fn WinUsb_QueryInterfaceSettings(interface: Handle, setting: u8, descriptor: *mut u8) -> i32;
+    fn WinUsb_QueryPipe(interface: Handle, setting: u8, index: u8, pipe: *mut PipeInfo) -> i32;
+    fn WinUsb_SetPipePolicy(
+        interface: Handle,
+        pipe: u8,
+        policy: u32,
+        length: u32,
+        value: *const c_void,
+    ) -> i32;
+    fn WinUsb_WritePipe(
+        interface: Handle,
+        pipe: u8,
+        buffer: *mut u8,
+        length: u32,
+        transferred: *mut u32,
+        overlapped: *mut c_void,
+    ) -> i32;
+    fn WinUsb_ReadPipe(
+        interface: Handle,
+        pipe: u8,
+        buffer: *mut u8,
+        length: u32,
+        transferred: *mut u32,
+        overlapped: *mut c_void,
+    ) -> i32;
+}
+
+struct DeviceSet(Handle);
+impl Drop for DeviceSet {
+    fn drop(&mut self) {
+        // SAFETY: this is the sole owner of a successful SetupDiGetClassDevsW result.
+        unsafe {
+            SetupDiDestroyDeviceInfoList(self.0);
+        }
+    }
+}
+
+struct DeviceFile(Handle);
+impl Drop for DeviceFile {
+    fn drop(&mut self) {
+        // SAFETY: this is the sole owner of a successful CreateFileW result.
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
+
+struct UsbHandle(Handle);
+impl Drop for UsbHandle {
+    fn drop(&mut self) {
+        // SAFETY: owns a successful initialization; inquiry drops it before its file.
+        unsafe {
+            WinUsb_Free(self.0);
+        }
+    }
+}
+
+fn invalid(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+fn win_result(ok: i32, operation: &str) -> io::Result<()> {
+    if ok != 0 {
+        Ok(())
+    } else {
+        let error = io::Error::last_os_error();
+        Err(io::Error::new(
+            error.kind(),
+            format!("{operation}: {error}"),
+        ))
+    }
+}
+
+fn validate_scanner_id(id: &str) -> io::Result<()> {
+    if crate::identify(id) != Some(crate::Interface::Scanner) {
+        return Err(invalid(
+            "Registered interface does not belong to the exact scanner MI_00",
+        ));
+    }
+    Ok(())
+}
+
+fn scanner_path() -> io::Result<Vec<u16>> {
+    // DIGCF_PRESENT | DIGCF_DEVICEINTERFACE. No enumerator or parent window.
+    // SAFETY: GUID is live; null optional arguments are permitted.
+    let handle = unsafe { SetupDiGetClassDevsW(&SCANNER_GUID, ptr::null(), ptr::null_mut(), 0x12) };
+    if handle == INVALID_HANDLE {
+        return Err(io::Error::last_os_error());
+    }
+    let set = DeviceSet(handle);
+    let mut interface = SetupData::new();
+    // SAFETY: set is live and interface has the required writable ABI and cbSize.
+    let first = unsafe {
+        SetupDiEnumDeviceInterfaces(set.0, ptr::null(), &SCANNER_GUID, 0, &mut interface)
+    };
+    if first == 0 {
+        let error = io::Error::last_os_error();
+        return Err(if error.raw_os_error() == Some(ERROR_NO_MORE_ITEMS) {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "Scanner WinUSB interface is unavailable; MI_00 must be paired and its interface GUID registered before inquiry",
+            )
+        } else {
+            error
+        });
+    }
+    let mut second = SetupData::new();
+    // SAFETY: same live set and GUID, independent initialized output for index 1.
+    let more =
+        unsafe { SetupDiEnumDeviceInterfaces(set.0, ptr::null(), &SCANNER_GUID, 1, &mut second) };
+    if more != 0 {
+        return Err(io::Error::other(
+            "Multiple scanner interfaces are present; refusing to choose a device",
+        ));
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() != Some(ERROR_NO_MORE_ITEMS) {
+        return Err(error);
+    }
+    if interface.value & 1 == 0 || interface.value & 4 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "Scanner interface is not active",
+        ));
+    }
+
+    let mut required = 0;
+    let mut device = SetupData::new();
+    // SAFETY: null detail with zero length queries size; both outputs are writable.
+    let sized = unsafe {
+        SetupDiGetDeviceInterfaceDetailW(
+            set.0,
+            &interface,
+            ptr::null_mut(),
+            0,
+            &mut required,
+            &mut device,
+        )
+    };
+    if sized != 0 || io::Error::last_os_error().raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER) {
+        return Err(io::Error::other("Unable to size scanner interface path"));
+    }
+    if !(8..=64 * 1024).contains(&required) || required % 2 != 0 {
+        return Err(invalid("Invalid scanner interface path size"));
+    }
+    // u64 storage meets native structure alignment. DevicePath begins at byte 4,
+    // while cbSize is 8 on Windows x64 and 6 on Windows x86 (SDK packing).
+    let mut detail = vec![0u64; (required as usize).div_ceil(8)];
+    let detail_size: u32 = if cfg!(target_pointer_width = "64") {
+        8
+    } else {
+        6
+    };
+    // SAFETY: allocation is aligned and has at least 8 writable bytes.
+    unsafe {
+        detail.as_mut_ptr().cast::<u32>().write(detail_size);
+    }
+    let capacity = required;
+    win_result(
+        // SAFETY: detail has at least capacity bytes, valid header, and live outputs.
+        unsafe {
+            SetupDiGetDeviceInterfaceDetailW(
+                set.0,
+                &interface,
+                detail.as_mut_ptr().cast(),
+                capacity,
+                &mut required,
+                &mut device,
+            )
+        },
+        "Read scanner interface path",
+    )?;
+    if required > capacity || required < 8 || required % 2 != 0 {
+        return Err(invalid("Scanner interface path length changed"));
+    }
+
+    // MAX_DEVICE_ID_LEN is 200 UTF-16 units including terminator (cfgmgr32.h).
+    let mut id = [0u16; 200];
+    let mut id_length = 0;
+    win_result(
+        // SAFETY: device is from this set; id_length and all 200 units are writable.
+        unsafe {
+            SetupDiGetDeviceInstanceIdW(
+                set.0,
+                &device,
+                id.as_mut_ptr(),
+                id.len() as u32,
+                &mut id_length,
+            )
+        },
+        "Read scanner identity",
+    )?;
+    if id_length == 0 || id_length as usize > id.len() || id[id_length as usize - 1] != 0 {
+        return Err(invalid("Invalid scanner identity length"));
+    }
+    let identity = String::from_utf16(&id[..id_length as usize - 1])
+        .map_err(|_| invalid("Invalid scanner identity encoding"))?;
+    validate_scanner_id(&identity)?;
+    // SAFETY: DevicePath is at byte 4, u16 aligned, within returned allocation.
+    let path = unsafe {
+        std::slice::from_raw_parts(
+            detail.as_ptr().cast::<u8>().add(4).cast::<u16>(),
+            (required as usize - 4) / 2,
+        )
+    };
+    let end = path
+        .iter()
+        .position(|v| *v == 0)
+        .ok_or_else(|| invalid("Unterminated scanner path"))?;
+    if end == 0 {
+        return Err(invalid("Empty scanner path"));
+    }
+    Ok(path[..=end].to_vec())
+}
+
+fn validate_device(descriptor: &[u8]) -> io::Result<()> {
+    if descriptor.len() != 18
+        || descriptor[0] != 18
+        || descriptor[1] != 1
+        || u16::from_le_bytes([descriptor[8], descriptor[9]]) != 0x0924
+        || u16::from_le_bytes([descriptor[10], descriptor[11]]) != 0x4265
+    {
+        return Err(invalid(
+            "USB device descriptor does not match WorkCentre 3119",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_interface(descriptor: &[u8; 9], current: u8) -> io::Result<u8> {
+    if descriptor[0] != 9
+        || descriptor[1] != 4
+        || descriptor[2] != 0
+        || descriptor[3] != current
+        || descriptor[5] != 0xff
+        || !(2..=30).contains(&descriptor[4])
+    {
+        return Err(invalid(
+            "USB interface is not a valid vendor-specific scanner MI_00",
+        ));
+    }
+    Ok(descriptor[4])
+}
+
+fn select_pipes(pipes: &[PipeInfo]) -> io::Result<(u8, u8)> {
+    let (mut input, mut output) = (None, None);
+    let mut addresses = [false; 256];
+    for pipe in pipes {
+        if pipe.id & 0x70 != 0
+            || pipe.id & 0x0f == 0
+            || addresses[pipe.id as usize]
+            || pipe.maximum_packet == 0
+            || pipe.maximum_packet > 1024
+        {
+            return Err(invalid("Invalid or duplicate USB endpoint descriptor"));
+        }
+        addresses[pipe.id as usize] = true;
+        if pipe.kind != 2 {
+            continue;
+        }
+        if ![8, 16, 32, 64, 512, 1024].contains(&pipe.maximum_packet) {
+            return Err(invalid("Invalid bulk maximum packet size"));
+        }
+        let slot = if pipe.id & 0x80 != 0 {
+            &mut input
+        } else {
+            &mut output
+        };
+        if slot.replace(pipe.id).is_some() {
+            return Err(invalid("Ambiguous bulk endpoints; no command was sent"));
+        }
+    }
+    input
+        .zip(output)
+        .ok_or_else(|| invalid("Scanner requires a unique bulk IN and OUT endpoint"))
+}
+
+fn validate_write(transferred: u32) -> io::Result<()> {
+    if transferred != 4 {
+        return Err(io::Error::new(
+            io::ErrorKind::WriteZero,
+            "Incomplete INQUIRY write; command will not be retried",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_read(transferred: u32, capacity: usize) -> io::Result<usize> {
+    if transferred == 0 || transferred as usize > capacity {
+        return Err(invalid("Empty or oversized INQUIRY response"));
+    }
+    Ok(transferred as usize)
+}
+
+/// Query capabilities once. Requires an already-installed WinUSB binding for
+/// scanner MI_00. Does not scan, install, reset, clear stalls, or retry commands.
+/// The returned bytes still require protocol validation by the caller.
+pub fn inquiry() -> io::Result<Vec<u8>> {
+    let path = scanner_path()?;
+    // GENERIC_READ | GENERIC_WRITE, exclusive sharing, OPEN_EXISTING,
+    // FILE_FLAG_OVERLAPPED (required by WinUSB even for synchronous transfers).
+    // SAFETY: path is owned and terminated; optional pointers are null.
+    let raw_file = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            0xc000_0000,
+            0,
+            ptr::null(),
+            3,
+            0x4000_0000,
+            ptr::null_mut(),
+        )
+    };
+    if raw_file == INVALID_HANDLE {
+        return Err(io::Error::last_os_error());
+    }
+    let file = DeviceFile(raw_file);
+    let mut raw_usb = ptr::null_mut();
+    win_result(
+        // SAFETY: file is valid and remains alive longer than the resulting handle.
+        unsafe { WinUsb_Initialize(file.0, &mut raw_usb) },
+        "Initialize scanner WinUSB",
+    )?;
+    let usb = UsbHandle(raw_usb);
+    let mut device = [0u8; 18];
+    let mut transferred = 0;
+    win_result(
+        // SAFETY: owned USB handle, valid descriptor selector and 18-byte output.
+        unsafe {
+            WinUsb_GetDescriptor(
+                usb.0,
+                1,
+                0,
+                0,
+                device.as_mut_ptr(),
+                device.len() as u32,
+                &mut transferred,
+            )
+        },
+        "Read USB device descriptor",
+    )?;
+    if transferred != device.len() as u32 {
+        return Err(invalid("Truncated USB device descriptor"));
+    }
+    validate_device(&device)?;
+    let mut setting = 0;
+    win_result(
+        // SAFETY: live USB handle and writable one-byte output.
+        unsafe { WinUsb_GetCurrentAlternateSetting(usb.0, &mut setting) },
+        "Read current USB alternate setting",
+    )?;
+    let mut interface = [0u8; 9];
+    win_result(
+        // SAFETY: USB_INTERFACE_DESCRIPTOR is packed, exactly 9 bytes, alignment 1.
+        unsafe { WinUsb_QueryInterfaceSettings(usb.0, setting, interface.as_mut_ptr()) },
+        "Read scanner USB interface",
+    )?;
+    let count = validate_interface(&interface, setting)?;
+    let mut pipes = Vec::with_capacity(count as usize);
+    for index in 0..count {
+        let mut pipe = PipeInfo::default();
+        win_result(
+            // SAFETY: index is bounded by descriptor endpoint count; pipe ABI matches SDK.
+            unsafe { WinUsb_QueryPipe(usb.0, setting, index, &mut pipe) },
+            "Read scanner endpoint",
+        )?;
+        pipes.push(pipe);
+    }
+    let (input, output) = select_pipes(&pipes)?;
+    for pipe in [input, output] {
+        let timeout: u32 = 5000;
+        win_result(
+            // SAFETY: discovered pipe; PIPE_TRANSFER_TIMEOUT consumes a live ULONG.
+            unsafe { WinUsb_SetPipePolicy(usb.0, pipe, 3, 4, (&timeout as *const u32).cast()) },
+            "Set USB transfer timeout",
+        )?;
+        let disabled: u8 = 0;
+        // AUTO_CLEAR_STALL and RESET_PIPE_ON_RESUME must not reset hardware.
+        for policy in [2, 9] {
+            win_result(
+                // SAFETY: both policies consume a BOOLEAN (one byte), not Win32 BOOL.
+                unsafe {
+                    WinUsb_SetPipePolicy(usb.0, pipe, policy, 1, (&disabled as *const u8).cast())
+                },
+                "Disable automatic USB recovery",
+            )?;
+        }
+    }
+    // Do not discard excess data, accept partial packets, or ignore short packets.
+    let disabled: u8 = 0;
+    for policy in [4, 5, 6] {
+        win_result(
+            // SAFETY: read-pipe policies each consume a live BOOLEAN.
+            unsafe {
+                WinUsb_SetPipePolicy(usb.0, input, policy, 1, (&disabled as *const u8).cast())
+            },
+            "Set bounded USB read policy",
+        )?;
+    }
+    // Protocol facts: SANE 1.4.0 xerox_mfp.h CMD_INQUIRY / REQ_CODE_A/B,
+    // xerox_mfp.c inquiry command has no payload. Original Rust implementation.
+    let mut command = [0x1b, 0xa8, 0x12, 0];
+    win_result(
+        // SAFETY: buffer and count remain live until synchronous (null OVERLAPPED) completion.
+        unsafe {
+            WinUsb_WritePipe(
+                usb.0,
+                output,
+                command.as_mut_ptr(),
+                4,
+                &mut transferred,
+                ptr::null_mut(),
+            )
+        },
+        "Write scanner INQUIRY",
+    )?;
+    validate_write(transferred)?;
+    // 1024 is a multiple of the protocol's 512-byte USB block and of any valid
+    // bulk maximum packet size. One read only; parser rejects unrelated replies.
+    let mut response = vec![0u8; 1024];
+    win_result(
+        // SAFETY: response has 1024 writable bytes; null OVERLAPPED waits with pipe timeout.
+        unsafe {
+            WinUsb_ReadPipe(
+                usb.0,
+                input,
+                response.as_mut_ptr(),
+                response.len() as u32,
+                &mut transferred,
+                ptr::null_mut(),
+            )
+        },
+        "Read scanner INQUIRY",
+    )?;
+    response.truncate(validate_read(transferred, response.len())?);
+    Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // All descriptors and lengths below are synthetic, not hardware captures.
+    #[test]
+    fn rejects_wrong_or_truncated_device_before_commands() {
+        let mut descriptor = [
+            18, 1, 0, 2, 0, 0, 0, 64, 0x24, 9, 0x65, 0x42, 0, 1, 0, 0, 0, 1,
+        ];
+        assert!(validate_device(&descriptor).is_ok());
+        assert!(validate_device(&descriptor[..17]).is_err());
+        descriptor[8] = 0;
+        assert!(validate_device(&descriptor).is_err());
+        descriptor[8] = 0x24;
+        descriptor[1] = 2;
+        assert!(validate_device(&descriptor).is_err());
+    }
+
+    #[test]
+    fn refuses_printer_and_invalid_scanner_interface() {
+        let mut descriptor = [9, 4, 0, 0, 2, 0xff, 0, 0, 0];
+        assert_eq!(validate_interface(&descriptor, 0).unwrap(), 2);
+        descriptor[2] = 1;
+        assert!(validate_interface(&descriptor, 0).is_err());
+        descriptor[2] = 0;
+        descriptor[5] = 7;
+        assert!(validate_interface(&descriptor, 0).is_err());
+        descriptor[5] = 0xff;
+        assert!(validate_interface(&descriptor, 1).is_err());
+    }
+
+    fn bulk(id: u8) -> PipeInfo {
+        PipeInfo {
+            kind: 2,
+            id,
+            maximum_packet: 64,
+            interval: 0,
+        }
+    }
+
+    #[test]
+    fn requires_unique_valid_bulk_directions() {
+        let input = bulk(0x83);
+        let output = bulk(0x05);
+        assert_eq!(select_pipes(&[input, output]).unwrap(), (0x83, 0x05));
+        assert!(select_pipes(&[input]).is_err());
+        assert!(select_pipes(&[input, output, bulk(0x84)]).is_err());
+        assert!(select_pipes(&[input, output, output]).is_err());
+        assert!(select_pipes(&[input, bulk(0)]).is_err());
+        assert!(select_pipes(&[input, bulk(0x75)]).is_err());
+        assert!(
+            select_pipes(&[
+                input,
+                PipeInfo {
+                    maximum_packet: 0,
+                    ..output
+                }
+            ])
+            .is_err()
+        );
+        assert!(
+            select_pipes(&[
+                input,
+                PipeInfo {
+                    maximum_packet: 1000,
+                    ..output
+                }
+            ])
+            .is_err()
+        );
+        assert!(select_pipes(&[input, PipeInfo { kind: 3, ..output }]).is_err());
+    }
+
+    #[test]
+    fn rejects_partial_writes_empty_and_oversized_reads() {
+        assert!(validate_write(4).is_ok());
+        for transferred in [0, 1, 3, 5, u32::MAX] {
+            assert!(validate_write(transferred).is_err());
+        }
+        assert_eq!(validate_read(70, 512).unwrap(), 70);
+        assert_eq!(validate_read(512, 512).unwrap(), 512);
+        assert!(validate_read(0, 512).is_err());
+        assert!(validate_read(513, 512).is_err());
+    }
+
+    #[test]
+    fn validates_registered_identity_as_complete_fields() {
+        assert!(validate_scanner_id("USB\\VID_0924&PID_4265&MI_00\\synthetic").is_ok());
+        for id in [
+            "USB\\VID_0924&PID_4265&MI_01\\synthetic",
+            "USB\\VID_0924&PID_4265\\synthetic",
+            "USB\\VID_0924&PID_4265&MI_00_SUFFIX\\synthetic",
+            "OTHER\\VID_0924&PID_4265&MI_00\\synthetic",
+            "USB\\VID_0924&PID_4265&MI_00\\",
+            "USB\\VID_0924&PID_4265&MI_00\\synthetic\\extra",
+        ] {
+            assert!(validate_scanner_id(id).is_err());
+        }
+    }
+}
