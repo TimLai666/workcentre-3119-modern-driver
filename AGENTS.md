@@ -21,6 +21,7 @@
 - `src/wia.rs` 驗證 WIA 純數值設定並轉成掃描要求，`scan_bmp` 會啟動真實 USB 掃描及輸出 BMP。`cargo test --offline --test wia` 只驗證設定與預先取消，不操作硬體。WIA 屬性同步與 minidriver COM 尚由 05 接續實作。
 - `src/com_server.rs` 提供 DLL 載入入口、class factory 與 COM 物件生命週期。更動後執行 `cargo test --offline --test com_server`，再依 `ENG.md` 的 DLL 驗證指令載入當次 release 建置。該動態載入測試預設 ignored，交付前必須另行執行，不能把預設測試通過當成 DLL 已驗證。這些測試不登錄 WIA 或操作 USB。
 - 新核心功能採 TDD，先驗證測試會失敗，再實作。模擬封包須明示為合成資料，實機資料須記錄取得方式。
+- `src/com_server/sti.rs` 提供 IStiUSD 初始化、裝置鎖定與能力診斷。更動後跑 `cargo test --offline --test sti`。其實機測試預設 ignored，須將當下重新列舉的 MI_00 路徑放入 `WC3119_TEST_STI_PATH`，再明確執行 `cargo test --offline --release --test sti -- --ignored`；它會開啟 USB 並送 INQUIRY，不啟動掃描或修改登錄。此 helper 測試不代表 WIA 服務的 port name、存取權或影像傳輸已驗證。
 - 每次交付執行 `cargo fmt --all -- --check`、`cargo clippy --offline --all-targets -- -D warnings`、`cargo test --offline`、`cargo build --offline --release`。新增依賴後先完成抓取再離線驗證。
 - 掃描改動另跑 `cargo test --offline --example capture_scan` 與 `cargo build --offline --release --example capture_scan`。此範例帶新目錄、模式及 DPI 會啟動掃描，不帶參數只顯示說明。成功必須有 `complete.txt`，私人 USB 影像僅存 `artifacts/`。
 - `examples/scan_stability.rs` 在同一程序連續測試 600 dpi 彩色與對照模式，不保存影像，任一錯誤即停止。修改後另跑 `cargo test --offline --example scan_stability` 與 `cargo build --offline --release --example scan_stability`；傳入新目錄才會操作硬體。20 次完成標記及外部記憶體量測只是可靠性證據，不能替代文件品質、WIA 或斷線復原驗收。
@@ -52,4 +53,4 @@
 
 提交訊息預設使用英文 Conventional Commits，例如 `feat(usb): add scanner inquiry transport`。
 
-使用者指定子代理分工：簡單驗證用 `gpt-5.3-codex-spark`，較複雜的實作與審查用 `gpt-5.6-luna`，effort 設為該模型支援的最高值，目前分別為 `xhigh` 與 `max`。本專案已成功啟動這兩種子代理，不能只因工具清單未列出 Spark 就判定不可用。
+使用者指定子代理優先使用 `gpt-5.3-codex-spark`，Spark 無法妥善完成或當下因用量限制不可用時，才交給 `gpt-5.6-luna`。effort 設為該模型支援的最高值，目前分別為 `xhigh` 與 `max`。本專案已成功啟動這兩種子代理，不能只因工具清單未列出 Spark 就判定不可用。用量限制以當次工具結果為準，不能把一次受限當成永久不可用。

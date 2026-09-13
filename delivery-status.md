@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-2026-09-13：原生 COM DLL 已通過實際載入、建立物件及卸載測試，具備 factory 與 IUnknown 生命週期。WIA 數值設定先前已連到真實掃描，接續 IStiUSD／IWiaMiniDrv 初始化、屬性模型與傳輸 callback。完整驅動的持續目標維持啟用，既有兩次自然逾時、20 次穩定性、文件品質、正式套件及列印仍未完成。
+2026-09-13：原生 COM DLL 已具備 IStiUSD，初始化、指定裝置的實機鎖定、能力查詢及釋放測試通過。接續 IWiaMiniDrv 初始化、屬性模型與傳輸 callback，以及服務端裝置身分映射。完整驅動的持續目標維持啟用，既有兩次自然逾時、20 次穩定性、文件品質、正式套件及列印仍未完成。
 
 ## Stage Objective
 
@@ -39,7 +39,9 @@
 
 ## Next Verifiable Output
 
-在現有 DLL 生命週期上完成 IStiUSD／IWiaMiniDrv 初始化、屬性模型及掃描傳輸 callback，沿用已連到實機的 `wia::scan_bmp`，先用直接 COM 呼叫驗證，不先登錄系統。COM aggregation 的實際需求、服務管理的並行載入／卸載排程與 runtime 前置條件亦須驗證。數值快照映射已完成，但正式屬性範圍、相依更新及幾何仍待實作／驗證。先前 600×800 選取區回傳 600×801，不可將輸出尺寸任意當成 WIA 選取範圍。WinUSB 共存、服務帳號存取及 Windows 掃描消費 BMP 仍需整合驗證。跨工作隔離依 03 補完，不以介面到達時間戳記當成實體重插證據。準備具體安裝、備份及復原方案後，才提出必要的系統變更授權。平台有文件後補做 02／07 品質對照。
+IStiUSD 的直接呼叫已可取得指定 USB session。下一段須讓 IWiaMiniDrv 掃描重用此 session，避免 LockDevice 後 `wia::scan_bmp` 再次開啟而被自己的獨占鎖拒絕。合成 helper 的 port name 與真實 WIA 服務裝置身分仍需完成映射及驗證。
+
+IWiaMiniDrv 的初始化、屬性模型及掃描傳輸先用直接 COM 呼叫驗證，不先登錄系統。COM aggregation 的實際需求、服務管理的並行載入／卸載排程與 runtime 前置條件亦須驗證。數值快照映射已完成，但正式屬性範圍、相依更新及幾何仍待實作／驗證。先前 600×800 選取區回傳 600×801，不可將輸出尺寸任意當成 WIA 選取範圍。WinUSB 共存、服務帳號存取及 Windows 掃描消費 BMP 仍需整合驗證。跨工作隔離依 03 補完，不以介面到達時間戳記當成實體重插證據。準備具體安裝、備份及復原方案後，才提出必要的系統變更授權。平台有文件後補做 02／07 品質對照。
 
 ## Next Ticket
 
@@ -62,6 +64,10 @@
 | 建立持續完成完整驅動的目標 | 使用者要求逐步完成實作、驗證與推送，需要使用者介入時提出具體需求，可獨立工作繼續推進 | 2026-09-13 | 01、02、03、05、06、07 |
 
 ## Verified
+
+IStiUSD 版本：114 個 all-targets 測試、2 個 doc-tests、格式、Clippy、全部 release targets 通過。兩個預設 ignored 測試分別明確執行並通過：release DLL 的 IStiUSD 身分／生命週期，以及真實 MI_00 的指定路徑、互斥、能力診斷和最終釋放。初始 IStiUSD 與 DLL QI 測試曾對舊版失敗，USB 未指定目標的多候選回歸亦先取得失敗再修正。鎖定死鎖及狀態結構大小由審查發現並修正，補測首次執行即通過，沒有宣稱它們取得 RED。SDK C11 靜態斷言核對 19-slot vtable、helper port slot、結構大小／偏移及版本／錯誤常數。詳見 [05](docs/tickets/05-windows-install.md#測試) 與 [實機紀錄](docs/hardware.md#istiusd-實機鎖定與能力診斷)。
+
+本版 Diff Inspector：範圍符合 05，根代理完整差異及 Luna 跨元件／並行邊界對抗審查沒有確認的未處理 P1／P2。USB 開啟本體與前版比對，差異只有移動作用域、型別名稱及格式，沿用單一開啟實作。待查證包含真實 STI helper 的執行緒／COM apartment 生命週期、無效 helper 回傳未終止字串，以及同步 Diagnostic 期間其他方法等待 USB 逾時的服務端行為。現在沒有在狀態鎖內呼叫 helper，未確認存在重入死鎖；後續 WIA callback 必須重新審查鎖的範圍。
 
 COM loader 版本：105 個 all-targets 測試、2 個 doc-tests、格式、Clippy、全部 release targets 通過；預設 ignored 的 release DLL 測試已另行執行，1 個通過。實際 exports 恰為 DllGetClassObject／DllCanUnloadNow，建置未再出現 LNK4104。新測試先驗證缺少模組／DLL 的失敗；審查發現的雙計數卸載競態先取得失敗證據，再以單一 module hold 修正。最終含 production ModuleState 測試與公開並行交接測試。根代理與 Luna 查核沒有確認的未處理 P1／P2，COM 服務載入排程仍列為整合待驗證。來源與 DLL 雜湊見 [05 測試](docs/tickets/05-windows-install.md#測試)。沒有系統登錄或實機掃描，不能視為 WIA minidriver 已完成。
 
@@ -147,13 +153,15 @@ Diff Inspector：本輪範圍符合診斷及可靠性調查，根代理已審查
 | [build.rs](build.rs) | MSVC cdylib 的 COM export 定義參數 |
 | [driver/com-exports.def](driver/com-exports.def) | 兩個 runtime COM exports，排除 import library 項目 |
 | [src/com_server.rs](src/com_server.rs) | DLL 入口、factory、IUnknown 參考與 module lock 生命週期 |
+| [src/com_server/sti.rs](src/com_server/sti.rs) | IStiUSD 初始化、指定裝置獨占、能力診斷及錯誤回報 |
+| [tests/sti.rs](tests/sti.rs) | SDK 契約、helper 參考及明確啟用的實機互斥／釋放驗證 |
 | [tests/com_server.rs](tests/com_server.rs) | ABI、失敗、參考釋放及並行 module hold 交接 |
 | [tests/com_server_dll.rs](tests/com_server_dll.rs) | 明確指定 release DLL 的實際動態載入與卸載 |
 | [Cargo.lock](Cargo.lock) | 可重現的套件鎖定檔，目前無第三方依賴 |
 | [.gitignore](.gitignore) | 排除建置結果與本機實驗資料 |
 | [src/lib.rs](src/lib.rs) | 精確裝置識別、診斷分類與能力查詢入口 |
 | [src/windows.rs](src/windows.rs) | Windows 唯讀裝置與驅動查詢 |
-| [src/usb.rs](src/usb.rs) | WinUSB 裝置核對、端點／讀取上限查詢及單次 INQUIRY |
+| [src/usb.rs](src/usb.rs) | WinUSB 裝置核對、精確路徑選擇、端點／讀取上限查詢及單次 INQUIRY |
 | [src/protocol.rs](src/protocol.rs) | 能力回覆框架驗證與欄位解析 |
 | [src/bitmap.rs](src/bitmap.rs) | 逐列 BMP 編碼、格式／尺寸驗證、部分寫入與失敗處理 |
 | [src/com_stream.rs](src/com_stream.rs) | Windows IStream 輸出、原始 HRESULT、單次參考釋放及執行緒限制 |
@@ -183,6 +191,8 @@ Diff Inspector：本輪範圍符合診斷及可靠性調查，根代理已審查
 | [driver/README.md](driver/README.md) | 安裝範圍、風險與復原要求 |
 
 ## Actions
+
+IStiUSD 版本執行測試程序內 DLL 載入／卸載、真實 USB 獨占與 INQUIRY，完成後釋放句柄及 helper 參考。未新增系統登錄、安裝、安全設定或掃描影像。上一版本 `d75777a2c0156a93b55a1c51a10fadc5cab8daeb` 已推送 origin/main，當輪 Spark 兩次啟動後遇到用量限制，才由 Luna 接續實作／審查；後續仍依使用者要求優先 Spark。必要提交與推送依既有授權，版本識別以 Git 紀錄為準。
 
 COM loader 版本只執行建置、離線契約測試及測試程序內的 DLL 載入／卸載，沒有操作 USB 或新增系統登錄。上一版本 `37efd782a9b638bf3dfbf89ca69f9ca1d5eb07db` 已推送 origin/main。本輪必要提交與推送依既有授權執行，版本識別以 Git 紀錄為準。
 

@@ -90,7 +90,11 @@ WIA 選取範圍 `XEXTENT/YEXTENT` 與輸出尺寸屬性用途不同。正式屬
 
 Cargo 同時建置 Rust `rlib` 與原生 `cdylib`。Windows release 檔案為 `target/release/workcentre_3119.dll`，輸出 `DllGetClassObject` 與 `DllCanUnloadNow`，class ID 為 `{F71A8435-AA10-40A6-8334-49EEC8FE9C63}`。此 ID 識別專案的 COM 類別，不含裝置實例或 USB 孔位，也未登錄到系統。
 
-`com_server` 的 factory 支援 `IUnknown`／`IClassFactory`，目前建立的物件僅支援 `IUnknown`。未知類別回傳 `CLASS_E_CLASSNOTAVAILABLE`，不支援的介面回傳 `E_NOINTERFACE`，無效輸出指標回傳 `E_POINTER`，失敗時清空有效的輸出欄位。尚未支援 COM aggregation，非空 outer 指標回傳 `CLASS_E_NOAGGREGATION`。`IStiUSD`／`IWiaMiniDrv` 的初始化、屬性與掃描方法須接續實作，不能把載入成功當成 WIA 服務已接受此 DLL。[Microsoft COM 識別要求](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-a-com-interface)、[QueryInterface 規則](https://learn.microsoft.com/en-us/windows/win32/com/rules-for-implementing-queryinterface)
+`com_server` 的 factory 支援 `IUnknown`／`IClassFactory`，建立的物件支援 `IUnknown`／`IStiUSD`，兩者共享物件身分與參考計數。未知類別回傳 `CLASS_E_CLASSNOTAVAILABLE`，不支援的介面回傳 `E_NOINTERFACE`，無效輸出指標回傳 `E_POINTER`，失敗時清空有效的輸出欄位。尚未支援 COM aggregation，非空 outer 指標回傳 `CLASS_E_NOAGGREGATION`。`IWiaMiniDrv` 的初始化、屬性與掃描方法仍須接續實作，不能把載入成功當成 WIA 服務已接受此 DLL。[Microsoft COM 識別要求](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-a-com-interface)、[QueryInterface 規則](https://learn.microsoft.com/en-us/windows/win32/com/rules-for-implementing-queryinterface)
+
+`com_server::sti` 的 19 個方法位置依 SDK `stiusd.h` 宣告。Initialize 驗證 Unicode STI 2 版本，保留 helper 參考並取得有上限的 UTF-16 port name，借用的登錄句柄不使用也不關閉。helper 呼叫在狀態鎖外執行，失敗初始化可重試。LockDevice 重新列舉當下 MI_00，僅開啟與 helper 路徑相符的裝置，沒有找不到時改選其他裝置的行為。UnLockDevice 與最終 Release 釋放持有的 USB session。Diagnostic 僅在鎖定後執行既有 INQUIRY 並驗證能力回覆，不能用此結果宣稱掃描馬達已就緒。未實作的狀態、reset、raw、escape 與通知回傳不支援，GetCapabilities 目前不宣告 WIA／通知能力。[Microsoft IStiUSD](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-an-istiusd-interface)
+
+後續 WIA 影像傳輸必須重用 IStiUSD 已持有的 session；目前 `wia::scan_bmp` 會自行開啟 USB，不能直接在 LockDevice 期間呼叫它。WIA helper 實際回傳的 port name 不保證是本專案 WinUSB 路徑，必須完成服務端身分映射及存取權驗證，不能將合成 helper 的實機測試當成 WIA 發現成功。
 
 DLL 的動態測試獨立宣告 SDK ABI，使用 `LoadLibraryExW`／`GetProcAddress` 取得當次建置的實際輸出函式，建立及釋放物件後呼叫 `FreeLibrary`。它不使用登錄、`CoCreateInstance` 或 USB，也沒有新增掃描 App。呼叫端必須在所有介面參考釋放後才卸載 DLL，不能在其他執行緒仍呼叫 DLL 時強制卸載。[Microsoft DllCanUnloadNow](https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-dllcanunloadnow)
 

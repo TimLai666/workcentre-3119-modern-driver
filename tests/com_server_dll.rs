@@ -32,6 +32,12 @@ const FACTORY: Guid = Guid {
     data1: 1,
     ..UNKNOWN
 };
+const STI: Guid = Guid {
+    data1: 0x0c9bb460,
+    data2: 0x51ac,
+    data3: 0x11d0,
+    data4: [0x90, 0xea, 0, 0xaa, 0, 0x60, 0xf8, 0x6c],
+};
 #[repr(C)]
 struct UnknownTable {
     query: unsafe extern "system" fn(*mut c_void, *const Guid, *mut *mut c_void) -> i32,
@@ -150,6 +156,16 @@ fn release_dll_exports_real_factory_and_keeps_objects_alive() {
             raw: alias,
             _module: &module,
         };
+        let mut sti = ptr::null_mut();
+        assert_eq!(
+            ((**object.raw.cast::<*const UnknownTable>()).query)(object.raw, &STI, &mut sti),
+            0
+        );
+        assert_eq!(sti, object.raw);
+        drop(Owned {
+            raw: sti,
+            _module: &module,
+        });
         drop(object);
         assert_eq!(can_unload(), 1);
         drop(alias);

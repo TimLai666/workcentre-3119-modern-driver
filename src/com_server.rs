@@ -1,8 +1,9 @@
-//! Minimal Windows COM in-process server plumbing for the future WIA object.
+//! Windows COM server identity and lifetime for the scanner integration.
 //!
-//! This module intentionally exposes only a real `IUnknown` identity and an
-//! `IClassFactory`. It does not implement `IStiUSD`, `IWiaMiniDrv`, WIA
-//! registration, `DllMain`, USB access, or any scanner behavior.
+//! The instance supports `IUnknown` and `IStiUSD`; WIA image transfer through
+//! `IWiaMiniDrv` and system registration are still under development.
+
+mod sti;
 
 use std::{
     ffi::c_void,
@@ -47,6 +48,12 @@ const IID_ICLASSFACTORY: Guid = Guid {
     data1: 1,
     ..IID_IUNKNOWN
 };
+const IID_ISTIUSD: Guid = Guid {
+    data1: 0x0c9b_b460,
+    data2: 0x51ac,
+    data3: 0x11d0,
+    data4: [0x90, 0xea, 0x00, 0xaa, 0x00, 0x60, 0xf8, 0x6c],
+};
 
 type QueryInterfaceFn =
     unsafe extern "system" fn(*mut c_void, *const Guid, *mut *mut c_void) -> i32;
@@ -56,13 +63,6 @@ type ReleaseFn = unsafe extern "system" fn(*mut c_void) -> u32;
 // Field order follows the C declarations in Windows SDK unknwnbase.h
 // (IUnknown lines 198-223 and IClassFactory lines 477-517). These vtables
 // expose only the interfaces actually supported.
-#[repr(C)]
-struct UnknownVtable {
-    query_interface: QueryInterfaceFn,
-    add_ref: AddRefFn,
-    release: ReleaseFn,
-}
-
 #[repr(C)]
 struct ClassFactoryVtable {
     query_interface: QueryInterfaceFn,
@@ -81,8 +81,9 @@ struct Factory {
 
 #[repr(C)]
 struct Instance {
-    vtable: *const UnknownVtable,
+    vtable: *const sti::Vtable,
     refs: AtomicU32,
+    state: sti::State,
 }
 
 // One hold covers every live factory/instance and every balanced LockServer
@@ -141,12 +142,6 @@ static FACTORY_VTABLE: ClassFactoryVtable = ClassFactoryVtable {
     release: factory_release,
     create_instance: factory_create_instance,
     lock_server: factory_lock_server,
-};
-
-static INSTANCE_VTABLE: UnknownVtable = UnknownVtable {
-    query_interface: instance_query_interface,
-    add_ref: instance_add_ref,
-    release: instance_release,
 };
 
 fn catch_hresult(f: impl FnOnce() -> i32) -> i32 {
@@ -320,12 +315,14 @@ unsafe fn factory_create_instance_impl(
     }
     // SAFETY: riid is non-null and valid for the duration of this call under
     // the IClassFactory contract.
-    if unsafe { *riid } != IID_IUNKNOWN {
+    let requested = unsafe { *riid };
+    if requested != IID_IUNKNOWN && requested != IID_ISTIUSD {
         return E_NOINTERFACE;
     }
     let object = Box::new(Instance {
-        vtable: &INSTANCE_VTABLE,
+        vtable: &sti::VTABLE,
         refs: AtomicU32::new(1),
+        state: sti::State::new(),
     });
     if !MODULE_STATE.acquire_object() {
         return E_UNEXPECTED;
@@ -370,7 +367,8 @@ unsafe fn instance_query_interface_impl(
     }
     // SAFETY: this and riid are valid for this COM call under the interface
     // contract, and this points to an Instance object.
-    if unsafe { *riid } != IID_IUNKNOWN {
+    let requested = unsafe { *riid };
+    if requested != IID_IUNKNOWN && requested != IID_ISTIUSD {
         return E_NOINTERFACE;
     }
     // SAFETY: this is a live Instance interface pointer; successful identity
@@ -426,8 +424,8 @@ pub extern "system" fn DllCanUnloadNow() -> i32 {
 ///
 /// The returned pointer carries one owned `IClassFactory` reference. The
 /// caller must invoke its vtable `Release` exactly once after it is finished.
-/// Only `IUnknown` and `IClassFactory` are currently implemented; WIA
-/// interfaces are intentionally unavailable.
+/// The factory supports `IUnknown` and `IClassFactory`; instances support
+/// `IUnknown` and `IStiUSD`. `IWiaMiniDrv` remains unavailable.
 ///
 /// # Safety
 /// `class_id` and `interface_id`, when non-null, must point to readable GUIDs

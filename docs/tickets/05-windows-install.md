@@ -19,7 +19,7 @@ WIA 2.0 的 IStream 傳輸路徑不呼叫 `drvWriteItemProperties`，硬體設�
 
 Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 callback，部分寫入、錯誤、取消及工作釋放已有離線測試與部分實機證據。WIA 2.0 裝置的預設傳輸格式須為 BMP，但完成 BMP 編碼不等於完成 WIA 傳輸。[Microsoft WIA 格式屬性](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ipa-format)
 
-原生 [IStream 輸出轉接](../../src/com_stream.rs) 及 [WIA 數值設定入口](../../src/wia.rs) 已連到實際掃描。Cargo 現已產生 COM DLL，[載入元件](../../src/com_server.rs) 提供 class factory 與 IUnknown 生命週期，實際 DLL 動態測試已通過。WIA minidriver 所需的 `IStiUSD`、`IWiaMiniDrv` 尚未實作，DLL 目前不能接收掃描要求。下一段完成初始化、屬性模型及傳輸 callback。WIA2 串流只保證 `Write`、`Seek`、`SetSize`，不得依賴呼叫端提供完整檔案功能。BMP 的 `finish` 成功後位置為 byte 2，WIA 轉接須驗證呼叫端需要的定位及影像消費行為。[Microsoft WIA 介面](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-minidriver-interfaces)、[COM 識別契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-a-com-interface)、[IStream 契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/istream-data-transfer-driver-changes)
+原生 [IStream 輸出轉接](../../src/com_stream.rs) 及 [WIA 數值設定入口](../../src/wia.rs) 已連到實際掃描。Cargo 現已產生 COM DLL，[載入元件](../../src/com_server.rs) 提供 class factory、IUnknown 與 IStiUSD 生命週期，實際 DLL 動態測試已通過。[IStiUSD](../../src/com_server/sti.rs) 已支援初始化、指定裝置鎖定及 INQUIRY 診斷，`IWiaMiniDrv` 尚未實作，DLL 目前不能接收掃描要求。下一段完成 WIA 初始化、屬性模型及傳輸 callback，重用 IStiUSD 持有的 USB session，不能再次開啟同一個獨占裝置。WIA2 串流只保證 `Write`、`Seek`、`SetSize`，不得依賴呼叫端提供完整檔案功能。BMP 的 `finish` 成功後位置為 byte 2，WIA 轉接須驗證呼叫端需要的定位及影像消費行為。[Microsoft WIA 介面](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-minidriver-interfaces)、[COM 識別契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-a-com-interface)、[IStream 契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/istream-data-transfer-driver-changes)
 
 目前 `FlatbedSettings` 僅驗證數值快照，支援六種對稱解析度、8-bit 灰階／24-bit 彩色、中性亮度／對比及無壓縮 BMP。位置按協定精確步進，範圍另由當次 INQUIRY 限制，詳見 [設定契約](../../ENG.md#wia-設定與掃描入口)。WIA 必備屬性、有效值範圍與相依更新尚未建立。正式屬性轉接還須明確設定每像素 3 個通道、每通道 8 bits 與逐像素排列，不能只由 datatype/depth 假定呼叫端的完整色彩契約。[Microsoft DATATYPE](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ipa-datatype) 實機指定 600×800 像素後回傳 600×801，必須釐清裝置幾何及 WIA 選取範圍的處理，不能把 BMP 成功當成範圍驗收。
 
@@ -44,6 +44,8 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 - 在安全設定維持啟用的 Windows 11 x64 驗證簽署套件。簽署、付費與對外送審先取得明確授權。
 
 ## 測試
+
+2026-09-13，IStiUSD 版本完成 114 個 all-targets 測試、2 個 doc-tests、格式、Clippy 及全部 release targets。6 個離線 STI 測試驗證初始化、helper 參考、失敗重試、未初始化鎖定不死鎖、結構大小與錯誤資訊。明確啟用的實機測試另外通過指定裝置、排他鎖定、INQUIRY 及 Release 後重開；未啟動掃描或登錄 WIA。release DLL 的動態 QI／生命週期測試另行通過。SDK C11 靜態斷言核對 STI 結構與 19-slot ABI，私人證據在 `artifacts/sti-sdk-20260913-j/`。DLL 仍依賴 VCRUNTIME140.dll，新增 SETUPAPI／WINUSB 系統匯入，exports 仍只有兩個 COM 入口。雜湊與實機驗證界線見 [硬體紀錄](../hardware.md#istiusd-實機鎖定與能力診斷)。
 
 2026-09-13，COM loader 版本通過 105 個 all-targets 測試及 2 個 doc-tests、格式、Clippy、全部 release targets 建置。另指定當次 release DLL 執行預設 ignored 的動態測試，1 個通過，實際完成 LoadLibraryExW、GetProcAddress、factory／物件參考釋放及 FreeLibrary。dumpbin 確認只有 DllGetClassObject／DllCanUnloadNow 兩個 runtime exports，建置沒有 LNK4104。DLL SHA256 為 `4DD6A9308662E92A35C1D55B120B75926184E0B30FE7AAE3D984A4666CC806F3`。原始碼 SHA256 為 `AF0F7836523072796585F727D851B04DDFA393E7004619162713561817C41C5A`。這輪沒有 USB、COM 登錄或 WIA 服務啟動。DLL 目前依賴 VCRUNTIME140.dll，跨電腦 runtime 與 COM 自動卸載排程仍待驗證，詳見 [DLL 契約](../../ENG.md#com-dll-載入與驗證)。
 

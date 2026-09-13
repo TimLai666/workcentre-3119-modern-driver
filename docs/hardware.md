@@ -2,6 +2,14 @@
 
 觀測日期：2026-09-13。此檔省略 USB 序號與完整實例路徑。
 
+## IStiUSD 實機鎖定與能力診斷
+
+2026-09-13，重新以 PnP 列舉唯一啟用的專案 MI_00 介面，把當下路徑交給測試 helper，明確執行 release 的 `tests/sti.rs` ignored 測試，1 個通過（0.05 秒）。指定不存在的合成路徑時鎖定失敗，沒有改用已連接裝置。第一個物件成功鎖定後，第二個物件無法取得同一裝置；解鎖後第二個物件可取得並完成 INQUIRY。第二個物件在鎖定中最終 Release 後，第一個物件可重新取得。helper 最後保留原始的一個參考。
+
+測試後 release `inquiry` 回報 SAMSUNG ORION、六種 75–600 dpi 解析度及原能力值，`doctor` 的父裝置／MI_00／MI_01 問題碼皆為 0。這次沒有啟動掃描、重設 USB、修改綁定或登錄。測試 helper 由測試程序提供，不能當成 WIA 服務實際裝置發現或 LocalService 存取權證據。
+
+私人紀錄為 `artifacts/sti-sdk-20260913-j/hardware-test.log`。當次 STI 原始碼 SHA256：`5135711E1C68BC1CAA73619A572FCBC8F95EAD24B5C02965A441C02ED098E68A`。同批 release DLL SHA256：`59DA7C98A26DC1D0E5D28007804E769A1D1112824FD0E9A83952C8EB5FC96088`；DLL 的獨立動態測試另通過 IUnknown／IStiUSD 身分與生命週期，實機測試透過同版 Rust 函式庫執行，未經 WIA 服務載入。
+
 ## 系統與工具
 
 - Windows 11 專業版 x64，版本 `10.0.26200`。
