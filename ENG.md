@@ -86,6 +86,30 @@ USB API 回傳錯誤可能已消耗未知長度，不能沿用舊的剩餘數量
 
 WIA 選取範圍 `XEXTENT/YEXTENT` 與輸出尺寸屬性用途不同。正式屬性模型須維護範圍、位置、解析度與頁面間的關係，不能因 READ 回傳不同就假定應覆寫選取範圍。Microsoft 建議應用程式以影像標頭取得實際尺寸。這個入口尚未實作屬性儲存或同步，也沒有 WIA callback／COM minidriver，實際消費與幾何契約由 05 驗收。[Microsoft XEXTENT](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ips-xextent)、[PIXELS_PER_LINE](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ipa-pixels-per-line)
 
+### COM DLL 載入與驗證
+
+Cargo 同時建置 Rust `rlib` 與原生 `cdylib`。Windows release 檔案為 `target/release/workcentre_3119.dll`，輸出 `DllGetClassObject` 與 `DllCanUnloadNow`，class ID 為 `{F71A8435-AA10-40A6-8334-49EEC8FE9C63}`。此 ID 識別專案的 COM 類別，不含裝置實例或 USB 孔位，也未登錄到系統。
+
+`com_server` 的 factory 支援 `IUnknown`／`IClassFactory`，目前建立的物件僅支援 `IUnknown`。未知類別回傳 `CLASS_E_CLASSNOTAVAILABLE`，不支援的介面回傳 `E_NOINTERFACE`，無效輸出指標回傳 `E_POINTER`，失敗時清空有效的輸出欄位。尚未支援 COM aggregation，非空 outer 指標回傳 `CLASS_E_NOAGGREGATION`。`IStiUSD`／`IWiaMiniDrv` 的初始化、屬性與掃描方法須接續實作，不能把載入成功當成 WIA 服務已接受此 DLL。[Microsoft COM 識別要求](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-a-com-interface)、[QueryInterface 規則](https://learn.microsoft.com/en-us/windows/win32/com/rules-for-implementing-queryinterface)
+
+DLL 的動態測試獨立宣告 SDK ABI，使用 `LoadLibraryExW`／`GetProcAddress` 取得當次建置的實際輸出函式，建立及釋放物件後呼叫 `FreeLibrary`。它不使用登錄、`CoCreateInstance` 或 USB，也沒有新增掃描 App。呼叫端必須在所有介面參考釋放後才卸載 DLL，不能在其他執行緒仍呼叫 DLL 時強制卸載。[Microsoft DllCanUnloadNow](https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-dllcanunloadnow)
+
+物件與 server lock 共用一個原子 hold 計數，避免分開讀取兩個計數時誤判可卸載。最後一個參考先釋放物件配置再減少 hold；參考計數飽和後永久保留，不能溢位釋放。LockServer 以 module 為範圍，跨 factory 解鎖的測試是額外容錯測試，一般呼叫端仍應使用原 factory 平衡 lock／unlock。[Microsoft ATL module lock](https://learn.microsoft.com/en-us/cpp/atl/reference/ccomclassfactory-class?view=msvc-170)
+
+MSVC 建置由 `build.rs` 傳入 `driver/com-exports.def`，兩個 COM 入口標示 PRIVATE，保留 DLL export 並排除 import library 項目。2026-09-13 實際 exports 恰為上述兩個入口，沒有 LNK4104 警告。此建置仍依賴 `VCRUNTIME140.dll` 與 Windows 系統 runtime，正式套件須處理 runtime 前置條件，不能由開發機載入成功推論乾淨電腦可用。[Microsoft LNK4104](https://learn.microsoft.com/en-us/cpp/error-messages/tool-errors/linker-tools-warning-lnk4104?view=msvc-170)
+
+正式整合還須驗證 COM 管理的 `CoGetClassObject`／`CoFreeUnusedLibraries` 並行載入排程，以及 WIA 是否要求 aggregation。現在的直接 DLL 測試由呼叫端持有 loader reference，不涵蓋上述排程。WIA 初始化應依 SDK 的 `IStiUSD::Initialize`、`GetCapabilities` 及 `IWiaMiniDrv::drvInitializeWia` 實作；保留 WIA 提供的 COM 物件需取得參考，借用的裝置參數登錄句柄不得關閉。[Microsoft 初始化](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/stiusd/nf-stiusd-istiusd-initialize)、[WIA 載入流程](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/loading-and-unloading-a-wia-minidriver)
+
+更動 COM DLL 後，除了一般檢查，另執行：
+
+```powershell
+cargo build --offline --release
+$env:WC3119_TEST_DLL = (Resolve-Path target/release/workcentre_3119.dll).Path
+cargo test --offline --test com_server_dll -- --ignored
+```
+
+指定的 DLL 必須是絕對路徑且為本次建置。測試預設 ignored，以免一般測試誤載舊版 release；必須記錄額外執行結果及 DLL 雜湊。此驗證不取代 WIA 服務帳號、系統登錄或 Windows 掃描驗收。
+
 ### 效能與跨機型共用
 
 使用者要求加速時維持解析度、色深、掃描範圍與品質，並讓資料緩衝、排程及影像處理能供其他機型沿用。機型命令、資料邊界及允許的並行程度仍由機型協定負責；尚未取得第二種機型作共用性驗證，不預先假定所有裝置都能並行讀取。

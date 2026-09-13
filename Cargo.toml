@@ -8,6 +8,7 @@ description = "Xerox WorkCentre 3119 scanner driver development and device diagn
 
 [lib]
 name = "workcentre_3119"
+crate-type = ["rlib", "cdylib"]
 
 [[bin]]
 name = "wc3119"

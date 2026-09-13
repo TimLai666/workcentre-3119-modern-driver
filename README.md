@@ -4,7 +4,7 @@
 
 **Rust 核心已取得實機灰階／彩色影像，目前仍不是完整可安裝的驅動。** 已驗證空平台掃描、取消後重掃及跨行程互斥；文字、色彩、精確幾何與偏白問題尚未驗收。Windows 掃描整合、正式安裝套件、跨電腦／換孔及列印仍未完成。
 
-Windows 整合已具備 BMP 編碼、原生 COM 影像串流轉接及 WIA 數值設定映射。新的 Rust 入口已完成灰階／彩色實掃與 Windows 記憶體串流讀回。目前尚無 WIA minidriver DLL，Windows 掃描仍不能使用本核心，詳見 [整合進度](docs/tickets/05-windows-install.md)。
+Windows 整合已具備 BMP 編碼、原生 COM 影像串流轉接及 WIA 數值設定映射。Rust 入口已完成灰階／彩色實掃與 Windows 記憶體串流讀回。原生 DLL 已通過載入、建立物件及卸載測試，但尚缺 WIA 掃描介面與系統整合，Windows 掃描仍不能使用本核心，詳見 [整合進度](docs/tickets/05-windows-install.md)。
 
 `MI_00` 表示複合式 USB 裝置的第 0 個功能介面，數字取自裝置描述，與電腦上的 USB 接孔編號無關。3119 的 MI_00 已回覆掃描能力，MI_01 使用列印傳輸服務。正式套件會依型號與功能介面辨識，不以開發機的孔位或完整實例路徑限定使用。[Microsoft USB 識別碼定義](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/standard-usb-identifiers)
 

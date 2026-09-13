@@ -11,6 +11,9 @@ pub mod wia;
 pub mod com_stream;
 
 #[cfg(windows)]
+pub mod com_server;
+
+#[cfg(windows)]
 mod usb;
 
 /// Query reported scanner capabilities. This sends INQUIRY but does not start a scan.

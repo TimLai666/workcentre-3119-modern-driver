@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-2026-09-13：WIA 數值設定已連到真實掃描，Gray75／RGB75 經原生 Windows 串流輸出 BMP 並成功讀回。接續 minidriver COM 元件與屬性模型。完整驅動的持續目標維持啟用，既有兩次自然逾時、20 次穩定性、文件品質、正式套件及列印仍未完成。
+2026-09-13：原生 COM DLL 已通過實際載入、建立物件及卸載測試，具備 factory 與 IUnknown 生命週期。WIA 數值設定先前已連到真實掃描，接續 IStiUSD／IWiaMiniDrv 初始化、屬性模型與傳輸 callback。完整驅動的持續目標維持啟用，既有兩次自然逾時、20 次穩定性、文件品質、正式套件及列印仍未完成。
 
 ## Stage Objective
 
@@ -39,7 +39,7 @@
 
 ## Next Verifiable Output
 
-完成 WIA minidriver COM 介面、物件生命週期及屬性模型的離線測試，沿用已連到實機的 `wia::scan_bmp`，不先登錄系統。數值快照映射已完成，但正式屬性範圍、相依更新及幾何仍待實作／驗證。此次 600×800 選取區回傳 600×801，不可將輸出尺寸任意當成 WIA 選取範圍。WinUSB 共存、服務帳號存取及 Windows 掃描消費 BMP 仍需整合驗證。跨工作隔離依 03 補完，不以介面到達時間戳記當成實體重插證據。準備具體安裝、備份及復原方案後，才提出必要的系統變更授權。平台有文件後補做 02／07 品質對照。
+在現有 DLL 生命週期上完成 IStiUSD／IWiaMiniDrv 初始化、屬性模型及掃描傳輸 callback，沿用已連到實機的 `wia::scan_bmp`，先用直接 COM 呼叫驗證，不先登錄系統。COM aggregation 的實際需求、服務管理的並行載入／卸載排程與 runtime 前置條件亦須驗證。數值快照映射已完成，但正式屬性範圍、相依更新及幾何仍待實作／驗證。先前 600×800 選取區回傳 600×801，不可將輸出尺寸任意當成 WIA 選取範圍。WinUSB 共存、服務帳號存取及 Windows 掃描消費 BMP 仍需整合驗證。跨工作隔離依 03 補完，不以介面到達時間戳記當成實體重插證據。準備具體安裝、備份及復原方案後，才提出必要的系統變更授權。平台有文件後補做 02／07 品質對照。
 
 ## Next Ticket
 
@@ -62,6 +62,8 @@
 | 建立持續完成完整驅動的目標 | 使用者要求逐步完成實作、驗證與推送，需要使用者介入時提出具體需求，可獨立工作繼續推進 | 2026-09-13 | 01、02、03、05、06、07 |
 
 ## Verified
+
+COM loader 版本：105 個 all-targets 測試、2 個 doc-tests、格式、Clippy、全部 release targets 通過；預設 ignored 的 release DLL 測試已另行執行，1 個通過。實際 exports 恰為 DllGetClassObject／DllCanUnloadNow，建置未再出現 LNK4104。新測試先驗證缺少模組／DLL 的失敗；審查發現的雙計數卸載競態先取得失敗證據，再以單一 module hold 修正。最終含 production ModuleState 測試與公開並行交接測試。根代理與 Luna 查核沒有確認的未處理 P1／P2，COM 服務載入排程仍列為整合待驗證。來源與 DLL 雜湊見 [05 測試](docs/tickets/05-windows-install.md#測試)。沒有系統登錄或實機掃描，不能視為 WIA minidriver 已完成。
 
 WIA 數值設定版本：98 個 all-targets 測試、一般測試含 2 個 doc-tests、格式、Clippy（warnings 為錯誤）、核心及全部範例 release 建置通過。新模組先取得缺少公開模組的失敗，再完成 4 個設定測試及 1 個當次能力／命令整合測試。Gray75 與 RGB75 使用同一測試建置完成真實掃描、原生 COM 串流輸出及讀回，獨立 BMP 解碼和 GDI+ 開啟通過。平台沒有文件，尺寸與品質限制見 [實機紀錄](docs/hardware.md#wia-數值設定與原生串流實掃)。尚未驗證 WIA 服務提供的串流或 Windows 掃描。
 
@@ -142,6 +144,11 @@ Diff Inspector：本輪範圍符合診斷及可靠性調查，根代理已審查
 | [AGENTS.md](AGENTS.md) | 專案規則、硬體限制與交付要求 |
 | [CLAUDE.md](CLAUDE.md) | AGENTS.md 入口指標 |
 | [Cargo.toml](Cargo.toml) | Rust 套件與檢查規則 |
+| [build.rs](build.rs) | MSVC cdylib 的 COM export 定義參數 |
+| [driver/com-exports.def](driver/com-exports.def) | 兩個 runtime COM exports，排除 import library 項目 |
+| [src/com_server.rs](src/com_server.rs) | DLL 入口、factory、IUnknown 參考與 module lock 生命週期 |
+| [tests/com_server.rs](tests/com_server.rs) | ABI、失敗、參考釋放及並行 module hold 交接 |
+| [tests/com_server_dll.rs](tests/com_server_dll.rs) | 明確指定 release DLL 的實際動態載入與卸載 |
 | [Cargo.lock](Cargo.lock) | 可重現的套件鎖定檔，目前無第三方依賴 |
 | [.gitignore](.gitignore) | 排除建置結果與本機實驗資料 |
 | [src/lib.rs](src/lib.rs) | 精確裝置識別、診斷分類與能力查詢入口 |
@@ -176,6 +183,8 @@ Diff Inspector：本輪範圍符合診斷及可靠性調查，根代理已審查
 | [driver/README.md](driver/README.md) | 安裝範圍、風險與復原要求 |
 
 ## Actions
+
+COM loader 版本只執行建置、離線契約測試及測試程序內的 DLL 載入／卸載，沒有操作 USB 或新增系統登錄。上一版本 `37efd782a9b638bf3dfbf89ca69f9ca1d5eb07db` 已推送 origin/main。本輪必要提交與推送依既有授權執行，版本識別以 Git 紀錄為準。
 
 本輪數值設定版本完成 Gray75／RGB75 真實 USB 掃描與 Windows 記憶體串流輸出、讀回、釋放，私人影像只存於 Git 排除的 `artifacts/`。前後 doctor 正常，沒有系統登錄、重新配對或安全設定變更。上輪原生 COM 版本已推送 `origin/main`，commit `32b2a75a8a97d54cd57a4f3994399aca83a09de4`，當時遠端雜湊相符。本輪必要提交與推送依既有授權執行，版本識別以 Git 紀錄為準。
 
