@@ -1,5 +1,6 @@
 #![allow(clippy::upper_case_acronyms)]
 
+use super::session::{AccessError, SessionSlot};
 use crate::{protocol, usb};
 use std::{
     ffi::c_void,
@@ -221,14 +222,13 @@ struct StiDeviceControlVtable {
 
 pub(super) struct State {
     inner: Mutex<StateInner>,
+    session: SessionSlot<usb::UsbSession>,
 }
 
 struct StateInner {
     initialized: bool,
     helper: Option<*mut c_void>,
     helper_port_name: Vec<u16>,
-    locked: bool,
-    session: Option<usb::UsbSession>,
     last_error: HRESULT,
     last_error_info: StiErrorInfo,
 }
@@ -240,11 +240,10 @@ impl State {
                 initialized: false,
                 helper: None,
                 helper_port_name: Vec::new(),
-                locked: false,
-                session: None,
                 last_error: S_OK,
                 last_error_info: StiErrorInfo::new(),
             }),
+            session: SessionSlot::new(),
         }
     }
 
@@ -270,6 +269,51 @@ impl State {
     fn last_error_info(&self) -> StiErrorInfo {
         self.lock().last_error_info
     }
+
+    pub(super) fn scan_bmp<W: io::Write + io::Seek>(
+        &self,
+        settings: crate::wia::FlatbedSettings,
+        cancel: &std::sync::atomic::AtomicBool,
+        output: &mut W,
+    ) -> io::Result<crate::scan::ScanSummary> {
+        let request = settings.to_request()?;
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "Scan cancelled"));
+        }
+        if !self.lock().initialized {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "IStiUSD is not initialized",
+            ));
+        }
+        let result = self
+            .session
+            .with_session(|usb| {
+                let (result, health) =
+                    crate::wia::scan_request_bmp_in_session(usb, request, cancel, output);
+                (result, health == crate::scan::SessionHealth::Ready)
+            })
+            .map_err(|error| match error {
+                AccessError::Open(error) => error,
+                AccessError::Busy => io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "Scanner operation is already active",
+                ),
+                AccessError::NotLocked => {
+                    io::Error::new(io::ErrorKind::NotConnected, "LockDevice is required")
+                }
+                AccessError::Quarantined => io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "Scanner session is quarantined; reconnect before creating a new driver object",
+                ),
+            })
+            .and_then(|result| result);
+        match &result {
+            Ok(_) => self.clear_last_error(),
+            Err(error) => self.set_last_error(io_error_hresult(error), &error.to_string()),
+        }
+        result
+    }
 }
 
 fn set_last_error_inner(inner: &mut StateInner, code: HRESULT, text: &str) {
@@ -279,12 +323,11 @@ fn set_last_error_inner(inner: &mut StateInner, code: HRESULT, text: &str) {
 
 impl Drop for State {
     fn drop(&mut self) {
-        let extract = |inner: &mut StateInner| (inner.session.take(), inner.helper.take());
-        let (session, helper) = match self.inner.get_mut() {
-            Ok(inner) => extract(inner),
-            Err(poisoned) => extract(poisoned.into_inner()),
+        let _ = self.session.unlock();
+        let helper = match self.inner.get_mut() {
+            Ok(inner) => inner.helper.take(),
+            Err(poisoned) => poisoned.into_inner().helper.take(),
         };
-        drop(session);
         if let Some(helper) = helper {
             // SAFETY: the helper was AddRef'd during successful Initialize and
             // the call is made after the state lock has been released.
@@ -674,26 +717,21 @@ unsafe fn diagnostic_impl(this: *mut c_void, buffer: *mut StiDiag) -> HRESULT {
         );
     }
 
-    let result = {
-        let mut inner = state.lock();
-        if !inner.initialized {
-            Err((
-                STIERR_NOT_INITIALIZED,
-                "IStiUSD is not initialized".to_owned(),
-            ))
-        } else if !inner.locked {
-            Err((
-                STIERR_NEEDS_LOCK,
-                "LockDevice is required before Diagnostic".to_owned(),
-            ))
-        } else if let Some(session) = inner.session.as_mut() {
-            perform_presence_check(session)
-        } else {
-            Err((
-                STIERR_NEEDS_LOCK,
-                "No locked USB session is available".to_owned(),
-            ))
-        }
+    let result = if !state.lock().initialized {
+        Err((
+            STIERR_NOT_INITIALIZED,
+            "IStiUSD is not initialized".to_owned(),
+        ))
+    } else {
+        state
+            .session
+            .with_session(|session| {
+                let result = perform_presence_check(session);
+                let reusable = result.is_ok();
+                (result, reusable)
+            })
+            .map_err(access_error)
+            .and_then(|result| result)
     };
     match result {
         Ok(()) => {
@@ -775,122 +813,68 @@ fn io_error_hresult(error: &io::Error) -> HRESULT {
     }
 }
 
+fn access_error(error: AccessError) -> (HRESULT, String) {
+    match error {
+        AccessError::Busy => (STIERR_DEVICE_LOCKED, "Scanner operation is already active".to_owned()),
+        AccessError::NotLocked => (STIERR_NEEDS_LOCK, "LockDevice is required".to_owned()),
+        AccessError::Quarantined => (STIERR_GENERIC, "Scanner session is quarantined after uncertain transport state; reconnect the device before creating a new driver object".to_owned()),
+        AccessError::Open(error) => (io_error_hresult(&error), format!("Opening scanner failed: {error}")),
+    }
+}
+
 unsafe fn lock_device_impl(this: *mut c_void) -> HRESULT {
-    // SAFETY: `this` is a live IStiUSD pointer for the duration of the COM call.
+    // SAFETY: this is a live IStiUSD pointer for the COM call.
     let state = match unsafe { state_from_this(this) } {
         Ok(state) => state,
         Err(error) => return error,
     };
     let path = {
-        let mut inner = state.lock();
+        let inner = state.lock();
         if !inner.initialized {
-            set_last_error_inner(
-                &mut inner,
-                STIERR_NOT_INITIALIZED,
-                "IStiUSD is not initialized",
-            );
-            return STIERR_NOT_INITIALIZED;
-        }
-        if inner.locked || inner.session.is_some() {
-            set_last_error_inner(
-                &mut inner,
-                STIERR_DEVICE_LOCKED,
-                "The scanner is already locked",
-            );
-            return STIERR_DEVICE_LOCKED;
-        }
-        if inner.helper_port_name.is_empty() {
-            set_last_error_inner(
-                &mut inner,
-                STIERR_INVALID_DEVICE_NAME,
-                "Scanner port name is empty",
-            );
-            return STIERR_INVALID_DEVICE_NAME;
+            drop(inner);
+            return fail(state, STIERR_NOT_INITIALIZED, "IStiUSD is not initialized");
         }
         inner.helper_port_name.clone()
     };
-
-    let session_result = usb::UsbSession::open_matching_path(&path);
-    let session = match session_result {
-        Ok(session) => session,
-        Err(error) => {
-            let code = io_error_hresult(&error);
-            let text = format!("Opening scanner for LockDevice failed: {error}");
-            let mut inner = state.lock();
-            if inner.locked || inner.session.is_some() {
-                set_last_error_inner(
-                    &mut inner,
-                    STIERR_DEVICE_LOCKED,
-                    "The scanner is already locked",
-                );
-                return STIERR_DEVICE_LOCKED;
-            }
-            set_last_error_inner(&mut inner, code, &text);
-            return code;
-        }
-    };
-
-    let mut pending = Some(session);
-    let result = {
-        let mut inner = state.lock();
-        if !inner.initialized {
-            set_last_error_inner(
-                &mut inner,
-                STIERR_NOT_INITIALIZED,
-                "IStiUSD is not initialized",
-            );
-            STIERR_NOT_INITIALIZED
-        } else if inner.locked || inner.session.is_some() {
-            set_last_error_inner(
-                &mut inner,
-                STIERR_DEVICE_LOCKED,
-                "The scanner is already locked",
-            );
-            STIERR_DEVICE_LOCKED
-        } else {
-            inner.session = pending.take();
-            inner.locked = true;
-            set_last_error_inner(&mut inner, S_OK, "");
+    match state
+        .session
+        .open(|| usb::UsbSession::open_matching_path(&path))
+    {
+        Ok(()) => {
+            state.clear_last_error();
             S_OK
         }
-    };
-    drop(pending);
-    result
+        Err(error) => {
+            let (code, text) = access_error(error);
+            fail(state, code, &text)
+        }
+    }
 }
 
 unsafe extern "system" fn un_lock_device(this: *mut c_void) -> HRESULT {
-    // SAFETY: the COM entry point forwards the caller's ABI arguments to the
-    // implementation, which validates the receiver before dereferencing it.
+    // SAFETY: receiver validity is required by the COM contract.
     super::catch_hresult(|| unsafe { un_lock_device_impl(this) })
 }
 
 unsafe fn un_lock_device_impl(this: *mut c_void) -> HRESULT {
-    // SAFETY: `this` is a live IStiUSD pointer for the duration of the COM call.
+    // SAFETY: this is a live IStiUSD pointer for the COM call.
     let state = match unsafe { state_from_this(this) } {
         Ok(state) => state,
         Err(error) => return error,
     };
-    let session = {
-        let mut inner = state.lock();
-        if !inner.initialized {
-            set_last_error_inner(
-                &mut inner,
-                STIERR_NOT_INITIALIZED,
-                "IStiUSD is not initialized",
-            );
-            return STIERR_NOT_INITIALIZED;
+    if !state.lock().initialized {
+        return fail(state, STIERR_NOT_INITIALIZED, "IStiUSD is not initialized");
+    }
+    match state.session.unlock() {
+        Ok(()) => {
+            state.clear_last_error();
+            S_OK
         }
-        if !inner.locked || inner.session.is_none() {
-            inner.locked = false;
-            set_last_error_inner(&mut inner, STIERR_NEEDS_LOCK, "The scanner is not locked");
-            return STIERR_NEEDS_LOCK;
+        Err(error) => {
+            let (code, text) = access_error(error);
+            fail(state, code, &text)
         }
-        inner.locked = false;
-        inner.session.take()
-    };
-    drop(session);
-    state.clear_last_error();
-    S_OK
+    }
 }
 
 unsafe extern "system" fn raw_read_data(

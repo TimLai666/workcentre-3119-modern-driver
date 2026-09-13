@@ -3,6 +3,7 @@
 //! The instance supports `IUnknown` and `IStiUSD`; WIA image transfer through
 //! `IWiaMiniDrv` and system registration are still under development.
 
+mod session;
 mod sti;
 
 use std::{
@@ -18,6 +19,39 @@ const E_NOINTERFACE: i32 = 0x8000_4002u32 as i32;
 const E_POINTER: i32 = 0x8000_4003u32 as i32;
 const E_UNEXPECTED: i32 = 0x8000_ffffu32 as i32;
 const CLASS_E_NOAGGREGATION: i32 = 0x8004_0110u32 as i32;
+
+/// Stream a BMP through an existing, locked driver object without reopening USB.
+///
+/// This Rust integration entry point is used while the WIA COM transfer adapter
+/// is under development. It does not register a device or implement IWiaMiniDrv.
+/// Any error invalidates the destination image. The caller must keep its owned
+/// COM reference alive throughout the call and all synchronous output callbacks.
+///
+/// # Safety
+/// `device` must be a live IStiUSD or IUnknown pointer returned by this module's
+/// class factory, not an unrelated COM object's pointer. Null is rejected.
+pub unsafe fn scan_locked_bmp<W: std::io::Write + std::io::Seek>(
+    device: *mut c_void,
+    settings: crate::wia::FlatbedSettings,
+    cancel: &std::sync::atomic::AtomicBool,
+    output: &mut W,
+) -> std::io::Result<crate::scan::ScanSummary> {
+    if device.is_null() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Driver object is null",
+        ));
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: caller owns a reference from our factory for this entire call.
+        unsafe { &(*device.cast::<Instance>()).state }.scan_bmp(settings, cancel, output)
+    }))
+    .unwrap_or_else(|_| {
+        Err(std::io::Error::other(
+            "Locked scan panicked; destination must be discarded",
+        ))
+    })
+}
 const CLASS_E_CLASSNOTAVAILABLE: i32 = 0x8004_0111u32 as i32;
 
 /// ABI-compatible Windows GUID storage.

@@ -96,6 +96,10 @@ Cargo 同時建置 Rust `rlib` 與原生 `cdylib`。Windows release 檔案為 `t
 
 後續 WIA 影像傳輸必須重用 IStiUSD 已持有的 session；目前 `wia::scan_bmp` 會自行開啟 USB，不能直接在 LockDevice 期間呼叫它。WIA helper 實際回傳的 port name 不保證是本專案 WinUSB 路徑，必須完成服務端身分映射及存取權驗證，不能將合成 helper 的實機測試當成 WIA 發現成功。
 
+本階段接續實作的流程為「IStiUSD 鎖定 → 暫借同一 session → 掃描／BMP 輸出 → 依核心回報歸還或隔離」。借用期間不持有狀態 Mutex，讓影像呼叫端重入查詢時能返回；再次掃描、解鎖及診斷則立即回報忙碌。成功、未送命令的取消、或經確認清理完成的失敗可以歸還連線；失同步、未知消耗量及清理失敗必須隔離，不能分析錯誤字串來判斷可重用。隔離後本物件不再開啟或送命令，重新連線的跨物件身分驗證仍由 03 完成。
+
+這段驗證沿用核心合成封包測試及 COM 契約測試，另以具 Drop 計數的資源驗證同一借用器的重入、並行排他及 panic 清理。實機驗證須透過鎖定中的 COM 物件掃描並檢查 BMP，不能另開一個 session 代替。無效設定與預先取消須在碰觸串流前拒絕；USB／輸出失敗保留原錯誤，任何失敗不完成 BMP。這段不新增系統登錄或安裝步驟。
+
 DLL 的動態測試獨立宣告 SDK ABI，使用 `LoadLibraryExW`／`GetProcAddress` 取得當次建置的實際輸出函式，建立及釋放物件後呼叫 `FreeLibrary`。它不使用登錄、`CoCreateInstance` 或 USB，也沒有新增掃描 App。呼叫端必須在所有介面參考釋放後才卸載 DLL，不能在其他執行緒仍呼叫 DLL 時強制卸載。[Microsoft DllCanUnloadNow](https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-dllcanunloadnow)
 
 物件與 server lock 共用一個原子 hold 計數，避免分開讀取兩個計數時誤判可卸載。最後一個參考先釋放物件配置再減少 hold；參考計數飽和後永久保留，不能溢位釋放。LockServer 以 module 為範圍，跨 factory 解鎖的測試是額外容錯測試，一般呼叫端仍應使用原 factory 平衡 lock／unlock。[Microsoft ATL module lock](https://learn.microsoft.com/en-us/cpp/atl/reference/ccomclassfactory-class?view=msvc-170)

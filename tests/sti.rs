@@ -289,6 +289,54 @@ fn uninitialized_lock_and_unlock_return_without_deadlock() {
     assert!(unlock < 0);
 }
 
+fn scan_settings() -> workcentre_3119::wia::FlatbedSettings {
+    workcentre_3119::wia::FlatbedSettings {
+        x_resolution: 75,
+        y_resolution: 75,
+        x_position: 0,
+        y_position: 0,
+        x_extent: 600,
+        y_extent: 800,
+        data_type: 2,
+        depth: 8,
+        brightness: 0,
+        contrast: 0,
+        compression: 0,
+        format: workcentre_3119::wia::BMP_FORMAT,
+    }
+}
+
+#[test]
+fn locked_scan_rejects_unlocked_and_precancel_before_touching_output() {
+    use std::{
+        io::{self, Cursor},
+        sync::atomic::AtomicBool,
+    };
+    use workcentre_3119::com_server::scan_locked_bmp;
+    let mut helper = Helper::new();
+    let device = object();
+    let mut output = Cursor::new(Vec::new());
+    let cancel = AtomicBool::new(false);
+    // SAFETY: live IStiUSD from this factory; helper and destination outlive the call.
+    unsafe {
+        let m = methods(&device);
+        assert_eq!(
+            (m.initialize)(device.0, helper.raw(), VERSION, ptr::dangling_mut()),
+            0
+        );
+        assert!(scan_locked_bmp(device.0, scan_settings(), &cancel, &mut output).is_err());
+        assert!(output.get_ref().is_empty());
+        cancel.store(true, Ordering::SeqCst);
+        assert_eq!(
+            scan_locked_bmp(device.0, scan_settings(), &cancel, &mut output)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Interrupted
+        );
+        assert!(output.get_ref().is_empty());
+    }
+}
+
 #[test]
 fn invalid_status_size_does_not_overwrite_output() {
     let mut helper = Helper::new();
@@ -483,4 +531,142 @@ fn actual_sti_device_lock_presence_and_release() {
     }
     drop(first);
     assert_eq!(helper.refs.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+#[ignore = "Hardware scan: WC3119_TEST_STI_PATH must be fresh; WC3119_TEST_OUTPUT_DIR must not exist. Performs gray/RGB75 and cancellation through one locked object"]
+fn actual_locked_object_scans_cancels_and_rescans_with_reentrant_output() {
+    use std::{
+        io::{self, Cursor, Seek, SeekFrom, Write},
+        os::windows::ffi::OsStrExt,
+        sync::atomic::AtomicBool,
+    };
+    use workcentre_3119::com_server::scan_locked_bmp;
+    struct Output<'a> {
+        bytes: Cursor<Vec<u8>>,
+        device: &'a Owned,
+        cancel: &'a AtomicBool,
+        cancel_on_write: bool,
+        checked: bool,
+    }
+    impl Write for Output<'_> {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if !self.checked {
+                self.checked = true;
+                // SAFETY: caller owns the COM reference throughout this synchronous callback.
+                unsafe {
+                    let m = methods(self.device);
+                    let mut error = 0;
+                    assert_eq!((m.last_error)(self.device.0, &mut error), 0);
+                    assert!(
+                        (m.unlock)(self.device.0) < 0,
+                        "must not unlock an active scan"
+                    );
+                    let mut nested = Cursor::new(Vec::new());
+                    let result = scan_locked_bmp(
+                        self.device.0,
+                        scan_settings(),
+                        &AtomicBool::new(false),
+                        &mut nested,
+                    );
+                    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::WouldBlock);
+                    assert!(nested.get_ref().is_empty());
+                }
+                if self.cancel_on_write {
+                    self.cancel.store(true, Ordering::SeqCst);
+                }
+            }
+            self.bytes.write(bytes)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    impl Seek for Output<'_> {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.bytes.seek(position)
+        }
+    }
+    let directory = std::path::PathBuf::from(
+        std::env::var_os("WC3119_TEST_OUTPUT_DIR").expect("set WC3119_TEST_OUTPUT_DIR"),
+    );
+    std::fs::create_dir(&directory).expect("output directory must be new");
+    let path = std::env::var_os("WC3119_TEST_STI_PATH").expect("set WC3119_TEST_STI_PATH");
+    let mut helper = Helper::new();
+    helper.port = path.encode_wide().chain([0]).collect();
+    let device = object();
+    // SAFETY: helper and device are live and owned until every synchronous call ends.
+    unsafe {
+        let m = methods(&device);
+        assert_eq!(
+            (m.initialize)(device.0, helper.raw(), VERSION, ptr::dangling_mut()),
+            0
+        );
+        assert_eq!((m.lock)(device.0), 0);
+        for (name, color, cancelled) in [
+            ("gray75.bmp", false, false),
+            ("cancelled-rgb75.partial", true, true),
+            ("rgb75-rescan.bmp", true, false),
+        ] {
+            let settings = if color {
+                workcentre_3119::wia::FlatbedSettings {
+                    data_type: 3,
+                    depth: 24,
+                    ..scan_settings()
+                }
+            } else {
+                scan_settings()
+            };
+            let cancel = AtomicBool::new(false);
+            let mut output = Output {
+                bytes: Cursor::new(Vec::new()),
+                device: &device,
+                cancel: &cancel,
+                cancel_on_write: cancelled,
+                checked: false,
+            };
+            let result = scan_locked_bmp(device.0, settings, &cancel, &mut output);
+            assert!(output.checked, "the image callback must have run");
+            if cancelled {
+                assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
+                assert!(!output.bytes.get_ref().starts_with(b"BM"));
+            } else {
+                let summary = result.expect("locked scan must complete");
+                let bmp = output.bytes.get_ref();
+                assert!(bmp.starts_with(b"BM"));
+                assert_eq!(
+                    u32::from_le_bytes(bmp[2..6].try_into().unwrap()) as usize,
+                    bmp.len()
+                );
+                assert_eq!(
+                    u32::from_le_bytes(bmp[18..22].try_into().unwrap()),
+                    summary.width
+                );
+                assert_eq!(
+                    i32::from_le_bytes(bmp[22..26].try_into().unwrap()),
+                    -(summary.height as i32)
+                );
+                println!(
+                    "{name}: {}x{}, {} bytes, {} bands",
+                    summary.width, summary.height, summary.bytes, summary.bands
+                );
+            }
+            let mut file = std::fs::File::create_new(directory.join(name)).unwrap();
+            file.write_all(output.bytes.get_ref()).unwrap();
+            file.sync_all().unwrap();
+            let mut diagnostic = presence_request();
+            assert_eq!(
+                (m.diagnostic)(device.0, ptr::from_mut(&mut diagnostic).cast()),
+                0,
+                "same session must remain usable after cleanup"
+            );
+        }
+        assert_eq!((m.unlock)(device.0), 0);
+    }
+    drop(device);
+    assert_eq!(helper.refs.load(Ordering::SeqCst), 1);
+    std::fs::File::create_new(directory.join("complete.txt"))
+        .unwrap()
+        .sync_all()
+        .unwrap();
 }

@@ -210,6 +210,12 @@ pub struct ScanSummary {
     pub bytes: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum SessionHealth {
+    Ready,
+    NeedsReconnect,
+}
+
 /// Host-observed USB API durations, including device waiting and failed calls.
 /// These overlap the stage totals; they do not measure physical bus bandwidth.
 #[derive(Debug, Default)]
@@ -300,6 +306,17 @@ fn record_read_buffer_limit(
     profile.read_buffer_bytes = requested;
     profile.usb_read_limit = Some(limit);
     validate_read_buffer_limit(requested, limit)
+}
+
+#[cfg(windows)]
+fn preflight_read_buffer(
+    usb: &crate::usb::UsbSession,
+    requested: usize,
+    profile: &mut ScanProfile,
+) -> io::Result<usize> {
+    let limit = usb.maximum_read_transfer_size()?;
+    record_read_buffer_limit(profile, requested, limit)?;
+    Ok(limit)
 }
 
 #[derive(Clone, Copy)]
@@ -489,6 +506,37 @@ pub fn scan_to(
     scan_with_evidence(cancel, |_| Ok(request), sink)
 }
 
+#[cfg(windows)]
+pub(crate) fn scan_in_session(
+    usb: &mut crate::usb::UsbSession,
+    request: ScanRequest,
+    cancel: &AtomicBool,
+    mut sink: impl FnMut(&ImageBand) -> io::Result<()>,
+) -> (io::Result<ScanSummary>, SessionHealth) {
+    if cancel.load(Ordering::Relaxed) {
+        return (
+            Err(io::Error::new(io::ErrorKind::Interrupted, "Scan cancelled")),
+            SessionHealth::Ready,
+        );
+    }
+    let mut profile = ScanProfile::default();
+    let read_limit =
+        match preflight_read_buffer(usb, ScanTuning::default().read_buffer_bytes, &mut profile) {
+            Ok(limit) => limit,
+            Err(error) => return (Err(error), SessionHealth::Ready),
+        };
+    let result = run_prepared_job_profiled_with_health(
+        usb,
+        cancel,
+        &mut sink,
+        |_| Ok(request),
+        &mut profile,
+        ScanTuning::default(),
+    );
+    profile.usb_read_limit = Some(read_limit);
+    result
+}
+
 #[cfg(not(windows))]
 pub fn scan_to(
     _: ScanRequest,
@@ -541,8 +589,7 @@ pub fn scan_with_profile(
         return Err(io::Error::new(io::ErrorKind::Interrupted, "Scan cancelled"));
     }
     let mut usb = crate::usb::UsbSession::open()?;
-    let read_limit = usb.maximum_read_transfer_size()?;
-    record_read_buffer_limit(profile, tuning.read_buffer_bytes, read_limit)?;
+    let read_limit = preflight_read_buffer(&usb, tuning.read_buffer_bytes, profile)?;
     let mut evidence = crate::InquiryEvidence {
         device_descriptor: usb.descriptor,
         interface_descriptor: usb.interface,
@@ -744,6 +791,24 @@ fn run_job(
     run_prepared_job(usb, cancel, sink, |_| Ok(request))
 }
 
+#[cfg(test)]
+fn run_job_with_health(
+    usb: &mut impl Transport,
+    request: ScanRequest,
+    cancel: &AtomicBool,
+    sink: &mut impl FnMut(&ImageBand) -> io::Result<()>,
+) -> (io::Result<ScanSummary>, SessionHealth) {
+    let mut profile = ScanProfile::default();
+    run_prepared_job_profiled_with_health(
+        usb,
+        cancel,
+        sink,
+        |_| Ok(request),
+        &mut profile,
+        ScanTuning::default(),
+    )
+}
+
 /// Drain only data whose exact remaining length is known. An opaque USB error
 /// may have consumed unknown bytes, so it cannot be recovered by this routine.
 fn read_image_band(
@@ -883,9 +948,22 @@ fn run_prepared_job_profiled(
     profile: &mut ScanProfile,
     tuning: impl Into<ScanTuning>,
 ) -> io::Result<ScanSummary> {
+    run_prepared_job_profiled_with_health(usb, cancel, sink, prepare, profile, tuning).0
+}
+
+fn run_prepared_job_profiled_with_health(
+    usb: &mut impl Transport,
+    cancel: &AtomicBool,
+    sink: &mut impl FnMut(&ImageBand) -> io::Result<()>,
+    prepare: impl FnOnce(&[u8]) -> io::Result<ScanRequest>,
+    profile: &mut ScanProfile,
+    tuning: impl Into<ScanTuning>,
+) -> (io::Result<ScanSummary>, SessionHealth) {
     *profile = ScanProfile::default();
     let tuning = tuning.into();
-    tuning.validate()?;
+    if let Err(error) = tuning.validate() {
+        return (Err(error), SessionHealth::Ready);
+    }
     let mut diagnostics = ScanDiagnostics::new();
     diagnostics.read_poll_interval = tuning.read_poll_interval;
     diagnostics.read_buffer_bytes = tuning.read_buffer_bytes;
@@ -894,51 +972,78 @@ fn run_prepared_job_profiled(
         inner: usb,
         metrics: UsbProfile::default(),
     };
-    let result = run_prepared_job_observed(&mut timed, cancel, sink, prepare, &mut diagnostics);
+    let (result, health) =
+        run_prepared_job_observed_with_health(&mut timed, cancel, sink, prepare, &mut diagnostics);
     diagnostics.set_stage(diagnostics.stage);
     diagnostics.profile.total = diagnostics.started.elapsed();
     diagnostics.profile.usb = timed.metrics;
     *profile = diagnostics.profile;
-    result
+    (result, health)
 }
 
-fn run_prepared_job_observed(
+fn run_prepared_job_observed_with_health(
     usb: &mut impl Transport,
     cancel: &AtomicBool,
     sink: &mut impl FnMut(&ImageBand) -> io::Result<()>,
     prepare: impl FnOnce(&[u8]) -> io::Result<ScanRequest>,
     diagnostics: &mut ScanDiagnostics,
-) -> io::Result<ScanSummary> {
+) -> (io::Result<ScanSummary>, SessionHealth) {
     let deadline = Instant::now() + Duration::from_secs(120);
     diagnostics.set_stage(ScanStage::Inquiry);
     diagnostics.set_opcode(0x12);
     if let Err(error) = checkpoint(cancel, deadline) {
-        return Err(diagnostics.error(error, "before inquiry"));
+        return (
+            Err(diagnostics.error(error, "before inquiry")),
+            SessionHealth::Ready,
+        );
     }
     let mut synchronized = true;
     let raw = match exchange(usb, &[0x1b, 0xa8, 0x12, 0], &mut synchronized) {
         Ok(raw) => raw,
-        Err(error) => return Err(diagnostics.error(error, "INQUIRY")),
+        Err(error) => {
+            return (
+                Err(diagnostics.error(error, "INQUIRY")),
+                SessionHealth::NeedsReconnect,
+            );
+        }
     };
     let caps = match Capabilities::parse(&raw) {
         Ok(caps) => caps,
-        Err(error) => return Err(diagnostics.error(error, "capability response")),
+        Err(error) => {
+            return (
+                Err(diagnostics.error(error, "capability response")),
+                SessionHealth::NeedsReconnect,
+            );
+        }
     };
     diagnostics.set_stage(ScanStage::Prepare);
     diagnostics.set_opcode(0x24);
     let request = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| prepare(&raw))) {
         Ok(Ok(request)) => request,
-        Ok(Err(error)) => return Err(diagnostics.error(error, "scan request")),
+        Ok(Err(error)) => {
+            return (
+                Err(diagnostics.error(error, "scan request")),
+                SessionHealth::Ready,
+            );
+        }
         Err(_) => {
-            return Err(diagnostics.error(
-                io::Error::other("Scan preparation panicked"),
-                "scan request",
-            ));
+            return (
+                Err(diagnostics.error(
+                    io::Error::other("Scan preparation panicked"),
+                    "scan request",
+                )),
+                SessionHealth::NeedsReconnect,
+            );
         }
     };
     let window = match request.command(&caps) {
         Ok(window) => window,
-        Err(error) => return Err(diagnostics.error(error, "SET_WINDOW command construction")),
+        Err(error) => {
+            return (
+                Err(diagnostics.error(error, "SET_WINDOW command construction")),
+                SessionHealth::Ready,
+            );
+        }
     };
     diagnostics.set_stage(ScanStage::Reserve);
     let reservation =
@@ -955,7 +1060,10 @@ fn run_prepared_job_observed(
             }
         });
     if let Err(error) = reservation {
-        return Err(diagnostics.error(error, "RESERVE"));
+        return (
+            Err(diagnostics.error(error, "RESERVE")),
+            SessionHealth::NeedsReconnect,
+        );
     }
     // Ownership is confirmed only after RESERVE succeeds. Never release another owner's busy device.
     let result = (|| {
@@ -1071,7 +1179,12 @@ fn run_prepared_job_observed(
     diagnostics.set_stage(ScanStage::Cleanup);
     let cleanup = finish(usb, result.is_err(), &mut synchronized, diagnostics);
     let cleanup = cleanup.map_err(|error| diagnostics.error(error, "cleanup"));
-    match (result, cleanup) {
+    let health = if cleanup.is_ok() {
+        SessionHealth::Ready
+    } else {
+        SessionHealth::NeedsReconnect
+    };
+    let output = match (result, cleanup) {
         (Ok(summary), Ok(())) => Ok(summary),
         (Err(e), Ok(())) | (Ok(_), Err(e)) => Err(e),
         (Err(e), Err(cleanup)) => {
@@ -1085,7 +1198,8 @@ fn run_prepared_job_observed(
                 format!("{e}; {suffix}: {cleanup}"),
             ))
         }
-    }
+    };
+    (output, health)
 }
 
 #[cfg(test)]
@@ -1338,6 +1452,123 @@ mod tests {
         assert_eq!(pixels, [42, 190]);
         assert_eq!((summary.width, summary.height), (2, 1));
         assert_eq!(usb.writes, [0x12, 0x16, 0x24, 0x31, 0x28, 0x29, 0x17]);
+    }
+
+    #[test]
+    fn shared_session_health_is_ready_after_successful_cleanup() {
+        let mut usb = synthetic();
+        let (result, health) = run_job_with_health(
+            &mut usb,
+            request(),
+            &AtomicBool::new(false),
+            &mut |_| Ok(()),
+        );
+        assert!(result.is_ok());
+        assert_eq!(health, SessionHealth::Ready);
+    }
+
+    #[test]
+    fn shared_session_health_is_ready_after_consumer_failure_and_cleanup() {
+        let mut usb = synthetic();
+        usb.replies.push_back(reply(0));
+        let (result, health) =
+            run_job_with_health(&mut usb, request(), &AtomicBool::new(false), &mut |_| {
+                Err(io::Error::other("synthetic consumer failure"))
+            });
+        assert!(result.is_err());
+        assert_eq!(health, SessionHealth::Ready);
+        assert_eq!(usb.writes, [0x12, 0x16, 0x24, 0x31, 0x28, 0x29, 0x06, 0x17]);
+    }
+
+    #[test]
+    fn shared_session_health_is_ready_after_cancellation_and_cleanup() {
+        let mut usb = synthetic();
+        usb.replies.push_back(reply(0));
+        let cancel = AtomicBool::new(false);
+        let (result, health) = run_job_with_health(&mut usb, request(), &cancel, &mut |_| {
+            cancel.store(true, Ordering::Relaxed);
+            Ok(())
+        });
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        assert_eq!(health, SessionHealth::Ready);
+        assert_eq!(usb.writes, [0x12, 0x16, 0x24, 0x31, 0x28, 0x29, 0x06, 0x17]);
+    }
+
+    #[test]
+    fn shared_session_health_needs_reconnect_after_unknown_transfer_consumption() {
+        let mut usb = InjectedReadFailure {
+            inner: synthetic(),
+            read_calls: 0,
+            fail_call: 6,
+        };
+        let (result, health) = run_job_with_health(
+            &mut usb,
+            request(),
+            &AtomicBool::new(false),
+            &mut |_| Ok(()),
+        );
+        assert!(result.is_err());
+        assert_eq!(health, SessionHealth::NeedsReconnect);
+        assert_eq!(usb.inner.writes, [0x12, 0x16, 0x24, 0x31, 0x28, 0x29]);
+    }
+
+    #[test]
+    fn shared_session_health_needs_reconnect_after_cleanup_failure() {
+        let mut usb = synthetic();
+        usb.replies.pop_back();
+        usb.replies.push_back(reply(0));
+        let (result, health) =
+            run_job_with_health(&mut usb, request(), &AtomicBool::new(false), &mut |_| {
+                Err(io::Error::other("synthetic consumer failure"))
+            });
+        assert!(result.is_err());
+        assert_eq!(health, SessionHealth::NeedsReconnect);
+        assert_eq!(usb.writes, [0x12, 0x16, 0x24, 0x31, 0x28, 0x29, 0x06, 0x17]);
+    }
+
+    #[test]
+    fn shared_session_health_is_ready_for_pre_cancel_without_commands() {
+        let mut usb = synthetic();
+        let (result, health) =
+            run_job_with_health(&mut usb, request(), &AtomicBool::new(true), &mut |_| Ok(()));
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        assert_eq!(health, SessionHealth::Ready);
+        assert!(usb.writes.is_empty());
+    }
+
+    #[test]
+    fn shared_session_health_is_ready_for_pre_reservation_parameter_rejection() {
+        let mut usb = synthetic();
+        let invalid_request = ScanRequest {
+            width_units: 10_200,
+            ..request()
+        };
+        let (result, health) = run_job_with_health(
+            &mut usb,
+            invalid_request,
+            &AtomicBool::new(false),
+            &mut |_| Ok(()),
+        );
+        assert!(result.is_err());
+        assert_eq!(health, SessionHealth::Ready);
+        assert_eq!(usb.writes, [0x12]);
+    }
+
+    #[test]
+    fn shared_session_health_is_ready_for_preparation_rejection_after_inquiry() {
+        let mut usb = synthetic();
+        let mut profile = ScanProfile::default();
+        let (result, health) = run_prepared_job_profiled_with_health(
+            &mut usb,
+            &AtomicBool::new(false),
+            &mut |_| Ok(()),
+            |_| Err(io::Error::other("synthetic parameter rejection")),
+            &mut profile,
+            ScanTuning::default(),
+        );
+        assert!(result.is_err());
+        assert_eq!(health, SessionHealth::Ready);
+        assert_eq!(usb.writes, [0x12]);
     }
 
     #[test]

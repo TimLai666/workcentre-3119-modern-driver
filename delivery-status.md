@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-2026-09-13：原生 COM DLL 已具備 IStiUSD，初始化、指定裝置的實機鎖定、能力查詢及釋放測試通過。接續 IWiaMiniDrv 初始化、屬性模型與傳輸 callback，以及服務端裝置身分映射。完整驅動的持續目標維持啟用，既有兩次自然逾時、20 次穩定性、文件品質、正式套件及列印仍未完成。
+2026-09-13：依使用者要求先收尾，等待下次繼續。已實作同一 COM 物件的連線借用、掃描健康狀態及 Rust BMP 入口，離線驗證通過，新的實機灰階／彩色／取消重掃測試尚未執行。接續此實測，再完成 IWiaMiniDrv、屬性模型、傳輸 callback 與服務端身分映射。既有兩次自然逾時、20 次穩定性、文件品質、正式套件及列印仍未完成。
 
 ## Stage Objective
 
@@ -39,7 +39,7 @@
 
 ## Next Verifiable Output
 
-IStiUSD 的直接呼叫已可取得指定 USB session。下一段須讓 IWiaMiniDrv 掃描重用此 session，避免 LockDevice 後 `wia::scan_bmp` 再次開啟而被自己的獨占鎖拒絕。合成 helper 的 port name 與真實 WIA 服務裝置身分仍需完成映射及驗證。
+下次先執行 `tests/sti.rs` 的 `actual_locked_object_scans_cancels_and_rescans_with_reentrant_output`，使用當下重新列舉的 `WC3119_TEST_STI_PATH` 及不存在的新 `WC3119_TEST_OUTPUT_DIR`，以 `--ignored --exact` 明確指定。它會啟動灰階、彩色取消及彩色重掃，透過同一鎖定物件，不能與其他硬體測試平行執行。本輪使用者要求快速收尾，故尚未操作硬體。之後接上 IWiaMiniDrv；目前新增的 `com_server::scan_locked_bmp` 是 Rust 整合入口，沒有實作 WIA COM 影像傳輸。
 
 IWiaMiniDrv 的初始化、屬性模型及掃描傳輸先用直接 COM 呼叫驗證，不先登錄系統。COM aggregation 的實際需求、服務管理的並行載入／卸載排程與 runtime 前置條件亦須驗證。數值快照映射已完成，但正式屬性範圍、相依更新及幾何仍待實作／驗證。先前 600×800 選取區回傳 600×801，不可將輸出尺寸任意當成 WIA 選取範圍。WinUSB 共存、服務帳號存取及 Windows 掃描消費 BMP 仍需整合驗證。跨工作隔離依 03 補完，不以介面到達時間戳記當成實體重插證據。準備具體安裝、備份及復原方案後，才提出必要的系統變更授權。平台有文件後補做 02／07 品質對照。
 
@@ -64,6 +64,10 @@ IWiaMiniDrv 的初始化、屬性模型及掃描傳輸先用直接 COM 呼叫驗
 | 建立持續完成完整驅動的目標 | 使用者要求逐步完成實作、驗證與推送，需要使用者介入時提出具體需求，可獨立工作繼續推進 | 2026-09-13 | 01、02、03、05、06、07 |
 
 ## Verified
+
+連線借用版本：128 個 all-targets 測試、2 個 doc-tests、格式、Clippy 及全部 release targets 通過；另行載入當次 DLL 的 1 個測試通過。新增 5 個資源生命週期／重入／並行測試、8 個核心健康狀態測試及 1 個 COM 物件的未鎖定／預先取消測試。借用器與公開入口先取得缺少實作的失敗，關閉完成前可被重開的競態先重現再修正。兩個 STI 硬體測試本輪皆未執行，不能沿用前版實機證據宣稱這次修改已實測。
+
+本版根代理已檢查全部核心差異與呼叫關係，補回共用 WinUSB 讀取上限預檢。Luna 完成借用器、STI、BMP 與 COM 邊界對抗審查，未確認未處理 P1／P2；它沒有完成核心凍結版的獨立複核，下次實機測試前保留此檢查。核心 SHA256 `D8B0E05E46AC4BCE1446902432D2A668E5645A3C95205C398E3A342AF3125A43`，借用器為 `2EF501E2717ACF1B3AB1D99E95C333DF0298F7F6FED9283582E9D67314ACA2C4`。
 
 IStiUSD 版本：114 個 all-targets 測試、2 個 doc-tests、格式、Clippy、全部 release targets 通過。兩個預設 ignored 測試分別明確執行並通過：release DLL 的 IStiUSD 身分／生命週期，以及真實 MI_00 的指定路徑、互斥、能力診斷和最終釋放。初始 IStiUSD 與 DLL QI 測試曾對舊版失敗，USB 未指定目標的多候選回歸亦先取得失敗再修正。鎖定死鎖及狀態結構大小由審查發現並修正，補測首次執行即通過，沒有宣稱它們取得 RED。SDK C11 靜態斷言核對 19-slot vtable、helper port slot、結構大小／偏移及版本／錯誤常數。詳見 [05](docs/tickets/05-windows-install.md#測試) 與 [實機紀錄](docs/hardware.md#istiusd-實機鎖定與能力診斷)。
 
@@ -154,6 +158,7 @@ Diff Inspector：本輪範圍符合診斷及可靠性調查，根代理已審查
 | [driver/com-exports.def](driver/com-exports.def) | 兩個 runtime COM exports，排除 import library 項目 |
 | [src/com_server.rs](src/com_server.rs) | DLL 入口、factory、IUnknown 參考與 module lock 生命週期 |
 | [src/com_server/sti.rs](src/com_server/sti.rs) | IStiUSD 初始化、指定裝置獨占、能力診斷及錯誤回報 |
+| [src/com_server/session.rs](src/com_server/session.rs) | 同一資源借用、回呼期間排他、關閉時序及異常隔離 |
 | [tests/sti.rs](tests/sti.rs) | SDK 契約、helper 參考及明確啟用的實機互斥／釋放驗證 |
 | [tests/com_server.rs](tests/com_server.rs) | ABI、失敗、參考釋放及並行 module hold 交接 |
 | [tests/com_server_dll.rs](tests/com_server_dll.rs) | 明確指定 release DLL 的實際動態載入與卸載 |
@@ -191,6 +196,8 @@ Diff Inspector：本輪範圍符合診斷及可靠性調查，根代理已審查
 | [driver/README.md](driver/README.md) | 安裝範圍、風險與復原要求 |
 
 ## Actions
+
+本輪只做程式、離線／DLL 測試及建置，依使用者要求把實機操作留待下次。保存目前修改與接手狀態，不開始新功能；本輪沒有 USB 掃描、安裝或登錄變更。
 
 IStiUSD 版本執行測試程序內 DLL 載入／卸載、真實 USB 獨占與 INQUIRY，完成後釋放句柄及 helper 參考。未新增系統登錄、安裝、安全設定或掃描影像。上一版本 `d75777a2c0156a93b55a1c51a10fadc5cab8daeb` 已推送 origin/main，當輪 Spark 兩次啟動後遇到用量限制，才由 Luna 接續實作／審查；後續仍依使用者要求優先 Spark。必要提交與推送依既有授權，版本識別以 Git 紀錄為準。
 

@@ -175,9 +175,35 @@ pub fn scan_bmp<W: io::Write + io::Seek>(
         return Err(io::Error::new(io::ErrorKind::Interrupted, "Scan cancelled"));
     }
 
-    let mode = request.mode;
-    let mut encoder = BmpEncoder::new(output, request.dpi, mode)?;
-    let summary = scan_to(request, cancel, |band| encoder.push(band))?;
+    encode_bmp(request, output, |sink| scan_to(request, cancel, sink))
+}
+
+fn encode_bmp<W: io::Write + io::Seek>(
+    request: ScanRequest,
+    output: &mut W,
+    run: impl FnOnce(
+        &mut dyn FnMut(&crate::scan::ImageBand) -> io::Result<()>,
+    ) -> io::Result<ScanSummary>,
+) -> io::Result<ScanSummary> {
+    let mut encoder = BmpEncoder::new(output, request.dpi, request.mode)?;
+    let summary = run(&mut |band| encoder.push(band))?;
     encoder.finish(&summary)?;
     Ok(summary)
+}
+
+/// Internal path for a validated request and an already exclusively held device.
+#[cfg(windows)]
+pub(crate) fn scan_request_bmp_in_session<W: io::Write + io::Seek>(
+    usb: &mut crate::usb::UsbSession,
+    request: ScanRequest,
+    cancel: &AtomicBool,
+    output: &mut W,
+) -> (io::Result<ScanSummary>, crate::scan::SessionHealth) {
+    let mut health = crate::scan::SessionHealth::Ready;
+    let result = encode_bmp(request, output, |sink| {
+        let (result, current) = crate::scan::scan_in_session(usb, request, cancel, sink);
+        health = current;
+        result
+    });
+    (result, health)
 }
