@@ -1125,6 +1125,62 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn wia_pixel_settings_reach_window_and_are_checked_against_live_inquiry() {
+        use crate::wia::{BMP_FORMAT, FlatbedSettings};
+        let settings = FlatbedSettings {
+            x_resolution: 150,
+            y_resolution: 150,
+            x_position: 15,
+            y_position: 30,
+            x_extent: 150,
+            y_extent: 300,
+            data_type: 2,
+            depth: 8,
+            brightness: 0,
+            contrast: 0,
+            compression: 0,
+            format: BMP_FORMAT,
+        };
+        let mapped = settings.to_request().unwrap();
+        assert_eq!(
+            mapped.command(&caps()).unwrap(),
+            [
+                0x1b, 0xa8, 0x24, 0x13, 0x30, 0, 0, 4, 0xb0, 0, 0, 9, 0x60, 2, 2, 0, 10, 0, 20, 3,
+                0, 0, 2, 0x40, 0,
+            ]
+        );
+        let mut usb = synthetic();
+        let summary = run_job(&mut usb, mapped, &AtomicBool::new(false), &mut |_| Ok(())).unwrap();
+        // Synthetic device delivers a different size; preserve measured data, never invent pixels.
+        assert_eq!((summary.width, summary.height), (2, 1));
+        assert_eq!(usb.writes.last(), Some(&0x17));
+        for missing_mode in [false, true] {
+            let mut usb = synthetic();
+            let requested = if missing_mode {
+                usb.replies.front_mut().unwrap()[39] = 1;
+                mapped
+            } else {
+                FlatbedSettings {
+                    x_extent: 2000,
+                    ..settings
+                }
+                .to_request()
+                .unwrap()
+            };
+            let result = run_job(&mut usb, requested, &AtomicBool::new(false), &mut |_| {
+                panic!("rejected live capabilities must not deliver an image")
+            });
+            assert!(result.is_err());
+            assert_eq!(
+                usb.writes,
+                [0x12],
+                "capability rejection must precede RESERVE"
+            );
+        }
+    }
+
     #[test]
     fn settings_reject_unreported_modes_unsupported_geometry_and_overflow() {
         for r in [

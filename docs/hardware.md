@@ -133,6 +133,21 @@ ABORT／RELEASE 沒有回報失敗，隨後 Gray75 又完整成功（648×871，
 
 測試後 `doctor` 父裝置、MI_00、MI_01 問題碼皆為 0、started=true。沒有重新安裝、實體重插或修改系統設定。這次沒有重跑 600 dpi 穩定性驗收，也沒有修復此前兩次自然逾時。
 
+## WIA 數值設定與原生串流實掃
+
+2026-09-13，私人測試呼叫端使用 `FlatbedSettings` → `scan_bmp` → `ComOutputStream`，將真實 USB 掃描寫入 Windows `CreateStreamOnHGlobal` 物件，成功釋放掃描工作後從同一物件讀回 BMP。兩次皆為 75 dpi、零偏移、600×800 像素選取範圍，精確對應 9600×12800 個 1/1200 英吋單位。亮度／對比為 0、無壓縮。平台沒有文件。
+
+| 模式 | 實際尺寸 | 塊數 | 像素 bytes | BMP bytes | 掃描秒數 |
+| --- | --- | --- | --- | --- | --- |
+| 灰階 8-bit | 600×801 | 1 | 480600 | 481678 | 6.568 |
+| RGB 24-bit | 600×801 | 2 | 1441800 | 1441854 | 13.263 |
+
+兩次均完成並建立 `complete.txt`。實際比選取高度多 1 列，BMP 保留 READ 尺寸，沒有裁切或縮放，差異原因與正式 WIA 幾何尚未確認。Python/Pillow 核對 BMP 標頭、負高度、色盤、長度與全部 BMP 有效樣本的解碼一致。Windows GDI+ 開啟兩張成功，尺寸與各九個樣本符合 Pillow。實際檢視轉存 PNG，為白色空平台與少量細點。此測試沒有保存 USB 原文，不宣稱這兩次重新完成 USB 全樣本對照或文件品質驗收。
+
+私人測試來源為 `artifacts/wia-scalar-smoke-20260913-h/smoke.rs`，SHA256 `E98BAD1EE48EE076FED01892E76628D7A0FC810F7B8D9B2989CD0FD8A82A4F86`。執行檔 SHA256 `246F6B483071AEADAC2C3279A0DAEEA89371588DDD9AB5ABFED6DCE8DC87FBA0`，`src/wia.rs` 為 `1AAD9DE923CEA3ABFB4463C032D2102FFB4474C59ED37E08BDCE08618001E33A`。設定、結果與 BMP 分別留在 `artifacts/wia-scalar-gray75-20260913-h/`、`artifacts/wia-scalar-rgb75-20260913-h/`。驗證程式及結果為 harness 目錄的 `verify.py`、`verification.json`。
+
+灰階 BMP SHA256 `fa5d379c10c220158803860f8dce7f07a4bbae6fe9c8fe10111b46ba5296c9f5`，彩色為 `109493d52027f53af015d440ed4d9e9179e2ed6abbdfad76c17abafcf3d7ced8`。前後 `doctor` 三個介面均為問題碼 0、started=true。COM 在呼叫端執行緒初始化並隨串流釋放後解除，沒有 WIA 登錄、重新配對或系統設定變更。這是 WIA 前置掃描入口測試，沒有執行 Windows 掃描或修復 600 dpi 自然逾時。
+
 ## 64 KiB 與 256 KiB 影像讀取對照
 
 2026-09-13，以同一個 release 執行檔各掃描一次全平台 RGB600，READ Busy 間隔固定 100 ms。WinUSB bulk IN 當下回報 `MAXIMUM_TRANSFER_SIZE=2097152` bytes，端點封包為 512 bytes。兩次都是 5100×6961、117 塊、106503300 像素 bytes，逐塊獨立核對 wire／pixels 成功，並產生 `complete.txt`。

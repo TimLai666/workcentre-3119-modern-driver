@@ -19,7 +19,9 @@ WIA 2.0 的 IStream 傳輸路徑不呼叫 `drvWriteItemProperties`，硬體設�
 
 Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 callback，部分寫入、錯誤、取消及工作釋放已有離線測試與部分實機證據。WIA 2.0 裝置的預設傳輸格式須為 BMP，但完成 BMP 編碼不等於完成 WIA 傳輸。[Microsoft WIA 格式屬性](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ipa-format)
 
-原生 [IStream 輸出轉接](../../src/com_stream.rs) 已實作，接續 WIA 設定映射與 minidriver COM 元件。WIA minidriver 須支援 `IUnknown`、`IStiUSD`、`IWiaMiniDrv`，本機 SDK 標頭已有介面宣告，目前 Cargo 尚未產生 COM DLL。設定必須連到實際掃描，再補 DLL 介面與生命週期測試。WIA2 串流只保證 `Write`、`Seek`、`SetSize`，不得依賴呼叫端提供完整檔案功能。BMP 的 `finish` 成功後位置為 byte 2，WIA 轉接須驗證呼叫端需要的定位及影像消費行為。[Microsoft WIA 介面](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-minidriver-interfaces)、[COM 識別契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-a-com-interface)、[IStream 契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/istream-data-transfer-driver-changes)
+原生 [IStream 輸出轉接](../../src/com_stream.rs) 及 [WIA 數值設定入口](../../src/wia.rs) 已連到實際掃描，接續 minidriver COM 元件。WIA minidriver 須支援 `IUnknown`、`IStiUSD`、`IWiaMiniDrv`，本機 SDK 標頭已有介面宣告，目前 Cargo 尚未產生 COM DLL。下一段補 DLL 介面與生命週期測試。WIA2 串流只保證 `Write`、`Seek`、`SetSize`，不得依賴呼叫端提供完整檔案功能。BMP 的 `finish` 成功後位置為 byte 2，WIA 轉接須驗證呼叫端需要的定位及影像消費行為。[Microsoft WIA 介面](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-minidriver-interfaces)、[COM 識別契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-a-com-interface)、[IStream 契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/istream-data-transfer-driver-changes)
+
+目前 `FlatbedSettings` 僅驗證數值快照，支援六種對稱解析度、8-bit 灰階／24-bit 彩色、中性亮度／對比及無壓縮 BMP。位置按協定精確步進，範圍另由當次 INQUIRY 限制，詳見 [設定契約](../../ENG.md#wia-設定與掃描入口)。WIA 必備屬性、有效值範圍與相依更新尚未建立。正式屬性轉接還須明確設定每像素 3 個通道、每通道 8 bits 與逐像素排列，不能只由 datatype/depth 假定呼叫端的完整色彩契約。[Microsoft DATATYPE](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ipa-datatype) 實機指定 600×800 像素後回傳 600×801，必須釐清裝置幾何及 WIA 選取範圍的處理，不能把 BMP 成功當成範圍驗收。
 
 本機 `sc.exe qc stisvc` 確認 WIA 服務帳號為 `NT Authority\LocalService`。一般使用者的 Rust 掃描成功不證明該服務帳號也能開啟 WinUSB。第一階段開發不登錄 COM、不修改服務或 USB 權限，也不把離線契約測試當成 Windows 掃描驗收。
 
@@ -42,6 +44,8 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 - 在安全設定維持啟用的 Windows 11 x64 驗證簽署套件。簽署、付費與對外送審先取得明確授權。
 
 ## 測試
+
+2026-09-13，WIA 數值設定先取得缺少模組的失敗，再通過 4 個公開契約測試與 1 個核心整合測試。涵蓋六種解析度的位置步進、模式／色深、格式、中性值、負值／溢位、預先取消不觸碰輸出，以及當次能力拒絕時不送 RESERVE。全部 98 個 all-targets 測試、一般測試含 2 個 doc-tests、格式、Clippy、核心及全部範例 release 建置通過。私人呼叫端經 `scan_bmp` 將 Gray75／RGB75 真實影像寫入 Windows 原生記憶體串流並成功讀回 BMP，獨立解碼及 GDI+ 開啟通過，詳見 [實機紀錄](../hardware.md#wia-數值設定與原生串流實掃)。這次未登錄 WIA，尚未驗證 Windows 掃描。
 
 2026-09-13，原生 COM 輸出轉接先取得缺少公開模組的編譯失敗，再完成 5 個契約測試。合成邊界涵蓋短寫、零進度、超量、失敗 HRESULT 帶部分寫入量、Interrupted 不重試、Seek 及單次 Release。Windows 真實 `CreateStreamOnHGlobal` 物件完成 BMP 編碼、Seek 及 Read 回讀，確認標頭、行序與 RGB 樣本。2 個 doc-tests 證明物件不可跨執行緒移動或共用。最終 93 個 all-targets 測試、一般測試含上述 doc-tests、格式、Clippy、核心及全部範例 release 建置通過。沒有 USB、WIA 登錄或 Windows 掃描實測；驅動 DLL 與 WIA callback 尚未實作。
 

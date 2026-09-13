@@ -18,6 +18,7 @@
 - 忠實重現掃描明暗及正確映射 WIA 亮度／對比屬於驅動責任。使用者回報原廠驅動掃描偏亮偏白，原因尚未確認。不得預設壓暗整張影像、強制去背或套用固定 gamma 曲線充當修復。
 - 原生 API 的 `unsafe` 必須限縮在封裝內，註明指標、長度、生命週期及資源釋放的依據。
 - `src/com_stream.rs` 封裝原生 IStream 輸出及參考釋放，供 BMP 編碼使用。更動後執行 `cargo test --offline --test com_stream` 與 doc-tests，驗證 Windows 真實記憶體串流、錯誤及執行緒限制；這些測試不登錄 WIA 或操作 USB。
+- `src/wia.rs` 驗證 WIA 純數值設定並轉成掃描要求，`scan_bmp` 會啟動真實 USB 掃描及輸出 BMP。`cargo test --offline --test wia` 只驗證設定與預先取消，不操作硬體。WIA 屬性同步與 minidriver COM 尚由 05 接續實作。
 - 新核心功能採 TDD，先驗證測試會失敗，再實作。模擬封包須明示為合成資料，實機資料須記錄取得方式。
 - 每次交付執行 `cargo fmt --all -- --check`、`cargo clippy --offline --all-targets -- -D warnings`、`cargo test --offline`、`cargo build --offline --release`。新增依賴後先完成抓取再離線驗證。
 - 掃描改動另跑 `cargo test --offline --example capture_scan` 與 `cargo build --offline --release --example capture_scan`。此範例帶新目錄、模式及 DPI 會啟動掃描，不帶參數只顯示說明。成功必須有 `complete.txt`，私人 USB 影像僅存 `artifacts/`。

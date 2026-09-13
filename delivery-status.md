@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-2026-09-13：原生 IStream 輸出轉接已通過 Windows COM 記憶體串流的 BMP 寫入／讀回，包含錯誤與參考釋放測試。接續 WIA 設定映射及 minidriver COM 元件。完整驅動的持續目標維持啟用，既有兩次自然逾時、20 次穩定性、文件品質、正式套件及列印仍未完成。
+2026-09-13：WIA 數值設定已連到真實掃描，Gray75／RGB75 經原生 Windows 串流輸出 BMP 並成功讀回。接續 minidriver COM 元件與屬性模型。完整驅動的持續目標維持啟用，既有兩次自然逾時、20 次穩定性、文件品質、正式套件及列印仍未完成。
 
 ## Stage Objective
 
@@ -39,7 +39,7 @@
 
 ## Next Verifiable Output
 
-沿用已完成的 BMP、原生 IStream 與掃描 callback，完成 WIA 設定映射及 minidriver COM 生命週期的離線測試，讓有效設定能連到真實掃描，不先登錄系統。設定需處理 WIA 像素範圍與裝置幾何的差異，不能靜默四捨五入或假報已驗證尺寸。WinUSB 共存、服務帳號存取及 Windows 掃描消費 BMP 仍需整合驗證。跨工作隔離依 03 補完，不以介面到達時間戳記當成實體重插證據。準備具體安裝、備份及復原方案後，才提出必要的系統變更授權。平台有文件後補做 02／07 品質對照。
+完成 WIA minidriver COM 介面、物件生命週期及屬性模型的離線測試，沿用已連到實機的 `wia::scan_bmp`，不先登錄系統。數值快照映射已完成，但正式屬性範圍、相依更新及幾何仍待實作／驗證。此次 600×800 選取區回傳 600×801，不可將輸出尺寸任意當成 WIA 選取範圍。WinUSB 共存、服務帳號存取及 Windows 掃描消費 BMP 仍需整合驗證。跨工作隔離依 03 補完，不以介面到達時間戳記當成實體重插證據。準備具體安裝、備份及復原方案後，才提出必要的系統變更授權。平台有文件後補做 02／07 品質對照。
 
 ## Next Ticket
 
@@ -62,6 +62,10 @@
 | 建立持續完成完整驅動的目標 | 使用者要求逐步完成實作、驗證與推送，需要使用者介入時提出具體需求，可獨立工作繼續推進 | 2026-09-13 | 01、02、03、05、06、07 |
 
 ## Verified
+
+WIA 數值設定版本：98 個 all-targets 測試、一般測試含 2 個 doc-tests、格式、Clippy（warnings 為錯誤）、核心及全部範例 release 建置通過。新模組先取得缺少公開模組的失敗，再完成 4 個設定測試及 1 個當次能力／命令整合測試。Gray75 與 RGB75 使用同一測試建置完成真實掃描、原生 COM 串流輸出及讀回，獨立 BMP 解碼和 GDI+ 開啟通過。平台沒有文件，尺寸與品質限制見 [實機紀錄](docs/hardware.md#wia-數值設定與原生串流實掃)。尚未驗證 WIA 服務提供的串流或 Windows 掃描。
+
+Diff Inspector：根代理查核本輪完整程式／文件及呼叫關係，Luna 對抗審查沒有確認的 P1／P2。`src/wia.rs` 最終 SHA256 `1AAD9DE923CEA3ABFB4463C032D2102FFB4474C59ED37E08BDCE08618001E33A`。正式 WIA 色彩屬性及選取區同步由 05 接續驗證；公開入口到 COM 的完整實機測試目前保留於私人 harness，尚未列為可自動執行的 repository 硬體測試。
 
 原生 COM 串流版本：93 個 all-targets 測試、一般測試含 2 個 doc-tests、格式、Clippy（warnings 為錯誤）、核心及全部範例 release 建置通過。原生新功能先取得缺少模組的失敗測試，再實作。Windows `CreateStreamOnHGlobal` 真實物件完成 BMP 寫入、定位及回讀，合成 COM 邊界另測部分寫入、錯誤 HRESULT、取消不重試及只釋放一次。測試執行緒的 COM 初始化已於串流釋放後解除，不登錄 DLL、不操作 USB。仍未驗證 WIA 服務串流、裝置登錄及 minidriver 載入，見 [05](docs/tickets/05-windows-install.md)。
 
@@ -147,6 +151,8 @@ Diff Inspector：本輪範圍符合診斷及可靠性調查，根代理已審查
 | [src/bitmap.rs](src/bitmap.rs) | 逐列 BMP 編碼、格式／尺寸驗證、部分寫入與失敗處理 |
 | [src/com_stream.rs](src/com_stream.rs) | Windows IStream 輸出、原始 HRESULT、單次參考釋放及執行緒限制 |
 | [tests/com_stream.rs](tests/com_stream.rs) | 合成 COM 錯誤邊界與 Windows 真實記憶體串流 BMP 回讀 |
+| [src/wia.rs](src/wia.rs) | WIA 數值設定驗證、精確範圍換算及真實掃描 BMP 入口 |
+| [tests/wia.rs](tests/wia.rs) | 六種解析度、模式／色深、無效設定與預先取消 |
 | [src/scan.rs](src/scan.rs) | 掃描工作、影像解碼、有限排空、階段／Busy 診斷與效能量測，開發用 READ 間隔及緩衝區實驗，共用上限預檢 |
 | [examples/capture_scan.rs](examples/capture_scan.rs) | 私人實機證據擷取、定時／塊後取消、BMP 串流與完成標記 |
 | [examples/scan_stability.rs](examples/scan_stability.rs) | 同程序連續掃描、獨立像素核對、成功／失敗 profile 及有限範圍的 READ 間隔／緩衝區參數，任一失敗即停止 |
@@ -170,6 +176,8 @@ Diff Inspector：本輪範圍符合診斷及可靠性調查，根代理已審查
 | [driver/README.md](driver/README.md) | 安裝範圍、風險與復原要求 |
 
 ## Actions
+
+本輪數值設定版本完成 Gray75／RGB75 真實 USB 掃描與 Windows 記憶體串流輸出、讀回、釋放，私人影像只存於 Git 排除的 `artifacts/`。前後 doctor 正常，沒有系統登錄、重新配對或安全設定變更。上輪原生 COM 版本已推送 `origin/main`，commit `32b2a75a8a97d54cd57a4f3994399aca83a09de4`，當時遠端雜湊相符。本輪必要提交與推送依既有授權執行，版本識別以 Git 紀錄為準。
 
 本輪原生 COM 轉接僅執行離線測試、測試執行緒的 COM 初始化／解除初始化、Windows 記憶體串流建立／釋放及 Rust 建置，沒有掃描或系統登錄。上輪 BMP 版本已推送 `origin/main`，commit `acb2ef66fe5c5f8864ed73493bddae40821fa0fd`，當時遠端雜湊核對相同。
 

@@ -78,6 +78,14 @@ USB API 回傳錯誤可能已消耗未知長度，不能沿用舊的剩餘數量
 
 原生邊界以 Windows SDK 10.0.26100.0 `objidlbase.h` 的 IStream 方法順序核對，並使用 Windows `CreateStreamOnHGlobal` 真實物件完成 BMP 寫入及讀回測試。該測試只在測試執行緒初始化 COM，釋放串流後解除初始化，不登錄 DLL、不啟動掃描。這證明目前 Windows x64 的串流呼叫可運作，不替代 WIA 服務提供的實際串流驗收。[Microsoft OLE 記憶體串流](https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-createstreamonhglobal)
 
+### WIA 設定與掃描入口
+
+`wia::FlatbedSettings` 接受 WIA 純數值設定，`to_request` 不操作 USB，將像素位置／範圍精確轉成 1/1200 英吋。接受對稱 75、100、150、200、300、600 dpi，datatype/depth 僅灰階 2/8 與彩色 3/24，格式限 BMP、compression=0、brightness/contrast=0。不支援的組合明確拒絕。位置另須符合協定的 1/100 英吋步進，六種解析度依序每 3、1、3、2、3、6 像素一格，不能靜默取整。欄位與 GUID 依 Windows SDK 10.0.26100.0 `wiadef.h` 核對。[Microsoft XPOS](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ips-xpos)、[datatype](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ipa-datatype)
+
+`wia::scan_bmp` 先驗證設定及預先取消，再沿用 `scan_to` 與 `BmpEncoder` 啟動真實掃描。當次能力與工作來自同一個 USB session，範圍及模式不符時在 RESERVE 前拒絕。輸出須為空白 `Write + Seek` 串流，可使用 `ComOutputStream`。任何錯誤均不交付成功影像，只有工作及清理成功後才完成 BMP 標頭。輸出尺寸保留實際 READ 結果，沒有新增裁切、縮放或明暗處理。
+
+WIA 選取範圍 `XEXTENT/YEXTENT` 與輸出尺寸屬性用途不同。正式屬性模型須維護範圍、位置、解析度與頁面間的關係，不能因 READ 回傳不同就假定應覆寫選取範圍。Microsoft 建議應用程式以影像標頭取得實際尺寸。這個入口尚未實作屬性儲存或同步，也沒有 WIA callback／COM minidriver，實際消費與幾何契約由 05 驗收。[Microsoft XEXTENT](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ips-xextent)、[PIXELS_PER_LINE](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ipa-pixels-per-line)
+
 ### 效能與跨機型共用
 
 使用者要求加速時維持解析度、色深、掃描範圍與品質，並讓資料緩衝、排程及影像處理能供其他機型沿用。機型命令、資料邊界及允許的並行程度仍由機型協定負責；尚未取得第二種機型作共用性驗證，不預先假定所有裝置都能並行讀取。

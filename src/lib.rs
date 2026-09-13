@@ -5,6 +5,7 @@
 pub mod bitmap;
 pub mod protocol;
 pub mod scan;
+pub mod wia;
 
 #[cfg(windows)]
 pub mod com_stream;
