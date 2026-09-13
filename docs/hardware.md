@@ -73,6 +73,28 @@ Xerox WorkCentre 3119 · USB 0924:4265
 
 當時只有 INQUIRY；後續影像與端點證據見下節。回報解析度不等於光學解析度驗證。尚無 WIA、列印佇列、安裝復原、換孔或跨電腦驗證。未變更系統安全設定。
 
+## 連續掃描中重現的自然失敗
+
+2026-09-13，使用 `scan_stability` 同一程序預定執行 20 次空平台掃描。此工具逐塊核對 USB／解碼像素但不保存影像，任何錯誤立即停止。實際完成 4 次，第 5 次 600 dpi 彩色逾時，所以沒有 `complete.txt`，20 次驗收未通過。
+
+| 次序 | 模式 | 秒數 | 結果 |
+| --- | --- | --- | --- |
+| 1 | RGB600 | 90.279 | 完整成功，117 塊，106503300 bytes |
+| 2 | RGB600 | 101.734 | 完整成功，117 塊，106503300 bytes |
+| 3 | RGB300 | 40.030 | 完整成功，29 塊，26653968 bytes |
+| 4 | Gray600 | 42.208 | 完整成功，39 塊，35490900 bytes |
+| 5 | RGB600 | 120.201 | 在等下一塊資料描述時達到工作期限；已交付 54 塊、49572000 bytes |
+
+第 5 次最後一塊在 56.208 秒收到，接著約 64 秒沒有新影像。錯誤為 `stage=read-metadata ... Scan exceeded 120 second deadline`，沒有 USB 讀寫錯誤或清理失敗。錯誤發生在 `ready` 等候路徑；當時沒有記錄 Busy 回覆次數及最後狀態欄位，不能進一步歸因於暖機、硬體或驅動。清理後直接 Gray75 重掃成功（648×871，7.113 秒），不需重插；`doctor` 三個介面問題碼仍為 0。不能把這次自然逾時與先前刻意取消混為一談，也不能認定已找到歷史官方驅動故障的同一根因。
+
+外部 PowerShell 每 500 ms 觀察同一程序，取得 769 個記憶體樣本。實際占用 RAM 峰值 7745536 bytes、程序私有配置峰值 2957312 bytes；本輪沒有觀察到記憶體暴增，但中途停止，不能宣稱長期無洩漏。證據在 `artifacts/stability-observation-20260913-c/`（`scans/diagnostics.log`、stdout／stderr、`memory.csv`、`analysis.json`），復原掃描在 `artifacts/scan-after-stability-timeout-20260913-c/`。測試執行檔 SHA256：`3FE5CE96D262EAEE1E7FE6971F5B587FA3B6C045B825CFE501AAAADAB18F1BDF`。
+
+### 加入 Busy 診斷後再次重現
+
+同日以新版本在同一程序預定執行 2 次 RGB600；第一個工作在 18.383 秒交付第 20 塊後停住，120.183 秒結束，第二次未啟動。已交付 18360000 bytes；READ（0x28）在該次等待收到 678 次有效 Busy 回覆，最後 status=0x08，state=unknown。這證明等候期間仍有控制回覆，沒有 USB API 讀寫錯誤；0x08 沒有足以辨識暖機或其他內部狀態的欄位，不能由此判定硬體損壞或驅動時序正確。
+
+ABORT／RELEASE 沒有回報失敗，隨後 Gray75 又完整成功（648×871，7.221 秒），沒有重插。`doctor` 三個介面仍為問題碼 0、started=true。證據目錄為 `artifacts/stability-busy-observed-20260913-c/` 與 `artifacts/scan-after-busy-timeout-20260913-c/`；穩定性工具 SHA256 `3C600881525979BD72C2F45E84F1DE4579FBE649DCE01C9D61FA38D01C842FD5`。本次只增加診斷，沒有調整 100 ms 輪詢間隔、120 秒工作期限或 USB 傳輸政策；兩次自然失敗的根因仍未確認。
+
 ## 首次實機影像傳輸
 
 ### 最新補充：600 dpi 彩色
@@ -115,6 +137,6 @@ a8 00 43 10 53 41 4d 53 55 4e 47 20 4f 52 49 4f
 
 300 dpi 掃描中，同時由另一行程執行 `wc3119 inquiry` 回傳存取被拒（OS error 5），原掃描仍成功完成。掃描後 `doctor` 核對父裝置、MI_00、MI_01 服務與問題碼仍正常。沒有安裝、重新配對、reset 或 CLEAR_HALT。
 
-本機證據位於 Git 排除的 `artifacts/scan-*-20260913-a/`，包含 `evidence.txt`、每塊 `.bin`、解碼像素、完整 PGM／PPM 與 `verification.json`。取消那次沒有完成影像或標記。正式幾何、100／150／200 dpi、600 dpi 彩色、暖機中取消、傳輸中斷、拔線、睡眠與 20 次連續掃描仍未驗證。
+本機證據位於 Git 排除的 `artifacts/scan-*-20260913-a/`，包含 `evidence.txt`、每塊 `.bin`、解碼像素、完整 PGM／PPM 與 `verification.json`。取消那次沒有完成影像或標記。該批首次測試尚未涵蓋正式幾何、100／150／200 dpi、600 dpi 彩色、暖機中取消、傳輸中斷、拔線、睡眠與 20 次連續掃描；後續結果見本文件上方。
 
 審查修正版另使用單一 session 取得能力及影像，能力改存同目錄 `inquiry.txt`。`scan-gray75-reviewed-20260913-a` 成功，接著 `scan-rgb75-reviewed-cancel-20260913-a` 在第一塊後取消，最後 `scan-rgb75-reviewed-after-cancel-20260913-a` 完整成功。兩張完整影像再次通過獨立像素比對，SHA256 分別為 `6b794ba3e5c88ada390266d64ca012704e95a5811cc56804eab8fef9d6959f5b` 及 `88c3c6828b4f511e03be33cd8c459cca9d0845a42b0d84ab4400f46809a22b98`。

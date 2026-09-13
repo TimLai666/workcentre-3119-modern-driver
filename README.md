@@ -46,6 +46,14 @@ cargo run --offline --release --example capture_scan -- artifacts/my-scan gray 7
 
 目錄保存 USB 原文、解碼像素及 PGM／PPM；只有掃描釋放與檔案同步成功才有 `complete.txt`，其餘目錄視為中斷資料。影像依 READ 實際尺寸保存，沒有自動提亮、gamma、裁切或幾何補償。檔案可能包含私人文件，`artifacts/` 不提交至 Git。這是開發驗證範例，Windows 掃描尚不能使用此核心。
 
+## 開發用連續掃描驗證
+
+```powershell
+cargo run --offline --release --example scan_stability -- artifacts/stability 20
+```
+
+會在同一程序依序重複「600 dpi 彩色、600 dpi 彩色、300 dpi 彩色、600 dpi 灰階」，每次重新取得裝置能力。次數預設 20，接受 1–20；輸出目錄必須不存在。逐塊核對 USB 資料與解碼像素，只保存進度及錯誤的 `diagnostics.log`，不保存影像。任一錯誤立即停止，所有工作成功才有 `complete.txt`。這是開發測試，不提供自動復原或 Windows 掃描整合；記憶體使用須另外從同一程序量測。詳見範例 `--help`。
+
 ## 完整交付目標
 
 - 真實平台掃描，依機器能力提供灰階、彩色與解析度設定。
@@ -68,8 +76,10 @@ cargo clippy --offline --all-targets -- -D warnings
 cargo test --offline
 cargo test --offline --example winusb_setup
 cargo test --offline --example capture_scan
+cargo test --offline --example scan_stability
 cargo build --offline --release
 cargo build --offline --release --example capture_scan
+cargo build --offline --release --example scan_stability
 ```
 
 開發機的 WinUSB 候選預檢可執行 `cargo run --offline --example winusb_setup`。不帶參數時不安裝驅動。實際配對需另外依 [安裝方案](driver/README.md)備份及取得系統變更授權，這個工具不是正式安裝套件。

@@ -210,6 +210,132 @@ pub struct ScanSummary {
     pub bytes: usize,
 }
 
+#[derive(Clone, Copy)]
+enum ScanStage {
+    Inquiry,
+    Prepare,
+    Reserve,
+    SetWindow,
+    Start,
+    ReadMetadata,
+    ReadImage,
+    Decode,
+    Consumer,
+    Cleanup,
+}
+
+impl ScanStage {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Inquiry => "inquiry",
+            Self::Prepare => "prepare",
+            Self::Reserve => "reserve",
+            Self::SetWindow => "set-window",
+            Self::Start => "start",
+            Self::ReadMetadata => "read-metadata",
+            Self::ReadImage => "read-image",
+            Self::Decode => "decode",
+            Self::Consumer => "consumer",
+            Self::Cleanup => "cleanup",
+        }
+    }
+}
+
+struct ScanDiagnostics {
+    started: Instant,
+    stage: ScanStage,
+    completed_bands: u32,
+    pixel_bytes: usize,
+    opcode: Option<u8>,
+    busy_replies: u32,
+    last_busy_status: Option<u8>,
+    last_busy_state: Option<u16>,
+}
+
+impl ScanDiagnostics {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            stage: ScanStage::Inquiry,
+            completed_bands: 0,
+            pixel_bytes: 0,
+            opcode: None,
+            busy_replies: 0,
+            last_busy_status: None,
+            last_busy_state: None,
+        }
+    }
+
+    fn set_stage(&mut self, stage: ScanStage) {
+        self.stage = stage;
+    }
+
+    fn record_band(&mut self, bands: u32, pixel_bytes: usize) {
+        self.completed_bands = bands;
+        self.pixel_bytes = pixel_bytes;
+    }
+
+    fn set_opcode(&mut self, opcode: u8) {
+        self.opcode = Some(opcode);
+        self.busy_replies = 0;
+        self.last_busy_status = None;
+        self.last_busy_state = None;
+    }
+
+    fn record_busy_reply(&mut self, opcode: u8, reply: &[u8], read: bool) {
+        let Some(status) = reply.get(1).copied() else {
+            return;
+        };
+        if !matches!(status, 0x02 | 0x08) {
+            return;
+        }
+        self.opcode = Some(opcode);
+        self.busy_replies = self.busy_replies.saturating_add(1);
+        self.last_busy_status = Some(status);
+        self.last_busy_state = None;
+        if status == 0x02 && reply.get(3) == Some(&0x20) {
+            let offset = if read { 12 } else { 4 };
+            self.last_busy_state = reply
+                .get(offset)
+                .zip(reply.get(offset + 1))
+                .map(|(&high, &low)| u16::from_be_bytes([high, low]));
+        }
+    }
+
+    fn error(&self, error: io::Error, detail: impl Into<String>) -> io::Error {
+        let detail = detail.into();
+        let detail = if detail.is_empty() {
+            String::new()
+        } else {
+            format!(" {detail}")
+        };
+        io::Error::new(
+            error.kind(),
+            format!(
+                "stage={} elapsed_ms={} completed_bands={} pixel_bytes={} opcode={} last_busy_status={} last_busy_state={} busy_replies={}{}: {error}",
+                self.stage.name(),
+                self.started.elapsed().as_millis(),
+                self.completed_bands,
+                self.pixel_bytes,
+                match self.opcode {
+                    Some(opcode) => format!("0x{opcode:02x}"),
+                    None => "unknown".into(),
+                },
+                match self.last_busy_status {
+                    Some(status) => format!("0x{status:02x}"),
+                    None => "unknown".into(),
+                },
+                match self.last_busy_state {
+                    Some(state) => format!("0x{state:04x}"),
+                    None => "unknown".into(),
+                },
+                self.busy_replies,
+                detail,
+            ),
+        )
+    }
+}
+
 trait Transport {
     fn write(&mut self, data: &[u8]) -> io::Result<()>;
     fn read(&mut self, data: &mut [u8]) -> io::Result<usize>;
@@ -324,10 +450,16 @@ fn exchange(
         return Err(invalid("Response exceeds receive buffer"));
     }
     b.truncate(n);
-    if n < 32 || b[0] != 0xa8 || usize::from(b[2]) + 3 != n {
+    let advertised_length = b
+        .get(2)
+        .map(|length| usize::from(*length).saturating_add(3));
+    if n < 32 || b.first() != Some(&0xa8) || advertised_length != Some(n) {
+        let expected_length = advertised_length
+            .map(|length| length.to_string())
+            .unwrap_or_else(|| "unavailable".into());
         return Err(invalid(format!(
-            "Command 0x{:02x}: malformed reply {b:02x?}; stream synchronization lost",
-            command[2]
+            "Command 0x{:02x}: malformed reply received={n} expected_framing=header(0xa8)+length+3 expected_length={expected_length}; stream synchronization lost",
+            command[2],
         )));
     }
     let expected = match command[2] {
@@ -352,18 +484,28 @@ fn ready(
     synchronized: &mut bool,
     cancel: &AtomicBool,
     deadline: Instant,
+    diagnostics: &mut ScanDiagnostics,
 ) -> io::Result<Vec<u8>> {
+    diagnostics.set_opcode(opcode);
     loop {
         checkpoint(cancel, deadline)?;
         let b = exchange(usb, &[0x1b, 0xa8, opcode, 0], synchronized)?;
-        if response_status(&b, opcode == 0x28)? == ReplyStatus::Good {
-            return Ok(b);
+        match response_status(&b, opcode == 0x28)? {
+            ReplyStatus::Good => return Ok(b),
+            ReplyStatus::Busy => {
+                diagnostics.record_busy_reply(opcode, &b, opcode == 0x28);
+            }
         }
         std::thread::sleep(Duration::from_millis(100));
     }
 }
 
-fn finish(usb: &mut impl Transport, abort: bool, synchronized: &mut bool) -> io::Result<()> {
+fn finish(
+    usb: &mut impl Transport,
+    abort: bool,
+    synchronized: &mut bool,
+    diagnostics: &mut ScanDiagnostics,
+) -> io::Result<()> {
     if !*synchronized {
         return Err(io::Error::other(
             "USB reply stream is uncertain; reconnect scanner before another job",
@@ -375,6 +517,7 @@ fn finish(usb: &mut impl Transport, abort: bool, synchronized: &mut bool) -> io:
     } else {
         &[0x17][..]
     } {
+        diagnostics.set_opcode(*opcode);
         let result = exchange(usb, &[0x1b, 0xa8, *opcode, 0], synchronized).and_then(|b| {
             match response_status(&b, false)? {
                 ReplyStatus::Good => Ok(()),
@@ -415,13 +558,27 @@ fn read_image_band(
     cancel: &AtomicBool,
     deadline: Instant,
     synchronized: &mut bool,
+    diagnostics: &mut ScanDiagnostics,
 ) -> io::Result<Vec<u8>> {
-    let failed = |original: &Option<io::Error>, error: io::Error| match original {
-        Some(original) => io::Error::new(
-            original.kind(),
-            format!("{original}; image drain failed: {error}"),
-        ),
-        None => error,
+    diagnostics.set_stage(ScanStage::ReadImage);
+    let failed = |original: &Option<io::Error>,
+                  error: io::Error,
+                  received: usize,
+                  last_progress: Instant| {
+        let error = match original {
+            Some(original) => io::Error::new(
+                original.kind(),
+                format!("{original}; image drain failed: {error}"),
+            ),
+            None => error,
+        };
+        diagnostics.error(
+            error,
+            format!(
+                "received={received}/{length} since_progress_ms={}",
+                last_progress.elapsed().as_millis()
+            ),
+        )
     };
     *synchronized = false;
     let mut raw = Vec::with_capacity(length);
@@ -429,6 +586,7 @@ fn read_image_band(
     let mut failure = None;
     let mut drain_deadline = None;
     let mut empty_reads = 0;
+    let mut last_progress = Instant::now();
     while raw.len() < length {
         if failure.is_none() {
             failure = checkpoint(cancel, deadline).err();
@@ -443,6 +601,8 @@ fn read_image_band(
                     io::ErrorKind::TimedOut,
                     "Image drain exceeded 10 seconds; stream synchronization lost",
                 ),
+                raw.len(),
+                last_progress,
             ));
         }
         let remaining = length - raw.len();
@@ -452,12 +612,14 @@ fn read_image_band(
             .min(buffer.len());
         let count = match usb.read(&mut buffer[..capacity]) {
             Ok(count) => count,
-            Err(error) => return Err(failed(&failure, error)),
+            Err(error) => return Err(failed(&failure, error, raw.len(), last_progress)),
         };
         if count > capacity || count > remaining {
             return Err(failed(
                 &failure,
                 invalid("Image read exceeded advertised band length; stream synchronization lost"),
+                raw.len(),
+                last_progress,
             ));
         }
         if count == 0 {
@@ -469,17 +631,36 @@ fn read_image_band(
                 return Err(failed(
                     &failure,
                     invalid("Image drain made no progress twice; stream synchronization lost"),
+                    raw.len(),
+                    last_progress,
                 ));
             }
             continue;
         }
         raw.extend_from_slice(&buffer[..count]);
+        last_progress = Instant::now();
     }
     *synchronized = true;
     if let Some(error) = failure {
-        return Err(error);
+        return Err(diagnostics.error(
+            error,
+            format!(
+                "received={}/{length} since_progress_ms={}",
+                raw.len(),
+                last_progress.elapsed().as_millis()
+            ),
+        ));
     }
-    checkpoint(cancel, deadline)?;
+    checkpoint(cancel, deadline).map_err(|error| {
+        diagnostics.error(
+            error,
+            format!(
+                "received={}/{length} since_progress_ms={}",
+                raw.len(),
+                last_progress.elapsed().as_millis()
+            ),
+        )
+    })?;
     Ok(raw)
 }
 
@@ -489,29 +670,85 @@ fn run_prepared_job(
     sink: &mut impl FnMut(&ImageBand) -> io::Result<()>,
     prepare: impl FnOnce(&[u8]) -> io::Result<ScanRequest>,
 ) -> io::Result<ScanSummary> {
+    let mut diagnostics = ScanDiagnostics::new();
     let deadline = Instant::now() + Duration::from_secs(120);
-    checkpoint(cancel, deadline)?;
+    diagnostics.set_stage(ScanStage::Inquiry);
+    diagnostics.set_opcode(0x12);
+    if let Err(error) = checkpoint(cancel, deadline) {
+        return Err(diagnostics.error(error, "before inquiry"));
+    }
     let mut synchronized = true;
-    let raw = exchange(usb, &[0x1b, 0xa8, 0x12, 0], &mut synchronized)?;
-    let caps = Capabilities::parse(&raw)?;
-    let request = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| prepare(&raw)))
-        .map_err(|_| io::Error::other("Scan preparation panicked"))??;
-    let window = request.command(&caps)?;
-    ready(usb, 0x16, &mut synchronized, cancel, deadline).map_err(|e| {
+    let raw = match exchange(usb, &[0x1b, 0xa8, 0x12, 0], &mut synchronized) {
+        Ok(raw) => raw,
+        Err(error) => return Err(diagnostics.error(error, "INQUIRY")),
+    };
+    let caps = match Capabilities::parse(&raw) {
+        Ok(caps) => caps,
+        Err(error) => return Err(diagnostics.error(error, "capability response")),
+    };
+    diagnostics.set_stage(ScanStage::Prepare);
+    diagnostics.set_opcode(0x24);
+    let request = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| prepare(&raw))) {
+        Ok(Ok(request)) => request,
+        Ok(Err(error)) => return Err(diagnostics.error(error, "scan request")),
+        Err(_) => {
+            return Err(diagnostics.error(
+                io::Error::other("Scan preparation panicked"),
+                "scan request",
+            ));
+        }
+    };
+    let window = match request.command(&caps) {
+        Ok(window) => window,
+        Err(error) => return Err(diagnostics.error(error, "SET_WINDOW command construction")),
+    };
+    diagnostics.set_stage(ScanStage::Reserve);
+    let reservation = ready(
+        usb,
+        0x16,
+        &mut synchronized,
+        cancel,
+        deadline,
+        &mut diagnostics,
+    )
+    .map_err(|error| {
         if synchronized {
-            e
+            error
         } else {
             io::Error::new(
-                e.kind(),
-                format!("{e}; reservation unconfirmed; reconnect scanner before another job"),
+                error.kind(),
+                format!("{error}; reservation unconfirmed; reconnect scanner before another job"),
             )
         }
-    })?;
+    });
+    if let Err(error) = reservation {
+        return Err(diagnostics.error(error, "RESERVE"));
+    }
     // Ownership is confirmed only after RESERVE succeeds. Never release another owner's busy device.
     let result = (|| {
-        checkpoint(cancel, deadline)?;
-        response_status(&exchange(usb, &window, &mut synchronized)?, false)?;
-        ready(usb, 0x31, &mut synchronized, cancel, deadline)?;
+        diagnostics.set_stage(ScanStage::SetWindow);
+        diagnostics.set_opcode(0x24);
+        if let Err(error) = checkpoint(cancel, deadline) {
+            return Err(diagnostics.error(error, "before SET_WINDOW"));
+        }
+        let window_reply = match exchange(usb, &window, &mut synchronized) {
+            Ok(reply) => reply,
+            Err(error) => return Err(diagnostics.error(error, "SET_WINDOW")),
+        };
+        if let Err(error) = response_status(&window_reply, false) {
+            return Err(diagnostics.error(error, "SET_WINDOW response"));
+        }
+        diagnostics.set_stage(ScanStage::Start);
+        if let Err(error) = ready(
+            usb,
+            0x31,
+            &mut synchronized,
+            cancel,
+            deadline,
+            &mut diagnostics,
+        ) {
+            return Err(diagnostics.error(error, "START"));
+        }
         let mut summary = ScanSummary {
             width: 0,
             height: 0,
@@ -519,29 +756,67 @@ fn run_prepared_job(
             bytes: 0,
         };
         loop {
-            let b = ready(usb, 0x28, &mut synchronized, cancel, deadline)?;
-            let band = BandInfo::parse(&b, request.mode)?;
+            diagnostics.set_stage(ScanStage::ReadMetadata);
+            let b = match ready(
+                usb,
+                0x28,
+                &mut synchronized,
+                cancel,
+                deadline,
+                &mut diagnostics,
+            ) {
+                Ok(reply) => reply,
+                Err(error) => return Err(diagnostics.error(error, "READ metadata")),
+            };
+            let band = match BandInfo::parse(&b, request.mode) {
+                Ok(band) => band,
+                Err(error) => return Err(diagnostics.error(error, "READ metadata response")),
+            };
             if summary.bands >= 4096
-                || summary.bytes + band.length > 256 * 1024 * 1024
+                || summary
+                    .bytes
+                    .checked_add(band.length)
+                    .is_none_or(|bytes| bytes > 256 * 1024 * 1024)
                 || (summary.width != 0 && summary.width != band.width as u32)
             {
-                return Err(invalid(
-                    "Image exceeds job limits or changes width between bands",
+                return Err(diagnostics.error(
+                    invalid("Image exceeds job limits or changes width between bands"),
+                    "band limits",
                 ));
             }
             synchronized = false;
-            usb.write(&[0x1b, 0xa8, 0x29, 0])?;
-            let raw = read_image_band(usb, band.length, cancel, deadline, &mut synchronized)?;
-            let pixels = band.decode(&raw, request.mode, caps.line_order)?;
-            summary.width = band.width as u32;
-            summary.height = summary
+            diagnostics.set_stage(ScanStage::ReadImage);
+            diagnostics.set_opcode(0x29);
+            if let Err(error) = usb.write(&[0x1b, 0xa8, 0x29, 0]) {
+                return Err(diagnostics.error(error, "READ image"));
+            }
+            let raw = match read_image_band(
+                usb,
+                band.length,
+                cancel,
+                deadline,
+                &mut synchronized,
+                &mut diagnostics,
+            ) {
+                Ok(raw) => raw,
+                Err(error) => return Err(error),
+            };
+            diagnostics.set_stage(ScanStage::Decode);
+            let pixels = match band.decode(&raw, request.mode, caps.line_order) {
+                Ok(pixels) => pixels,
+                Err(error) => return Err(diagnostics.error(error, "image decode")),
+            };
+            let next_height = summary
                 .height
                 .checked_add(band.rows as u32)
-                .ok_or_else(|| invalid("Image height overflow"))?;
-            summary.bands += 1;
-            summary.bytes += pixels.len();
+                .ok_or_else(|| {
+                    diagnostics.error(invalid("Image height overflow"), "image decode")
+                })?;
+            let next_bytes = summary.bytes.checked_add(pixels.len()).ok_or_else(|| {
+                diagnostics.error(invalid("Image pixel byte count overflow"), "image decode")
+            })?;
             let image = ImageBand {
-                width: summary.width,
+                width: band.width as u32,
                 rows: band.rows as u32,
                 mode: request.mode,
                 pixels,
@@ -549,19 +824,48 @@ fn run_prepared_job(
             };
             // A panicking consumer is never called again. The band is fully drained,
             // so the error path can safely cancel and release our reservation.
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(&image)))
-                .map_err(|_| io::Error::other("Image consumer panicked; job cancelled"))??;
-            checkpoint(cancel, deadline)?;
+            diagnostics.set_stage(ScanStage::Consumer);
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(&image))) {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => return Err(diagnostics.error(error, "image consumer")),
+                Err(_) => {
+                    return Err(diagnostics.error(
+                        io::Error::other("Image consumer panicked; job cancelled"),
+                        "image consumer",
+                    ));
+                }
+            }
+            summary.width = band.width as u32;
+            summary.height = next_height;
+            summary.bands += 1;
+            summary.bytes = next_bytes;
+            diagnostics.record_band(summary.bands, summary.bytes);
+            if let Err(error) = checkpoint(cancel, deadline) {
+                return Err(diagnostics.error(error, "after image consumer"));
+            }
             if band.final_band {
                 return Ok(summary);
             }
         }
     })();
-    let cleanup = finish(usb, result.is_err(), &mut synchronized);
+    let cleanup_attempted = synchronized;
+    diagnostics.set_stage(ScanStage::Cleanup);
+    let cleanup = finish(usb, result.is_err(), &mut synchronized, &mut diagnostics);
+    let cleanup = cleanup.map_err(|error| diagnostics.error(error, "cleanup"));
     match (result, cleanup) {
         (Ok(summary), Ok(())) => Ok(summary),
         (Err(e), Ok(())) | (Ok(_), Err(e)) => Err(e),
-        (Err(e), Err(cleanup)) => Err(io::Error::new(e.kind(), format!("{e}; {cleanup}"))),
+        (Err(e), Err(cleanup)) => {
+            let suffix = if cleanup_attempted {
+                "cleanup secondary error"
+            } else {
+                "cleanup skipped"
+            };
+            Err(io::Error::new(
+                e.kind(),
+                format!("{e}; {suffix}: {cleanup}"),
+            ))
+        }
     }
 }
 
@@ -672,6 +976,45 @@ mod tests {
             Ok(next.len())
         }
     }
+    struct InjectedReadFailure {
+        inner: Synthetic,
+        read_calls: usize,
+        fail_call: usize,
+    }
+    impl Transport for InjectedReadFailure {
+        fn write(&mut self, b: &[u8]) -> io::Result<()> {
+            self.inner.write(b)
+        }
+        fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+            self.read_calls += 1;
+            if self.read_calls == self.fail_call {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "synthetic WinUSB error code=0xC0000001",
+                ));
+            }
+            self.inner.read(b)
+        }
+    }
+    struct BusyThenCancel<'a> {
+        inner: Synthetic,
+        cancel: &'a AtomicBool,
+        read_calls: usize,
+        cancel_on_read: usize,
+    }
+    impl Transport for BusyThenCancel<'_> {
+        fn write(&mut self, b: &[u8]) -> io::Result<()> {
+            self.inner.write(b)
+        }
+        fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+            self.read_calls += 1;
+            let count = self.inner.read(b)?;
+            if self.read_calls == self.cancel_on_read {
+                self.cancel.store(true, Ordering::Relaxed);
+            }
+            Ok(count)
+        }
+    }
     fn synthetic() -> Synthetic {
         let mut inquiry = vec![0; 70];
         inquiry[..4].copy_from_slice(&[0xa8, 0, 67, 0x10]);
@@ -735,6 +1078,129 @@ mod tests {
         assert_eq!(usb.writes, [0x12, 0x16, 0x24, 0x31, 0x28, 0x29, 0x06, 0x17]);
     }
     #[test]
+    fn read_failure_reports_stage_progress_and_original_transport_text() {
+        let mut inner = synthetic();
+        inner.replies[5] = vec![0x11; 7];
+        let mut usb = InjectedReadFailure {
+            inner,
+            read_calls: 0,
+            fail_call: 7,
+        };
+        let error = run_job(
+            &mut usb,
+            request(),
+            &AtomicBool::new(false),
+            &mut |_| Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotConnected);
+        let text = error.to_string();
+        assert!(text.contains("stage=read-image"), "{text}");
+        assert!(text.contains("received=7/18"), "{text}");
+        assert!(text.contains("since_progress_ms="), "{text}");
+        assert!(
+            text.contains("synthetic WinUSB error code=0xC0000001"),
+            "{text}"
+        );
+        assert!(text.contains("completed_bands=0"), "{text}");
+        assert!(text.contains("pixel_bytes=0"), "{text}");
+        assert_eq!(usb.inner.writes, [0x12, 0x16, 0x24, 0x31, 0x28, 0x29]);
+    }
+    #[test]
+    fn busy_then_cancel_reports_status_opcode_and_unknown_state() {
+        let cancel = AtomicBool::new(false);
+        let mut inner = synthetic();
+        inner.replies[1][1] = 8;
+        let mut usb = BusyThenCancel {
+            inner,
+            cancel: &cancel,
+            read_calls: 0,
+            cancel_on_read: 2,
+        };
+        let error = run_job(&mut usb, request(), &cancel, &mut |_| Ok(())).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        let text = error.to_string();
+        assert!(text.contains("Scan cancelled"), "{text}");
+        assert!(text.contains("opcode=0x16"), "{text}");
+        assert!(text.contains("last_busy_status=0x08"), "{text}");
+        assert!(text.contains("last_busy_state=unknown"), "{text}");
+        assert!(text.contains("busy_replies=1"), "{text}");
+        assert_eq!(usb.inner.writes, [0x12, 0x16]);
+    }
+    #[test]
+    fn busy_history_is_reset_before_the_next_command_failure() {
+        let cancel = AtomicBool::new(false);
+        let mut inner = synthetic();
+        let mut busy = reply(0);
+        busy[1] = 8;
+        inner.replies.insert(1, busy);
+        inner.replies[3] = vec![];
+        let mut usb = inner;
+        let error = run_job(&mut usb, request(), &cancel, &mut |_| Ok(())).unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("stage=set-window"), "{text}");
+        assert!(text.contains("opcode=0x24"), "{text}");
+        assert!(text.contains("last_busy_status=unknown"), "{text}");
+        assert!(text.contains("last_busy_state=unknown"), "{text}");
+        assert!(text.contains("busy_replies=0"), "{text}");
+        assert_eq!(usb.writes, [0x12, 0x16, 0x16, 0x24]);
+    }
+    #[test]
+    fn check_state_uses_command_specific_offsets_before_cancellation() {
+        for (opcode, offset) in [(0x16, 4usize), (0x28, 12usize)] {
+            let cancel = AtomicBool::new(false);
+            let mut busy = reply(0x20);
+            busy[1] = 2;
+            busy[offset..offset + 2].copy_from_slice(&0x0080u16.to_be_bytes());
+            let mut usb = BusyThenCancel {
+                inner: Synthetic {
+                    replies: [busy].into(),
+                    writes: vec![],
+                },
+                cancel: &cancel,
+                read_calls: 0,
+                cancel_on_read: 1,
+            };
+            let mut synchronized = false;
+            let mut diagnostics = ScanDiagnostics::new();
+            let error = ready(
+                &mut usb,
+                opcode,
+                &mut synchronized,
+                &cancel,
+                Instant::now() + Duration::from_secs(1),
+                &mut diagnostics,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+            assert_eq!(diagnostics.opcode, Some(opcode));
+            assert_eq!(diagnostics.busy_replies, 1);
+            assert_eq!(diagnostics.last_busy_status, Some(0x02));
+            assert_eq!(diagnostics.last_busy_state, Some(0x0080));
+        }
+    }
+    #[test]
+    fn consumer_failure_keeps_primary_stage_and_marks_cleanup_secondary() {
+        let mut usb = synthetic();
+        usb.replies[6][1] = 8;
+        let error = run_job(&mut usb, request(), &AtomicBool::new(false), &mut |_| {
+            Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "consumer output code=0xC0000002",
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        let text = error.to_string();
+        assert!(text.contains("stage=consumer"), "{text}");
+        assert!(text.contains("consumer output code=0xC0000002"), "{text}");
+        assert!(text.contains("completed_bands=0"), "{text}");
+        assert!(text.contains("pixel_bytes=0"), "{text}");
+        assert!(text.contains("cleanup secondary error"), "{text}");
+        assert!(text.contains("stage=cleanup"), "{text}");
+        assert_eq!(usb.writes, [0x12, 0x16, 0x24, 0x31, 0x28, 0x29, 0x06, 0x17]);
+    }
+    #[test]
     fn pre_cancelled_job_never_touches_device() {
         let mut usb = synthetic();
         assert!(
@@ -774,6 +1240,7 @@ mod tests {
                 writes: vec![],
             };
             let mut synchronized = false;
+            let mut diagnostics = ScanDiagnostics::new();
             let deadline = if cancelled {
                 Instant::now() + Duration::from_secs(1)
             } else {
@@ -785,6 +1252,7 @@ mod tests {
                 &AtomicBool::new(cancelled),
                 deadline,
                 &mut synchronized,
+                &mut diagnostics,
             )
             .unwrap_err();
             assert_eq!(
@@ -803,13 +1271,15 @@ mod tests {
             writes: vec![],
         };
         let mut synchronized = false;
+        let mut diagnostics = ScanDiagnostics::new();
         assert!(
             read_image_band(
                 &mut usb,
                 2,
                 &AtomicBool::new(false),
                 Instant::now() + Duration::from_secs(1),
-                &mut synchronized
+                &mut synchronized,
+                &mut diagnostics,
             )
             .is_err()
         );
@@ -834,12 +1304,14 @@ mod tests {
         }
         let mut usb = FailedRead(0);
         let mut synchronized = false;
+        let mut diagnostics = ScanDiagnostics::new();
         let error = read_image_band(
             &mut usb,
             18,
             &AtomicBool::new(true),
             Instant::now() + Duration::from_secs(1),
             &mut synchronized,
+            &mut diagnostics,
         )
         .unwrap_err();
         assert_eq!(usb.0, 1);
@@ -893,6 +1365,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(error.to_string().contains("Evidence disk full"));
+        assert!(error.to_string().contains("stage=prepare"));
         assert_eq!(usb.writes, [0x12]);
     }
     #[test]
@@ -935,6 +1408,11 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        let text = error.to_string();
+        assert!(text.contains("Scan cancelled"), "{text}");
+        assert!(text.contains("stage=consumer"), "{text}");
+        assert!(text.contains("completed_bands=1"), "{text}");
+        assert!(text.contains("pixel_bytes=2"), "{text}");
         assert_eq!(&usb.writes[6..], [0x06, 0x17]);
     }
     #[test]
@@ -994,7 +1472,48 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("changes width"));
+        assert!(error.to_string().contains("stage=read-metadata"));
         assert_eq!(&usb.writes[7..], [0x06, 0x17]);
+    }
+    #[test]
+    fn malformed_reply_diagnostic_reports_lengths_without_payload_bytes() {
+        let mut usb = synthetic();
+        let mut malformed = vec![0; 32];
+        malformed[..4].copy_from_slice(&[0xa8, 0, 31, 0x10]);
+        malformed[12..16].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        usb.replies[0] = malformed;
+        let error = run_job(
+            &mut usb,
+            request(),
+            &AtomicBool::new(false),
+            &mut |_| Ok(()),
+        )
+        .unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("stage=inquiry"), "{text}");
+        assert!(text.contains("received=32"), "{text}");
+        assert!(text.contains("expected"), "{text}");
+        assert!(!text.contains("de, ad, be, ef"), "{text}");
+        assert!(usb.writes == [0x12]);
+    }
+    #[test]
+    fn short_malformed_replies_never_panic_in_diagnostics() {
+        for malformed in [vec![], vec![0xa8], vec![0xa8, 0]] {
+            let mut usb = synthetic();
+            usb.replies[0] = malformed;
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_job(
+                    &mut usb,
+                    request(),
+                    &AtomicBool::new(false),
+                    &mut |_| Ok(()),
+                )
+            }));
+            assert!(outcome.is_ok());
+            let error = outcome.unwrap().unwrap_err();
+            assert!(error.to_string().contains("stage=inquiry"));
+            assert_eq!(usb.writes, [0x12]);
+        }
     }
     #[test]
     fn framing_and_status_do_not_treat_unknown_device_errors_as_success() {

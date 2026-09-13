@@ -20,6 +20,7 @@
 - 新核心功能採 TDD，先驗證測試會失敗，再實作。模擬封包須明示為合成資料，實機資料須記錄取得方式。
 - 每次交付執行 `cargo fmt --all -- --check`、`cargo clippy --offline --all-targets -- -D warnings`、`cargo test --offline`、`cargo build --offline --release`。新增依賴後先完成抓取再離線驗證。
 - 掃描改動另跑 `cargo test --offline --example capture_scan` 與 `cargo build --offline --release --example capture_scan`。此範例帶新目錄、模式及 DPI 會啟動掃描，不帶參數只顯示說明。成功必須有 `complete.txt`，私人 USB 影像僅存 `artifacts/`。
+- `examples/scan_stability.rs` 在同一程序連續測試 600 dpi 彩色與對照模式，不保存影像，任一錯誤即停止。修改後另跑 `cargo test --offline --example scan_stability` 與 `cargo build --offline --release --example scan_stability`；傳入新目錄才會操作硬體。20 次完成標記及外部記憶體量測只是可靠性證據，不能替代文件品質、WIA 或斷線復原驗收。
 - `examples/winusb_setup.rs` 是開發機配對工具。更動後另跑 `cargo test --offline --example winusb_setup` 與 `cargo build --offline --release --example winusb_setup`。不帶參數僅預檢，帶 `--install-mi00` 才會修改系統，執行前須依 `driver/README.md` 核對授權、備份與復原範圍。
 - 硬體存取改動另執行實機測試。掃描交付須保留匿名化測試紀錄與實際影像檢查結果，不把測試樣本、序號或使用者文件提交到 Git。
 - 每次修改先讀取檔案，使用原文比對的補丁。整檔工具改寫前確認內容雜湊沒有變動，遇到其他人的變更先重新檢查。

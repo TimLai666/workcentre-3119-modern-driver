@@ -9,6 +9,14 @@ Blocked by：02 的掃描契約。Status：進行中，開發機 MI_00 WinUSB �
 
 開發機配對工具是單一 devnode 的驗證工具，不是上述模型套件或正式交付物。
 
+## 已查證的整合限制
+
+2026-09-13，查核本機 Windows SDK 10.0.26100.0 的 `stiusd.h`、`wiamindr_lh.h`、`wia_lh.h` 與 `C:\Windows\INF\sti.inf`。標準 `STI.USBSection.Services` 會指定 `usbscan.sys`；目前 MI_00 使用 WinUSB，因此不能直接把標準 STI USB 安裝段加入既有 INF 並假設傳輸方式不變。[Microsoft WIA INF 規則](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/inf-files-for-wia-devices)
+
+WIA 2.0 的 IStream 傳輸路徑不呼叫 `drvWriteItemProperties`，硬體設定須在 `drvAcquireItemData` 中套用；同一時間只允許一條作用中串流。後續契約測試須涵蓋設定到實際掃描、串流寫入失敗、取消及重掃，不能只驗證 COM 介面可建立。[Microsoft IStream 傳輸契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/istream-data-transfer-driver-changes)
+
+尚待驗證：保留 WinUSB 時 WIA 的裝置發現／minidriver 載入方式，以及 WIA 服務帳號能否存取該介面。先以不修改系統的契約測試及唯讀列舉縮小問題；需要 COM／INF 登錄或切換 MI_00 時，再提出具體可復原方案取得授權。本次未變更綁定、COM 或登錄。
+
 ## 驗收
 
 - 先驗證 WIA COM、STI 登錄與 USB 存取權的整合方式，再固定正式 INF。不得只把 WinUSB 成功當作 WIA 完成。
