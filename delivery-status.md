@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-2026-09-13：已完成 64／256 KiB 實機讀取對照，呼叫次數減少但影像讀取時間沒有縮短，維持 64 KiB 與 100 ms 預設。完整驅動的持續目標已啟用，接續異常復原及 WIA。既有兩次自然逾時根因尚未確認，20 次穩定性驗收未通過。文件品質、正式套件及列印仍未完成。
+2026-09-13：BMP 串流編碼已接入真實掃描，灰階／彩色全樣本核對及取消後重掃通過。接續 WIA 設定映射、原生串流及 COM 元件。完整驅動的持續目標維持啟用，既有兩次自然逾時、20 次穩定性、文件品質、正式套件及列印仍未完成。
 
 ## Stage Objective
 
@@ -24,7 +24,7 @@
 | 01 | 唯讀診斷完整情境 | 開發者 | in_progress | 本機問題碼 28 可重現，硬體異常情境未全部驗證 |
 | 02 | 第一張實機掃描 | 開發者 | in_progress | 空平台灰階／彩色及獨立像素比對成功；文件、色彩及精確幾何待驗收 |
 | 03 | 取消與復原 | 開發者 | in_progress | 連續工作前 4 次成功，第 5 次 RGB600 自然逾時，清理後 Gray75 成功；20 次驗收與失同步復原未完成 |
-| 05 | Windows 掃描與安裝 | 開發者 | in_progress | 本機開發配對成功；完整套件、復原、WIA 與跨電腦／換孔未驗證 |
+| 05 | Windows 掃描與安裝 | 開發者 | in_progress | 本機配對及 BMP 串流像素驗證成功；完整套件、原生 WIA、復原與跨電腦／換孔未驗證 |
 | 06 | 列印 | 開發者 | not_started | 尚無 |
 | 07 | 掃描明暗品質 | 開發者 | blocked | 已有空平台影像，缺少可對照原稿；歷史偏白仍未重現 |
 
@@ -39,7 +39,7 @@
 
 ## Next Verifiable Output
 
-先完成可離線測試的 WIA 掃描設定／串流契約，依已查核的 COM 介面實作尚不登錄系統的 Rust 元件。WinUSB 共存及服務帳號存取仍需整合驗證。跨工作隔離依 03 補完，不以介面到達時間戳記當成實體重插證據。準備具體安裝、備份及復原方案後，才提出必要的系統變更授權。平台有文件後補做 02／07 品質對照。
+沿用已完成的 BMP 與掃描 callback，完成 WIA 設定映射、原生 IStream 轉接及 COM 生命週期的離線測試，讓有效設定能連到真實掃描，不先登錄系統。WinUSB 共存、服務帳號存取及 Windows 掃描消費 BMP 仍需整合驗證。跨工作隔離依 03 補完，不以介面到達時間戳記當成實體重插證據。準備具體安裝、備份及復原方案後，才提出必要的系統變更授權。平台有文件後補做 02／07 品質對照。
 
 ## Next Ticket
 
@@ -62,6 +62,10 @@
 | 建立持續完成完整驅動的目標 | 使用者要求逐步完成實作、驗證與推送，需要使用者介入時提出具體需求，可獨立工作繼續推進 | 2026-09-13 | 01、02、03、05、06、07 |
 
 ## Verified
+
+BMP 串流版本：88 個 all-targets 測試、一般測試含 doc-tests、格式、Clippy（warnings 為錯誤）、核心及全部範例 release 建置通過。新增核心先取得失敗測試再實作，補測部分寫入後 Interrupted 不重試、尺寸／資源上限、取消與釋放失敗不完成影像。Luna 獨立對抗審查及根代理完整差異檢查未發現新增 confirmed P1／P2；最終 `src/bitmap.rs` SHA256 `B61D1232AAA574215C3514EEE3FA330205844FAF27629F1D004BF1D4C875FF4E`。
+
+實機 Gray75、RGB300 及取消後 Gray75 全部通過 USB／像素／BMP／PGM 或 PPM 的獨立全樣本比對。RGB75 第一塊後取消回傳失敗，不產生成功標記。Windows GDI+ 能開啟前兩張 BMP，另核對各九個樣本；灰階及彩色影像實際檢視仍為空平台，未驗收文件品質。這些結果沒有證明 Windows 掃描可用、偏白已修復或 600 dpi 穩定性通過。不同測試建置的雜湊與證據見 [BMP 實機紀錄](docs/hardware.md#bmp-串流實機驗證)。WIA automation 唯讀列舉為 0 台，沒有登錄 COM 或變更系統綁定。
 
 傳輸緩衝區版本：70 個 all-targets 測試、一般測試含 doc-tests、格式、Clippy（warnings 為錯誤）、核心及全部範例 release 建置通過。新增上限、短讀、尾塊、取消排空及參數測試，依 TDD 先失敗再實作核心功能。獨立審查後將公開掃描入口合併至同一預檢路徑，超限失敗亦保留要求大小及回報上限。實機 64／256 KiB 各一次 RGB600 成功，最終版 Gray75 重掃及獨立逐像素對照成功，見 [硬體紀錄](docs/hardware.md#64-kib-與-256-kib-影像讀取對照)。沒有調整掃描預設值或宣稱故障／品質已修復。
 
@@ -136,8 +140,9 @@ Diff Inspector：本輪範圍符合診斷及可靠性調查，根代理已審查
 | [src/windows.rs](src/windows.rs) | Windows 唯讀裝置與驅動查詢 |
 | [src/usb.rs](src/usb.rs) | WinUSB 裝置核對、端點／讀取上限查詢及單次 INQUIRY |
 | [src/protocol.rs](src/protocol.rs) | 能力回覆框架驗證與欄位解析 |
+| [src/bitmap.rs](src/bitmap.rs) | 逐列 BMP 編碼、格式／尺寸驗證、部分寫入與失敗處理 |
 | [src/scan.rs](src/scan.rs) | 掃描工作、影像解碼、有限排空、階段／Busy 診斷與效能量測，開發用 READ 間隔及緩衝區實驗，共用上限預檢 |
-| [examples/capture_scan.rs](examples/capture_scan.rs) | 私人實機證據擷取、定時／塊後取消與完成標記 |
+| [examples/capture_scan.rs](examples/capture_scan.rs) | 私人實機證據擷取、定時／塊後取消、BMP 串流與完成標記 |
 | [examples/scan_stability.rs](examples/scan_stability.rs) | 同程序連續掃描、獨立像素核對、成功／失敗 profile 及有限範圍的 READ 間隔／緩衝區參數，任一失敗即停止 |
 | [src/main.rs](src/main.rs) | 繁體中文 doctor 與 inquiry 指令 |
 | [tests/device.rs](tests/device.rs) | 裝置與狀態測試 |
@@ -160,7 +165,7 @@ Diff Inspector：本輪範圍符合診斷及可靠性調查，根代理已審查
 
 ## Actions
 
-本次只執行掃描、取消、唯讀診斷及建置驗證，未新增系統安裝或登錄變更。原始影像與裝置證據保留在 Git 排除的 `artifacts/`。
+本次執行掃描、取消、取消後重掃、唯讀診斷與 WIA automation 列舉，以及建置驗證，未新增系統安裝或登錄變更。原始影像、BMP 及裝置證據保留在 Git 排除的 `artifacts/`。必要提交依既有授權推送 `origin/main`，BMP 版本識別以 Git 紀錄為準。
 
 前次掃描核心已提交並推送至 `origin/main`，commit `1bed8448b07175f59a630c8172dc8a79cc72f401`，當時已核對遠端相符。後續有限排空版本為 `8092ee9eba01c8c2bd542c46da6c28ecf590761f`；本輪診斷與連續掃描驗證的提交識別由 Git 記錄。
 

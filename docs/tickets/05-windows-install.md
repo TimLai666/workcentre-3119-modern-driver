@@ -17,7 +17,9 @@ WIA 2.0 的 IStream 傳輸路徑不呼叫 `drvWriteItemProperties`，硬體設�
 
 尚待驗證：保留 WinUSB 時 WIA 的裝置發現／minidriver 載入方式，以及 WIA 服務帳號能否存取該介面。先以不修改系統的契約測試及唯讀列舉縮小問題；需要 COM／INF 登錄或切換 MI_00 時，再提出具體可復原方案取得授權。本次未變更綁定、COM 或登錄。
 
-下一個可獨立實作的項目是 Rust WIA 轉接元件的設定及串流契約。WIA minidriver 須支援 `IUnknown`、`IStiUSD`、`IWiaMiniDrv`，本機 SDK 標頭已有介面宣告，目前 Cargo 尚未產生 COM DLL。先驗證設定映射、串流部分寫入／錯誤、取消與工作釋放，再補 DLL 介面與生命週期測試。WIA2 串流只保證 `Write`、`Seek`、`SetSize`，不得依賴呼叫端提供完整檔案功能。[Microsoft WIA 介面](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-minidriver-interfaces)、[COM 識別契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-a-com-interface)、[IStream 契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/istream-data-transfer-driver-changes)
+Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 callback，部分寫入、錯誤、取消及工作釋放已有離線測試與部分實機證據。WIA 2.0 裝置的預設傳輸格式須為 BMP，但完成 BMP 編碼不等於完成 WIA 傳輸。[Microsoft WIA 格式屬性](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ipa-format)
+
+接續實作 Rust WIA 轉接元件的設定映射及原生 IStream 契約。WIA minidriver 須支援 `IUnknown`、`IStiUSD`、`IWiaMiniDrv`，本機 SDK 標頭已有介面宣告，目前 Cargo 尚未產生 COM DLL。設定必須連到實際掃描，再補 DLL 介面與生命週期測試。WIA2 串流只保證 `Write`、`Seek`、`SetSize`，不得依賴呼叫端提供完整檔案功能。BMP 的 `finish` 成功後位置為 byte 2，WIA 轉接須驗證呼叫端需要的定位及影像消費行為。[Microsoft WIA 介面](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-minidriver-interfaces)、[COM 識別契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-a-com-interface)、[IStream 契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/istream-data-transfer-driver-changes)
 
 本機 `sc.exe qc stisvc` 確認 WIA 服務帳號為 `NT Authority\LocalService`。一般使用者的 Rust 掃描成功不證明該服務帳號也能開啟 WinUSB。第一階段開發不登錄 COM、不修改服務或 USB 權限，也不把離線契約測試當成 Windows 掃描驗收。
 
@@ -38,6 +40,8 @@ WIA 2.0 的 IStream 傳輸路徑不呼叫 `drvWriteItemProperties`，硬體設�
 - 在安全設定維持啟用的 Windows 11 x64 驗證簽署套件。簽署、付費與對外送審先取得明確授權。
 
 ## 測試
+
+2026-09-13，BMP 元件 16 個測試與掃描整合 2 個測試通過，涵蓋灰階色盤、RGB 排列、行序／填補、尺寸及資料量、有限資源、部分寫入後失敗、Interrupted 不重試、取消與 RELEASE 失敗不完成影像。全部 88 個 all-targets 測試、一般測試含 doc-tests、Clippy、格式與 release 建置通過。Gray75、RGB300 與取消後 Gray75 的 USB／像素／BMP／PNM 獨立核對相同，Windows GDI+ 開啟前兩張成功；仍未驗證 Windows 掃描、原生 IStream 轉接或文件品質。詳見 [BMP 實機紀錄](../hardware.md#bmp-串流實機驗證)。
 
 WIA 呼叫契約測試、第二台乾淨 Windows 11 x64 電腦的模型套件安裝、Windows 掃描實機驗證、換孔／拔插／重開機後掃描及復原測試。系統變更與測試副作用記錄於實機驗收資料；不得以開發機單一 devnode 的配對結果替代跨電腦驗收。
 

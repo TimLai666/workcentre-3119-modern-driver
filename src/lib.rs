@@ -2,6 +2,7 @@
 //!
 //! Transport readiness does not imply that scanning or WIA integration works.
 
+pub mod bitmap;
 pub mod protocol;
 pub mod scan;
 

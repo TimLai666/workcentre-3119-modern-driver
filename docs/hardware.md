@@ -110,6 +110,29 @@ ABORT／RELEASE 沒有回報失敗，隨後 Gray75 又完整成功（648×871，
 
 實機證據在 `artifacts/profile-read100-20260913-e/`、`artifacts/profile-read500-20260913-e/`、`artifacts/profile-read500-reverse-20260913-e/` 與 `artifacts/profile-read100-reverse-20260913-e/`，彙整於 `artifacts/profile-comparison-20260913-e.json`。測試 `scan_stability.exe` SHA256 為 `7E56EF81CEA7FB688ED0B1D4440F6F89838402394DA168D94E40002FA1F26981`，其來源後續僅做格式整理。測試後 `doctor` 父裝置、MI_00、MI_01 問題碼皆為 0、started=true。這四次沒有重現故障，不能取代同一程序 20 次驗收，也沒有高解析度故障修復或跨機型加速的證據。
 
+## WIA 裝置列舉
+
+2026-09-13，在目前 WinUSB 配對狀態下，PowerShell 建立 `WIA.DeviceManager` automation COM 物件，讀取 `DeviceInfos.Count` 為 0，查詢後釋放 COM 物件。這是 WIA automation 的唯讀觀察，尚未透過 Rust `IWiaDevMgr2` 或 Windows 掃描執行影像傳輸。沒有登錄自訂 COM 驅動、安裝套件或手動變更 WIA 服務。此前 `doctor` 的父裝置、MI_00、MI_01 均為問題碼 0、started=true。
+
+## BMP 串流實機驗證
+
+2026-09-13，開發擷取範例將同一次掃描的影像塊送入 Rust `BmpEncoder`，同步保留 USB 原文、解碼像素及 PGM／PPM 作獨立核對。平台仍沒有文件。
+
+| 測試 | 實際像素 | 塊數 | 像素 bytes | 秒數 | 結果 |
+| --- | --- | --- | --- | --- | --- |
+| Gray75 | 648×871 | 1 | 564408 | 7.246 | BMP 及完成標記成功 |
+| RGB300 | 2556×3476 | 29 | 26653968 | 29.931 | BMP 及完成標記成功，含尾塊 116 列 |
+| RGB75 第一塊後取消 | 648×474 部分資料 | 1 | 921456 | 不作效能量測 | 結束碼 1，BMP 未完成，沒有完成標記 |
+| 取消後最終版 Gray75 | 648×871 | 1 | 564408 | 7.200 | 未重插即重掃成功 |
+
+以獨立 Python/Pillow 核對三張成功影像的全部 USB 有效樣本、解碼像素、BMP 解碼結果及 PGM／PPM 完全相同。另檢查標頭尺寸、負高度、每列四位元組填補及填補值為零。Windows GDI+ 成功開啟前兩張 BMP，核對尺寸及各九個位置的通道值相同；這不是 Windows 掃描的 WIA 傳輸驗收。最終灰階及 RGB300 另轉成 PNG 實際檢視，為白色空平台與少量細點，不能驗收文件明暗、色彩或實體上下方向。
+
+前面三次使用 `capture_scan.exe` SHA256 `1B07D99533302B7A15A69B64209D94A83EB13243C208F2BADA26F8ADD53B58A9`；取消後重掃使用最終版 `A76A88E7AB32F2B998C6DEE48C5111C762330D373C04F923485D37B0B82D8E9E`。兩個建置的實機證據分開保留，不把重新建置當成重跑前三次測試。最終 `src/bitmap.rs` SHA256 為 `B61D1232AAA574215C3514EEE3FA330205844FAF27629F1D004BF1D4C875FF4E`。
+
+私人證據依序存於 `artifacts/bmp-gray75-20260913-g/`、`artifacts/bmp-rgb300-20260913-g/`、`artifacts/bmp-cancel-rgb75-20260913-g/`、`artifacts/bmp-final-after-cancel-gray75-20260913-g/`，獨立核對程式為 `artifacts/verify-bitmap-20260913-g.py`。實機取消時已寫出部分 BMP，但簽名未完成，`complete.txt` 不存在。任何 API 錯誤仍須棄置結果，不能用簽名判斷是否成功。
+
+測試後 `doctor` 父裝置、MI_00、MI_01 問題碼皆為 0、started=true。沒有重新安裝、實體重插或修改系統設定。這次沒有重跑 600 dpi 穩定性驗收，也沒有修復此前兩次自然逾時。
+
 ## 64 KiB 與 256 KiB 影像讀取對照
 
 2026-09-13，以同一個 release 執行檔各掃描一次全平台 RGB600，READ Busy 間隔固定 100 ms。WinUSB bulk IN 當下回報 `MAXIMUM_TRANSFER_SIZE=2097152` bytes，端點封包為 512 bytes。兩次都是 5100×6961、117 塊、106503300 像素 bytes，逐塊獨立核對 wire／pixels 成功，並產生 `complete.txt`。

@@ -44,7 +44,7 @@ cargo run --offline --release --example capture_scan -- artifacts/my-scan gray 7
 
 可選 `gray`／`rgb`，解析度接受 75、100、150、200、300、600，並以機器當次回報再次限制。已實機驗證的組合見 [硬體紀錄](docs/hardware.md)，不能把可接受參數都當成已驗證。加 `--cancel-after-band` 可測第一塊傳輸後取消，或用 `--cancel-after-ms N` 在 1–120000 毫秒後提出取消；兩者不可同時使用。取消預期回傳失敗且不產生完成標記。詳見範例的 `--help`。
 
-目錄保存 USB 原文、解碼像素及 PGM／PPM；只有掃描釋放與檔案同步成功才有 `complete.txt`，其餘目錄視為中斷資料。影像依 READ 實際尺寸保存，沒有自動提亮、gamma、裁切或幾何補償。檔案可能包含私人文件，`artifacts/` 不提交至 Git。這是開發驗證範例，Windows 掃描尚不能使用此核心。
+目錄保存 USB 原文、解碼像素、PGM／PPM 及分塊產生的 `image.bmp`，供獨立格式比對。只有掃描釋放與檔案同步成功才有 `complete.txt`，其餘目錄視為中斷資料。影像依 READ 實際尺寸保存，沒有自動提亮、gamma、裁切或幾何補償。BMP 只改 RGB 通道排列及每列補齊，不改樣本值。檔案可能包含私人文件，`artifacts/` 不提交至 Git。這是開發驗證範例，Windows 掃描尚不能使用此核心。
 
 ## 開發用連續掃描驗證
 

@@ -66,6 +66,14 @@ USB API 回傳錯誤可能已消耗未知長度，不能沿用舊的剩餘數量
 
 `examples/scan_stability.rs` 用同一程序反覆呼叫核心，每次獨立取得當下能力及 USB session，藉此驗證多次工作後的釋放與模式切換。逐塊以獨立索引核對 wire／pixels，但只保存無影像的進度與結果，外部觀測程序量測記憶體。次數有上限，任何失敗即停止；不以新程序重啟或自動重試掩蓋累積狀態。可靠性驗收與仍未完成的復原條件由 [03](docs/tickets/03-recover-scan.md) 管理。
 
+### Windows 影像串流
+
+`bitmap::BmpEncoder` 將 `ImageBand` 逐列寫入新的空白 `Write + Seek` 串流。沿用掃描核心的影像 callback，輸出錯誤會經既有路徑取消及釋放裝置。只有掃描回傳成功的 `ScanSummary` 才可呼叫 `finish`，核對尺寸與資料量後完成標頭。呼叫端遇任何錯誤都不得交付成功影像，不能只看檔名或影像簽名認定成功。開發擷取範例保留中斷資料供診斷，以 `complete.txt` 區分是否完整。
+
+使用無壓縮 BMP、40-byte BITMAPINFOHEADER、負高度的由上而下行序，避免為翻轉影像而暫存整張原稿。灰階採 8-bit 與中性灰色盤，RGB 採 24-bit BGR，每列補齊四位元組。保留裝置交付的列順序，只改通道排列與填補，不套亮度、gamma、色彩描述或壓縮。原稿的實體上下方向仍待有內容的文件驗證。額外暫存限一列，尺寸及累計資料量另設上限。[Microsoft DIB 行序](https://learn.microsoft.com/en-us/windows/win32/gdi/device-independent-bitmaps)、[BMP 儲存格式](https://learn.microsoft.com/en-us/windows/win32/gdi/bitmap-storage)
+
+這是供 WIA 轉接元件使用的影像編碼，不是已完成的 WIA 驅動。未來的 IStream 轉接須正確轉換 HRESULT、部分寫入及 Seek，不能假定串流有 `Read`、`Stat` 或 `Commit`。此編碼器不依賴這些方法或 flush，檔案同步由開發擷取範例負責。`finish` 成功後串流位置在 byte 2，後續定位及交付由呼叫端管理；不是已確認的 WIA 結束位置規則。WIA 裝置發現、屬性、COM 生命週期及 Windows 掃描的 top-down BMP 相容性仍須依 [05](docs/tickets/05-windows-install.md) 驗證。[Microsoft WIA 串流規則](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/istream-data-transfer-driver-changes)
+
 ### 效能與跨機型共用
 
 使用者要求加速時維持解析度、色深、掃描範圍與品質，並讓資料緩衝、排程及影像處理能供其他機型沿用。機型命令、資料邊界及允許的並行程度仍由機型協定負責；尚未取得第二種機型作共用性驗證，不預先假定所有裝置都能並行讀取。
@@ -104,7 +112,7 @@ WIA 的亮度與對比設定由驅動維護，標準正常值皆為 0。遵循 [
 | CLI 行程 | 參數、說明、結束碼 | 不以模擬資料宣稱找到實機 |
 | 掃描工作與 USB 傳輸交界 | 封包、短讀寫、取消、長度上限、錯誤復原 | 合成資料須另有真實硬體對照 |
 | 實機端到端 | 實際文件、色彩、範圍、重掃、拔線、暖機、睡眠 | 需要已核准的驅動綁定 |
-| 掃描明暗品質 | 同一原稿逐段比較、淺灰與近白細節、亮度方向與中性值 | 目前無影像，不能宣稱偏白已修復 |
+| 掃描明暗品質 | 同一原稿逐段比較、淺灰與近白細節、亮度方向與中性值 | 目前只有空平台影像，不能宣稱偏白已修復 |
 | Windows 整合及可攜安裝 | 第二台乾淨支援 Windows 11 x64、模型套件安裝、一般使用者 WIA 掃描、換孔／拔插／重開機後重新發現、解除安裝及列印 | 開發機只驗證配對與 INQUIRY；尚無跨電腦、WIA 或換孔／拔插／重開機證據，且仍缺 catalog 與適用簽署 |
 
 不為每個內部函式另建替身。掃描、影像輸出與取消優先從公開工作介面測試，保留真實底層呼叫的整合測試。

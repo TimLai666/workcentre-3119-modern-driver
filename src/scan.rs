@@ -1285,6 +1285,81 @@ mod tests {
     }
 
     #[test]
+    fn bitmap_consumer_only_finalizes_after_successful_scanner_release() {
+        use crate::bitmap::BmpEncoder;
+        use std::io::Cursor;
+
+        for outcome in ["success", "cancel", "release-error"] {
+            let mut usb = synthetic();
+            if outcome == "cancel" {
+                usb.replies.push_back(reply(0));
+            } else if outcome == "release-error" {
+                usb.replies.pop_back();
+            }
+            let cancel = AtomicBool::new(false);
+            let mut stream = Cursor::new(Vec::new());
+            let result = (|| {
+                let mut encoder = BmpEncoder::new(&mut stream, 150, ColorMode::Gray)?;
+                let summary = run_job(&mut usb, request(), &cancel, &mut |band| {
+                    encoder.push(band)?;
+                    if outcome == "cancel" {
+                        cancel.store(true, Ordering::Relaxed);
+                    }
+                    Ok(())
+                })?;
+                assert_eq!(usb.writes.last(), Some(&0x17));
+                encoder.finish(&summary)
+            })();
+            if outcome == "success" {
+                result.unwrap();
+                assert_eq!(&stream.get_ref()[..2], b"BM");
+                assert_eq!(&stream.get_ref()[1078..], &[42, 190, 0, 0]);
+            } else {
+                assert!(result.is_err());
+                assert_ne!(&stream.get_ref()[..2], b"BM");
+                if outcome == "cancel" {
+                    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
+                    assert!(usb.writes.ends_with(&[0x06, 0x17]));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bitmap_destination_error_aborts_releases_and_preserves_original_failure() {
+        use std::io::{Cursor, Seek, SeekFrom, Write};
+        struct FailedDestination(Cursor<Vec<u8>>);
+        impl Write for FailedDestination {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(
+                    io::ErrorKind::StorageFull,
+                    "synthetic bitmap disk full",
+                ))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                panic!("Encoder must not require flush")
+            }
+        }
+        impl Seek for FailedDestination {
+            fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+                self.0.seek(position)
+            }
+        }
+        let mut stream = FailedDestination(Cursor::new(Vec::new()));
+        let mut encoder =
+            crate::bitmap::BmpEncoder::new(&mut stream, 150, ColorMode::Gray).unwrap();
+        let mut usb = synthetic();
+        usb.replies.push_back(reply(0));
+        let error = run_job(&mut usb, request(), &AtomicBool::new(false), &mut |band| {
+            encoder.push(band)
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+        assert!(error.to_string().contains("synthetic bitmap disk full"));
+        assert!(usb.writes.ends_with(&[0x06, 0x17]));
+    }
+
+    #[test]
     fn rejected_live_limit_keeps_requested_size_for_diagnostics() {
         let mut profile = ScanProfile::default();
         let error = record_read_buffer_limit(&mut profile, 262_144, 65_535).unwrap_err();

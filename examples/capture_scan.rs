@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 use workcentre_3119::{
+    bitmap::BmpEncoder,
     protocol::Capabilities,
     scan::{self, ColorMode, ScanRequest},
 };
@@ -125,11 +126,14 @@ fn capture(args: &[String]) -> io::Result<()> {
             Ok(request)
         };
         let mut raster = new_file(&directory.join("pixels.partial"))?;
+        let mut bitmap = new_file(&directory.join("image.bmp"))?;
+        let mut encoder = BmpEncoder::new(&mut bitmap, dpi, mode)?;
         let cancel = AtomicBool::new(false);
         let mut bands = 0;
         let started = std::time::Instant::now();
         let scan = || {
             scan::scan_with_evidence(&cancel, prepare, |band| {
+                encoder.push(band)?;
                 bands += 1;
                 let mut wire = new_file(&directory.join(format!("band-{bands:04}.bin")))?;
                 wire.write_all(&band.wire_data)?;
@@ -155,6 +159,8 @@ fn capture(args: &[String]) -> io::Result<()> {
             Cancellation::AfterMs(milliseconds) => run_with_timer(&cancel, milliseconds, scan)?,
             Cancellation::None | Cancellation::AfterBand => scan()?,
         };
+        encoder.finish(&summary)?;
+        bitmap.sync_all()?;
         raster.sync_all()?;
         drop(raster);
         let filename = if mode == ColorMode::Gray {
@@ -187,7 +193,7 @@ fn capture(args: &[String]) -> io::Result<()> {
         let mut marker = new_file(&directory.join("complete.txt"))?;
         writeln!(
             marker,
-            "Successfully released scanner; image={filename}; {summary:?}"
+            "Successfully released scanner; image={filename}; bitmap=image.bmp; {summary:?}"
         )?;
         marker.sync_all()?;
         eprintln!("Complete: {summary:?}");
@@ -212,6 +218,7 @@ By default no timed cancellation is requested; every scanner job still has a 120
 NEW_DIRECTORY must be new. Modes: gray or rgb. DPI: 75, 100, 150, 200, 300, or 600.\n\
 CANCEL is --cancel-after-band or --cancel-after-ms N, where N is 1..=120000; the flags are mutually exclusive.\n\
 Example: capture_scan artifacts/sample gray 75\n\
+Outputs raw bands, pixels.partial, PGM/PPM and a streaming image.bmp for format verification. BMP is finalized only after scanner release succeeds; every output requires complete.txt to be considered complete.\n\
 Exit codes: 0 for a completed capture or help, 1 for invalid arguments or a failed/cancelled capture.\n\
 Requires paired scanner MI_00. No WIA integration."
         );
