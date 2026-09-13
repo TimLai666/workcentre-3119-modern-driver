@@ -6,7 +6,7 @@ use std::{
     io::{self, Write},
     path::Path,
     sync::atomic::AtomicBool,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use workcentre_3119::{
@@ -44,6 +44,45 @@ fn settings(args: &[String]) -> io::Result<u32> {
             }
             Ok(count)
         }
+    }
+}
+
+fn capture_settings(args: &[String]) -> io::Result<(u32, Duration)> {
+    if let Some(index) = args.iter().position(|arg| arg == "--read-poll-ms") {
+        if index + 2 != args.len() {
+            return Err(invalid(
+                "--read-poll-ms must be the final option followed by 1..=1000",
+            ));
+        }
+        let milliseconds = args[index + 1]
+            .parse::<u64>()
+            .map_err(|_| invalid("--read-poll-ms requires an integer in 1..=1000"))?;
+        if !(1..=1000).contains(&milliseconds) {
+            return Err(invalid("--read-poll-ms requires an integer in 1..=1000"));
+        }
+        Ok((
+            settings(&args[..index])?,
+            Duration::from_millis(milliseconds),
+        ))
+    } else {
+        Ok((settings(args)?, Duration::from_millis(100)))
+    }
+}
+
+fn record_scan_profile<T>(
+    result: io::Result<T>,
+    output: &mut impl Write,
+    run: u32,
+    profile: &impl std::fmt::Debug,
+) -> io::Result<T> {
+    let recorded = writeln!(output, "run={run} profile={profile:?}").and_then(|_| output.flush());
+    match (result, recorded) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(log_error)) => Err(io::Error::new(
+            error.kind(),
+            format!("{error}; profile logging failed: {log_error}"),
+        )),
     }
 }
 
@@ -129,7 +168,7 @@ fn verify_band(expected_mode: ColorMode, line_order: u8, band: &ImageBand) -> io
 }
 
 fn capture(args: &[String]) -> io::Result<()> {
-    let count = settings(args)?;
+    let (count, read_poll_interval) = capture_settings(args)?;
     let directory = Path::new(&args[0]);
     // Atomic directory creation rejects every existing target before USB access.
     fs::create_dir(directory)?;
@@ -137,7 +176,8 @@ fn capture(args: &[String]) -> io::Result<()> {
     let result = (|| {
         writeln!(
             diagnostics,
-            "stability_count={count}; pattern=rgb600,rgb600,rgb300,gray600"
+            "stability_count={count}; pattern=rgb600,rgb600,rgb300,gray600; read_poll_ms={}",
+            read_poll_interval.as_millis()
         )?;
         diagnostics.sync_all()?;
 
@@ -153,7 +193,8 @@ fn capture(args: &[String]) -> io::Result<()> {
             let mut bands = 0u32;
             let mut pixel_bytes = 0usize;
             let cancel = AtomicBool::new(false);
-            let scan_result = scan::scan_with_evidence(
+            let mut profile = scan::ScanProfile::default();
+            let scan_result = scan::scan_with_profile(
                 &cancel,
                 |usb| {
                     let caps = Capabilities::parse(&usb.reply)?;
@@ -193,8 +234,12 @@ fn capture(args: &[String]) -> io::Result<()> {
                     )?;
                     diagnostics.flush()
                 },
+                &mut profile,
+                read_poll_interval,
             );
             let elapsed_ms = started.elapsed().as_millis();
+            let scan_result =
+                record_scan_profile(scan_result, &mut diagnostics, run_index, &profile);
             let run_result = match scan_result {
                 Ok(summary) => {
                     if summary.bands != bands || summary.bytes != pixel_bytes {
@@ -267,12 +312,15 @@ fn capture(args: &[String]) -> io::Result<()> {
 fn print_help() {
     println!(
         "Development-only scanner stability check. Usage:\n\
-scan_stability NEW_DIRECTORY [COUNT]\n\
+scan_stability NEW_DIRECTORY [COUNT] [--read-poll-ms N]\n\
 Runs COUNT scans in one process using rgb600, rgb600, rgb300, gray600 repeatedly.\n\
 COUNT defaults to 20 and must be an integer from 1 through 20. Example: scan_stability artifacts/stability 20\n\
+--read-poll-ms N is an experimental READ Busy interval in 1..=1000 milliseconds (default 100); it must be the final option. Example: scan_stability artifacts/poll500 1 --read-poll-ms 500\n\
+Only READ Busy polling changes. Other commands, the 120-second job deadline, image settings and transfer policy remain unchanged.\n\
 Run with no arguments or --help to show this help. Requires Windows and a paired scanner MI_00.\n\
 Each run discovers capabilities in its own scan session and scans the full reported flatbed.\n\
-Only diagnostics.log is written during runs; no image or USB band bytes are saved. complete.txt is created only after every run succeeds.\n\
+Only diagnostics.log is written during runs, including a timing profile on success or failure; no image or USB band bytes are saved. complete.txt is created only after every run succeeds.\n\
+USB call durations and Busy sleeps overlap the stage totals; do not add them together. USB call time includes device waiting and is not a pure bus-speed measurement.\n\
 The new directory and output files use create-new semantics. Existing directories, invalid arguments, scan errors, write errors, and pixel mismatches stop immediately with exit code 1.\n\
 Exit codes: 0 for all requested scans completed or help; 1 for invalid arguments or a failed stability run."
     );
@@ -313,6 +361,100 @@ mod tests {
         ] {
             assert!(settings(&args.into_iter().map(String::from).collect::<Vec<_>>()).is_err());
         }
+    }
+
+    #[test]
+    fn polling_override_is_explicit_bounded_and_keeps_default_count() {
+        assert_eq!(
+            capture_settings(&["unused".into()]).unwrap(),
+            (20, std::time::Duration::from_millis(100))
+        );
+        assert_eq!(
+            capture_settings(&[
+                "unused".into(),
+                "2".into(),
+                "--read-poll-ms".into(),
+                "500".into()
+            ])
+            .unwrap(),
+            (2, std::time::Duration::from_millis(500))
+        );
+        assert_eq!(
+            capture_settings(&["unused".into(), "--read-poll-ms".into(), "1".into()]).unwrap(),
+            (20, std::time::Duration::from_millis(1))
+        );
+        for value in ["0", "1001", "-1", "1.5", "bad"] {
+            assert!(
+                capture_settings(&[
+                    "unused".into(),
+                    "1".into(),
+                    "--read-poll-ms".into(),
+                    value.into()
+                ])
+                .is_err()
+            );
+        }
+        for args in [
+            vec!["unused", "--read-poll-ms"],
+            vec!["unused", "1", "--other", "500"],
+            vec![
+                "unused",
+                "1",
+                "--read-poll-ms",
+                "500",
+                "--read-poll-ms",
+                "100",
+            ],
+        ] {
+            assert!(
+                capture_settings(&args.into_iter().map(String::from).collect::<Vec<_>>()).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn profile_logging_preserves_scan_failure_and_rejects_incomplete_log() {
+        struct FailedOutput;
+        impl Write for FailedOutput {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "synthetic log failure",
+                ))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let error = record_scan_profile::<()>(
+            Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "synthetic cancellation",
+            )),
+            &mut FailedOutput,
+            1,
+            &"synthetic profile",
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(error.to_string().contains("synthetic cancellation"));
+        assert!(error.to_string().contains("synthetic log failure"));
+        assert_eq!(
+            record_scan_profile(Ok(()), &mut FailedOutput, 1, &"synthetic profile")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        let mut output = Vec::new();
+        assert_eq!(
+            record_scan_profile(Ok(42), &mut output, 7, &"synthetic profile").unwrap(),
+            42
+        );
+        assert!(
+            String::from_utf8(output)
+                .unwrap()
+                .contains("run=7 profile=")
+        );
     }
 
     #[test]

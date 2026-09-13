@@ -54,6 +54,10 @@ cargo run --offline --release --example scan_stability -- artifacts/stability 20
 
 會在同一程序依序重複「600 dpi 彩色、600 dpi 彩色、300 dpi 彩色、600 dpi 灰階」，每次重新取得裝置能力。次數預設 20，接受 1–20；輸出目錄必須不存在。逐塊核對 USB 資料與解碼像素，只保存進度及錯誤的 `diagnostics.log`，不保存影像。任一錯誤立即停止，所有工作成功才有 `complete.txt`。這是開發測試，不提供自動復原或 Windows 掃描整合；記憶體使用須另外從同一程序量測。詳見範例 `--help`。
 
+可在最後加 `--read-poll-ms N`，以 1–1000 毫秒測試 READ 忙碌回覆的詢問間隔，預設 100。例如 `scan_stability artifacts/poll500 1 --read-poll-ms 500`。這是單一變因的開發實驗，其他命令、120 秒工作期限、USB 政策及影像設定不變，不代表建議的加速設定。
+
+每次成功或失敗都記錄階段耗時、USB 呼叫耗時及 Busy 等待。USB／Busy 時間已包含在階段時間中，不可相加；USB 呼叫包含等待機器產生資料，不能拿它當純 USB 頻寬。呼叫端耗時在此包含獨立像素核對與寫入診斷，沒有 WIA 或影像檔案輸出。
+
 ## 完整交付目標
 
 - 真實平台掃描，依機器能力提供灰階、彩色與解析度設定。

@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-2026-09-13：RGB600 兩次自然逾時，第二次確認 READ 等候期間收到 678 次 Busy 回覆；兩次正常釋放後 Gray75 重掃皆成功。正在定位高解析度停止進度的原因，20 次穩定性驗收未通過。專案維持純驅動；文件品質、完整異常復原、WIA、正式套件及列印仍未完成。
+2026-09-13：已完成分段量測及四次 RGB600 READ 間隔對照，500 ms 沒有加速，維持原本 100 ms。既有兩次自然逾時根因尚未確認，20 次穩定性驗收未通過。下一步比較影像讀取要求長度。專案維持純驅動，文件品質、完整異常復原、WIA、正式套件及列印仍未完成。
 
 ## Stage Objective
 
@@ -39,7 +39,7 @@
 
 ## Next Verifiable Output
 
-以單一變因比較 READ Busy 輪詢時序，維持解析度、資料大小與工作期限，檢查是否仍長時間 Busy；沒有對照證據前不修改正式等待政策。已取得 Busy 次數及失敗後重掃證據，不能反推機器損壞。失同步後的跨工作隔離另外補完；平台有文件後補做 02／07 品質對照，WIA 另依 05 接續。
+先查核 WinUSB 回報的傳輸上限，再只改每次要求的影像讀取長度，比較 64 KiB 與較大的有限緩衝區能否減少整份耗時，維持像素、命令順序、取消、短讀與失同步處理。這次 READ 間隔對照沒有重現故障，不能推論機器損壞或故障已修復。失同步後的跨工作隔離另外補完，平台有文件後補做 02／07 品質對照，WIA 另依 05 接續。
 
 ## Next Ticket
 
@@ -58,8 +58,15 @@
 | 驗證後自行 commit 與 push | 使用者授權本專案必要的提交與推送，系統安裝授權分開處理 | 2026-09-13 | 01、02、03、05、06、07 |
 | 核准本機 MI_00 配對、GUID 登錄與介面重啟 | 使用者回答「好」同意具體安裝範圍，限本機已備份目標 | 2026-09-13 | 02、05 |
 | 完整套件須支援別台 Windows 電腦與不同 USB 接孔 | 使用者明確補充可攜性要求；目前僅驗證開發機配對與能力查詢 | 2026-09-13 | 05 |
+| 加速保持解析度、色深、範圍與像素品質，資料處理可供其他機型沿用 | 使用者補充效能及共用需求，先量測耗時再選擇改善位置，機型協定各自驗證 | 2026-09-13 | 02、03、07 |
 
 ## Verified
+
+四次空平台 RGB600 按 100、500、500、100 ms 間隔對照皆成功，耗時依序 92.845、106.177、102.656、95.385 秒，尺寸與像素 bytes 相同且每次完整通過 wire／pixels 核對。影像讀取約 72 秒，解碼與呼叫端合計每次不到 0.1 秒，沒有支持優先平行化影像處理或改用 500 ms 的證據。這四次是各自獨立的程序，沒有重現先前故障，也沒有驗收文件品質或 20 次穩定性。量測與限制見 [硬體紀錄](docs/hardware.md#效能分段與-read-詢問間隔對照)。
+
+最終核心及兩個掃描範例 release 建置通過，`scan_stability --help` 已核對參數、預設值與 profile 說明。格式整理後 `scan_stability.exe` SHA256 `FCBFDFD281E1EBE3626AA7C527A81C45647A3720BC69AF7D1E1C5640D643147F`，`capture_scan.exe` SHA256 `7D3ABD09B59BAEAC5C123FC35F17102436A228A5B8DC1EF54D040B0D390756C6`。四次實機測試使用格式整理前但程式行為相同的 release，識別另存於硬體紀錄，沒有把重新建置當成重跑掃描。
+
+效能量測版本：格式檢查、Clippy（all targets，warnings 為錯誤）、64 個 all-targets 測試、一般測試含 doc-tests 通過。新 profile／間隔驗證及範例參數／寫入錯誤測試先取得失敗再實作，取消期間 Busy profile 另有回歸測試。Luna 獨立審查核心與範例 diff，沒有新增 confirmed P1／P2。根代理核對 API 使用點、命令與像素路徑，以及文件一致性。核心 SHA256 `0EFF43CCD626BF7041020E591ABAB41B26CA6E2A159728F708AFA9E95767B035`，範例 SHA256 `E47E319F7329E0DD800F514E9B45BF65BA97841B189EC6F154F81E55593EF978`。原有失同步隔離與 CHECK 語義問題繼續由 03 追蹤。
 
 診斷與連續掃描工具版本：格式檢查、Clippy（all targets，warnings 為錯誤）、59 個 all-targets 測試、一般測試含 doc-tests，以及核心／兩個掃描範例 release 建置通過。階段／原始錯誤／影像進度與 Busy 歷史隔離均先取得失敗測試再實作；短框架防 panic 與 CHECK 狀態偏移另有通過的回歸測試。`scan_stability --help` 已實跑，確認次數、模式輪替、輸出及失敗行為與實作相符。最終 `scan_stability.exe` SHA256 `3C600881525979BD72C2F45E84F1DE4579FBE649DCE01C9D61FA38D01C842FD5`，`capture_scan.exe` SHA256 `C06BB5FE70370BC43515AA92C4A2BE7D28B6C2988E5FD4BBB9DE65DCF6BAED0A`。
 
@@ -124,9 +131,9 @@ Diff Inspector：本輪範圍符合診斷及可靠性調查，根代理已審查
 | [src/windows.rs](src/windows.rs) | Windows 唯讀裝置與驅動查詢 |
 | [src/usb.rs](src/usb.rs) | WinUSB 裝置核對、端點查詢及單次 INQUIRY |
 | [src/protocol.rs](src/protocol.rs) | 能力回覆框架驗證與欄位解析 |
-| [src/scan.rs](src/scan.rs) | 掃描工作、影像解碼、有限排空與階段／進度／Busy 診斷，保留原始錯誤 |
+| [src/scan.rs](src/scan.rs) | 掃描工作、影像解碼、有限排空、階段／Busy 診斷與效能量測，開發用 READ 間隔實驗，保留原始錯誤 |
 | [examples/capture_scan.rs](examples/capture_scan.rs) | 私人實機證據擷取、定時／塊後取消與完成標記 |
-| [examples/scan_stability.rs](examples/scan_stability.rs) | 同程序連續掃描、獨立像素核對及無影像診斷，任一失敗即停止 |
+| [examples/scan_stability.rs](examples/scan_stability.rs) | 同程序連續掃描、獨立像素核對、成功／失敗 profile 與有範圍限制的 READ 間隔參數，任一失敗即停止 |
 | [src/main.rs](src/main.rs) | 繁體中文 doctor 與 inquiry 指令 |
 | [tests/device.rs](tests/device.rs) | 裝置與狀態測試 |
 | [tests/cli.rs](tests/cli.rs) | CLI 行程測試 |

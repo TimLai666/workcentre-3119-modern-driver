@@ -210,6 +210,30 @@ pub struct ScanSummary {
     pub bytes: usize,
 }
 
+/// Host-observed USB API durations, including device waiting and failed calls.
+/// These overlap the stage totals; they do not measure physical bus bandwidth.
+#[derive(Debug, Default)]
+pub struct UsbProfile {
+    pub read_calls: u64,
+    pub write_calls: u64,
+    pub read_time: Duration,
+    pub write_time: Duration,
+}
+
+/// Development measurements, retained on both success and failure.
+/// Stage names match failure diagnostics. Stage times partition the job after
+/// opening USB; USB and Busy sleep times are subsets, not additional costs.
+/// Consumer time includes whatever the caller does (verification, output, etc.).
+/// This record contains no device identity or image bytes.
+#[derive(Debug, Default)]
+pub struct ScanProfile {
+    pub stages: std::collections::BTreeMap<&'static str, Duration>,
+    pub usb: UsbProfile,
+    pub busy_replies: u64,
+    pub busy_sleep: Duration,
+    pub total: Duration,
+}
+
 #[derive(Clone, Copy)]
 enum ScanStage {
     Inquiry,
@@ -250,6 +274,9 @@ struct ScanDiagnostics {
     busy_replies: u32,
     last_busy_status: Option<u8>,
     last_busy_state: Option<u16>,
+    stage_started: Instant,
+    profile: ScanProfile,
+    read_poll_interval: Duration,
 }
 
 impl ScanDiagnostics {
@@ -263,10 +290,16 @@ impl ScanDiagnostics {
             busy_replies: 0,
             last_busy_status: None,
             last_busy_state: None,
+            stage_started: Instant::now(),
+            profile: ScanProfile::default(),
+            read_poll_interval: Duration::from_millis(100),
         }
     }
 
     fn set_stage(&mut self, stage: ScanStage) {
+        let now = Instant::now();
+        *self.profile.stages.entry(self.stage.name()).or_default() += now - self.stage_started;
+        self.stage_started = now;
         self.stage = stage;
     }
 
@@ -291,6 +324,7 @@ impl ScanDiagnostics {
         }
         self.opcode = Some(opcode);
         self.busy_replies = self.busy_replies.saturating_add(1);
+        self.profile.busy_replies = self.profile.busy_replies.saturating_add(1);
         self.last_busy_status = Some(status);
         self.last_busy_state = None;
         if status == 0x02 && reply.get(3) == Some(&0x20) {
@@ -341,6 +375,28 @@ trait Transport {
     fn read(&mut self, data: &mut [u8]) -> io::Result<usize>;
 }
 
+struct TimedTransport<'a, T> {
+    inner: &'a mut T,
+    metrics: UsbProfile,
+}
+
+impl<T: Transport> Transport for TimedTransport<'_, T> {
+    fn write(&mut self, data: &[u8]) -> io::Result<()> {
+        let started = Instant::now();
+        let result = self.inner.write(data);
+        self.metrics.write_time += started.elapsed();
+        self.metrics.write_calls = self.metrics.write_calls.saturating_add(1);
+        result
+    }
+    fn read(&mut self, data: &mut [u8]) -> io::Result<usize> {
+        let started = Instant::now();
+        let result = self.inner.read(data);
+        self.metrics.read_time += started.elapsed();
+        self.metrics.read_calls = self.metrics.read_calls.saturating_add(1);
+        result
+    }
+}
+
 #[cfg(windows)]
 impl Transport for crate::usb::UsbSession {
     fn write(&mut self, b: &[u8]) -> io::Result<()> {
@@ -389,8 +445,34 @@ pub fn scan_to(
 pub fn scan_with_evidence(
     cancel: &AtomicBool,
     prepare: impl FnOnce(&crate::InquiryEvidence) -> io::Result<ScanRequest>,
-    mut sink: impl FnMut(&ImageBand) -> io::Result<()>,
+    sink: impl FnMut(&ImageBand) -> io::Result<()>,
 ) -> io::Result<ScanSummary> {
+    scan_with_profile(
+        cancel,
+        prepare,
+        sink,
+        &mut ScanProfile::default(),
+        Duration::from_millis(100),
+    )
+}
+
+/// Development-only timing and READ Busy polling experiment.
+/// `profile` is reset before validation and retained on every ordinary return.
+/// `read_poll_interval` must be between 1 and 1000 ms, inclusive; only READ
+/// metadata Busy polling uses it. Other commands retain 100 ms, and all scan
+/// settings, transfer policies and job/drain deadlines remain unchanged.
+/// Validation and pre-cancellation precede USB open. Opening time is excluded;
+/// open failures leave an empty profile. No image or identity data is recorded.
+#[cfg(windows)]
+pub fn scan_with_profile(
+    cancel: &AtomicBool,
+    prepare: impl FnOnce(&crate::InquiryEvidence) -> io::Result<ScanRequest>,
+    mut sink: impl FnMut(&ImageBand) -> io::Result<()>,
+    profile: &mut ScanProfile,
+    read_poll_interval: Duration,
+) -> io::Result<ScanSummary> {
+    *profile = ScanProfile::default();
+    validate_poll_interval(read_poll_interval)?;
     if cancel.load(Ordering::Relaxed) {
         return Err(io::Error::new(io::ErrorKind::Interrupted, "Scan cancelled"));
     }
@@ -404,10 +486,17 @@ pub fn scan_with_evidence(
         bulk_out_max_packet: usb.bulk_out_max_packet,
         reply: Vec::new(),
     };
-    run_prepared_job(&mut usb, cancel, &mut sink, |reply| {
-        evidence.reply = reply.to_vec();
-        prepare(&evidence)
-    })
+    run_prepared_job_profiled(
+        &mut usb,
+        cancel,
+        &mut sink,
+        |reply| {
+            evidence.reply = reply.to_vec();
+            prepare(&evidence)
+        },
+        profile,
+        read_poll_interval,
+    )
 }
 
 #[cfg(not(windows))]
@@ -420,6 +509,40 @@ pub fn scan_with_evidence(
         io::ErrorKind::Unsupported,
         "Scanning requires Windows",
     ))
+}
+
+#[cfg(not(windows))]
+pub fn scan_with_profile(
+    _: &AtomicBool,
+    _: impl FnOnce(&crate::InquiryEvidence) -> io::Result<ScanRequest>,
+    _: impl FnMut(&ImageBand) -> io::Result<()>,
+    profile: &mut ScanProfile,
+    read_poll_interval: Duration,
+) -> io::Result<ScanSummary> {
+    *profile = ScanProfile::default();
+    validate_poll_interval(read_poll_interval)?;
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Scanning requires Windows",
+    ))
+}
+
+fn validate_poll_interval(interval: Duration) -> io::Result<()> {
+    if !(Duration::from_millis(1)..=Duration::from_millis(1000)).contains(&interval) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "READ poll interval must be within 1..=1000 ms",
+        ));
+    }
+    Ok(())
+}
+
+fn busy_poll_interval(opcode: u8, read_interval: Duration) -> Duration {
+    if opcode == 0x28 {
+        read_interval
+    } else {
+        Duration::from_millis(100)
+    }
 }
 
 fn checkpoint(cancel: &AtomicBool, deadline: Instant) -> io::Result<()> {
@@ -496,7 +619,9 @@ fn ready(
                 diagnostics.record_busy_reply(opcode, &b, opcode == 0x28);
             }
         }
-        std::thread::sleep(Duration::from_millis(100));
+        let sleeping = Instant::now();
+        std::thread::sleep(busy_poll_interval(opcode, diagnostics.read_poll_interval));
+        diagnostics.profile.busy_sleep += sleeping.elapsed();
     }
 }
 
@@ -670,7 +795,47 @@ fn run_prepared_job(
     sink: &mut impl FnMut(&ImageBand) -> io::Result<()>,
     prepare: impl FnOnce(&[u8]) -> io::Result<ScanRequest>,
 ) -> io::Result<ScanSummary> {
+    run_prepared_job_profiled(
+        usb,
+        cancel,
+        sink,
+        prepare,
+        &mut ScanProfile::default(),
+        Duration::from_millis(100),
+    )
+}
+
+fn run_prepared_job_profiled(
+    usb: &mut impl Transport,
+    cancel: &AtomicBool,
+    sink: &mut impl FnMut(&ImageBand) -> io::Result<()>,
+    prepare: impl FnOnce(&[u8]) -> io::Result<ScanRequest>,
+    profile: &mut ScanProfile,
+    read_poll_interval: Duration,
+) -> io::Result<ScanSummary> {
+    *profile = ScanProfile::default();
+    validate_poll_interval(read_poll_interval)?;
     let mut diagnostics = ScanDiagnostics::new();
+    diagnostics.read_poll_interval = read_poll_interval;
+    let mut timed = TimedTransport {
+        inner: usb,
+        metrics: UsbProfile::default(),
+    };
+    let result = run_prepared_job_observed(&mut timed, cancel, sink, prepare, &mut diagnostics);
+    diagnostics.set_stage(diagnostics.stage);
+    diagnostics.profile.total = diagnostics.started.elapsed();
+    diagnostics.profile.usb = timed.metrics;
+    *profile = diagnostics.profile;
+    result
+}
+
+fn run_prepared_job_observed(
+    usb: &mut impl Transport,
+    cancel: &AtomicBool,
+    sink: &mut impl FnMut(&ImageBand) -> io::Result<()>,
+    prepare: impl FnOnce(&[u8]) -> io::Result<ScanRequest>,
+    diagnostics: &mut ScanDiagnostics,
+) -> io::Result<ScanSummary> {
     let deadline = Instant::now() + Duration::from_secs(120);
     diagnostics.set_stage(ScanStage::Inquiry);
     diagnostics.set_opcode(0x12);
@@ -703,24 +868,19 @@ fn run_prepared_job(
         Err(error) => return Err(diagnostics.error(error, "SET_WINDOW command construction")),
     };
     diagnostics.set_stage(ScanStage::Reserve);
-    let reservation = ready(
-        usb,
-        0x16,
-        &mut synchronized,
-        cancel,
-        deadline,
-        &mut diagnostics,
-    )
-    .map_err(|error| {
-        if synchronized {
-            error
-        } else {
-            io::Error::new(
-                error.kind(),
-                format!("{error}; reservation unconfirmed; reconnect scanner before another job"),
-            )
-        }
-    });
+    let reservation =
+        ready(usb, 0x16, &mut synchronized, cancel, deadline, diagnostics).map_err(|error| {
+            if synchronized {
+                error
+            } else {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "{error}; reservation unconfirmed; reconnect scanner before another job"
+                    ),
+                )
+            }
+        });
     if let Err(error) = reservation {
         return Err(diagnostics.error(error, "RESERVE"));
     }
@@ -739,14 +899,7 @@ fn run_prepared_job(
             return Err(diagnostics.error(error, "SET_WINDOW response"));
         }
         diagnostics.set_stage(ScanStage::Start);
-        if let Err(error) = ready(
-            usb,
-            0x31,
-            &mut synchronized,
-            cancel,
-            deadline,
-            &mut diagnostics,
-        ) {
+        if let Err(error) = ready(usb, 0x31, &mut synchronized, cancel, deadline, diagnostics) {
             return Err(diagnostics.error(error, "START"));
         }
         let mut summary = ScanSummary {
@@ -757,14 +910,7 @@ fn run_prepared_job(
         };
         loop {
             diagnostics.set_stage(ScanStage::ReadMetadata);
-            let b = match ready(
-                usb,
-                0x28,
-                &mut synchronized,
-                cancel,
-                deadline,
-                &mut diagnostics,
-            ) {
+            let b = match ready(usb, 0x28, &mut synchronized, cancel, deadline, diagnostics) {
                 Ok(reply) => reply,
                 Err(error) => return Err(diagnostics.error(error, "READ metadata")),
             };
@@ -796,7 +942,7 @@ fn run_prepared_job(
                 cancel,
                 deadline,
                 &mut synchronized,
-                &mut diagnostics,
+                diagnostics,
             ) {
                 Ok(raw) => raw,
                 Err(error) => return Err(error),
@@ -850,7 +996,7 @@ fn run_prepared_job(
     })();
     let cleanup_attempted = synchronized;
     diagnostics.set_stage(ScanStage::Cleanup);
-    let cleanup = finish(usb, result.is_err(), &mut synchronized, &mut diagnostics);
+    let cleanup = finish(usb, result.is_err(), &mut synchronized, diagnostics);
     let cleanup = cleanup.map_err(|error| diagnostics.error(error, "cleanup"));
     match (result, cleanup) {
         (Ok(summary), Ok(())) => Ok(summary),
@@ -1063,6 +1209,115 @@ mod tests {
         assert_eq!(pixels, [42, 190]);
         assert_eq!((summary.width, summary.height), (2, 1));
         assert_eq!(usb.writes, [0x12, 0x16, 0x24, 0x31, 0x28, 0x29, 0x17]);
+    }
+
+    #[test]
+    fn profile_preserves_complete_job_and_failed_transfer_evidence() {
+        let mut usb = synthetic();
+        let mut profile = ScanProfile::default();
+        let mut pixels = Vec::new();
+        run_prepared_job_profiled(
+            &mut usb,
+            &AtomicBool::new(false),
+            &mut |band| {
+                pixels.extend_from_slice(&band.pixels);
+                Ok(())
+            },
+            |_| Ok(request()),
+            &mut profile,
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        assert_eq!(pixels, [42, 190]);
+        assert_eq!(usb.writes, [0x12, 0x16, 0x24, 0x31, 0x28, 0x29, 0x17]);
+        assert_eq!((profile.usb.read_calls, profile.usb.write_calls), (7, 7));
+        assert!(profile.stages.contains_key("read-image"));
+        assert!(profile.stages.contains_key("cleanup"));
+        assert!(profile.stages.values().copied().sum::<Duration>() <= profile.total);
+        let mut failed = InjectedReadFailure {
+            inner: synthetic(),
+            read_calls: 0,
+            fail_call: 6,
+        };
+        let error = run_prepared_job_profiled(
+            &mut failed,
+            &AtomicBool::new(false),
+            &mut |_| Ok(()),
+            |_| Ok(request()),
+            &mut profile,
+            Duration::from_millis(100),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotConnected);
+        assert_eq!((profile.usb.read_calls, profile.usb.write_calls), (6, 6));
+        assert!(profile.stages.contains_key("read-image"));
+        assert_eq!(failed.inner.writes, [0x12, 0x16, 0x24, 0x31, 0x28, 0x29]);
+    }
+
+    #[test]
+    fn profile_interval_validation_precedes_usb_and_only_changes_read_polling() {
+        for interval in [
+            Duration::ZERO,
+            Duration::from_micros(999),
+            Duration::from_millis(1001),
+        ] {
+            let mut usb = synthetic();
+            let mut profile = ScanProfile::default();
+            profile.usb.read_calls = 999;
+            let error = run_prepared_job_profiled(
+                &mut usb,
+                &AtomicBool::new(false),
+                &mut |_| Ok(()),
+                |_| Ok(request()),
+                &mut profile,
+                interval,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(usb.writes.is_empty());
+            assert_eq!(profile.usb.read_calls, 0);
+        }
+        assert_eq!(
+            busy_poll_interval(0x28, Duration::from_millis(500)),
+            Duration::from_millis(500)
+        );
+        for opcode in [0x16, 0x31] {
+            assert_eq!(
+                busy_poll_interval(opcode, Duration::from_millis(500)),
+                Duration::from_millis(100)
+            );
+        }
+    }
+
+    #[test]
+    fn profile_keeps_busy_wait_and_cleanup_when_cancelled_without_pixels() {
+        let cancel = AtomicBool::new(false);
+        let mut inner = synthetic();
+        inner.replies[4] = reply(0x20);
+        inner.replies[4][1] = 8;
+        inner.replies[5] = reply(0);
+        let mut usb = BusyThenCancel {
+            inner,
+            cancel: &cancel,
+            read_calls: 0,
+            cancel_on_read: 5,
+        };
+        let mut profile = ScanProfile::default();
+        let error = run_prepared_job_profiled(
+            &mut usb,
+            &cancel,
+            &mut |_| panic!("No image was ready"),
+            |_| Ok(request()),
+            &mut profile,
+            Duration::from_millis(1),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(profile.busy_replies, 1);
+        assert!(!profile.busy_sleep.is_zero());
+        assert!(profile.stages["read-metadata"] >= profile.busy_sleep);
+        assert!(profile.stages.contains_key("cleanup"));
+        assert_eq!(usb.inner.writes, [0x12, 0x16, 0x24, 0x31, 0x28, 0x06, 0x17]);
     }
     #[test]
     fn consumer_failure_aborts_and_releases_without_success() {
