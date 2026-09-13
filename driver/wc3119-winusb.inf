@@ -1,0 +1,36 @@
+; Development INF design only. No signed catalog is provided.
+; Targets the scanner function exclusively, never the composite parent.
+[Version]
+Signature = "$Windows NT$"
+Class = USBDevice
+ClassGUID = {88BAE032-5A81-49F0-BC3D-A4FF138216D6}
+Provider = %Provider%
+CatalogFile = wc3119-winusb.cat
+DriverVer = 09/13/2026,0.1.0.0
+PnpLockdown = 1
+
+[Manufacturer]
+%Provider% = Scanner,NTamd64.10.0
+
+[Scanner.NTamd64.10.0]
+%DeviceName% = Scanner_Install,USB\VID_0924&PID_4265&MI_00
+
+[Scanner_Install.NT]
+Include = winusb.inf
+Needs = WINUSB.NT
+
+[Scanner_Install.NT.HW]
+Include = winusb.inf
+Needs = WINUSB.NT.HW
+AddReg = Scanner_Interface
+
+[Scanner_Install.NT.Services]
+Include = winusb.inf
+Needs = WINUSB.NT.Services
+
+[Scanner_Interface]
+HKR,,DeviceInterfaceGUIDs,0x00010000,"{C4147E4A-9C41-4846-A53C-5E625C68021A}"
+
+[Strings]
+Provider = "WorkCentre 3119 Modern Driver Project"
+DeviceName = "WorkCentre 3119 Scanner (WinUSB)"

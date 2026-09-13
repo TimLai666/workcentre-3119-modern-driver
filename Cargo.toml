@@ -1,0 +1,20 @@
+[package]
+name = "workcentre-3119"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Xerox WorkCentre 3119 scanner driver development and device diagnostics"
+
+[lib]
+name = "workcentre_3119"
+
+[[bin]]
+name = "wc3119"
+path = "src/main.rs"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
