@@ -17,6 +17,10 @@ WIA 2.0 的 IStream 傳輸路徑不呼叫 `drvWriteItemProperties`，硬體設�
 
 尚待驗證：保留 WinUSB 時 WIA 的裝置發現／minidriver 載入方式，以及 WIA 服務帳號能否存取該介面。先以不修改系統的契約測試及唯讀列舉縮小問題；需要 COM／INF 登錄或切換 MI_00 時，再提出具體可復原方案取得授權。本次未變更綁定、COM 或登錄。
 
+下一個可獨立實作的項目是 Rust WIA 轉接元件的設定及串流契約。WIA minidriver 須支援 `IUnknown`、`IStiUSD`、`IWiaMiniDrv`，本機 SDK 標頭已有介面宣告，目前 Cargo 尚未產生 COM DLL。先驗證設定映射、串流部分寫入／錯誤、取消與工作釋放，再補 DLL 介面與生命週期測試。WIA2 串流只保證 `Write`、`Seek`、`SetSize`，不得依賴呼叫端提供完整檔案功能。[Microsoft WIA 介面](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-minidriver-interfaces)、[COM 識別契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-a-com-interface)、[IStream 契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/istream-data-transfer-driver-changes)
+
+本機 `sc.exe qc stisvc` 確認 WIA 服務帳號為 `NT Authority\LocalService`。一般使用者的 Rust 掃描成功不證明該服務帳號也能開啟 WinUSB。第一階段開發不登錄 COM、不修改服務或 USB 權限，也不把離線契約測試當成 Windows 掃描驗收。
+
 ## 驗收
 
 - 先驗證 WIA COM、STI 登錄與 USB 存取權的整合方式，再固定正式 INF。不得只把 WinUSB 成功當作 WIA 完成。

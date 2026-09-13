@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-2026-09-13：已完成分段量測及四次 RGB600 READ 間隔對照，500 ms 沒有加速，維持原本 100 ms。既有兩次自然逾時根因尚未確認，20 次穩定性驗收未通過。下一步比較影像讀取要求長度。專案維持純驅動，文件品質、完整異常復原、WIA、正式套件及列印仍未完成。
+2026-09-13：已完成 64／256 KiB 實機讀取對照，呼叫次數減少但影像讀取時間沒有縮短，維持 64 KiB 與 100 ms 預設。完整驅動的持續目標已啟用，接續異常復原及 WIA。既有兩次自然逾時根因尚未確認，20 次穩定性驗收未通過。文件品質、正式套件及列印仍未完成。
 
 ## Stage Objective
 
@@ -39,11 +39,11 @@
 
 ## Next Verifiable Output
 
-先查核 WinUSB 回報的傳輸上限，再只改每次要求的影像讀取長度，比較 64 KiB 與較大的有限緩衝區能否減少整份耗時，維持像素、命令順序、取消、短讀與失同步處理。這次 READ 間隔對照沒有重現故障，不能推論機器損壞或故障已修復。失同步後的跨工作隔離另外補完，平台有文件後補做 02／07 品質對照，WIA 另依 05 接續。
+先完成可離線測試的 WIA 掃描設定／串流契約，依已查核的 COM 介面實作尚不登錄系統的 Rust 元件。WinUSB 共存及服務帳號存取仍需整合驗證。跨工作隔離依 03 補完，不以介面到達時間戳記當成實體重插證據。準備具體安裝、備份及復原方案後，才提出必要的系統變更授權。平台有文件後補做 02／07 品質對照。
 
 ## Next Ticket
 
-[03 — 取消與復原](docs/tickets/03-recover-scan.md)。02 的文件驗收目前缺少原稿，保留進行中；已確認的取消與重掃不等於傳輸中斷可復原。01 未驗證的硬體異常情境亦保留。
+[05 — Windows 掃描與安裝](docs/tickets/05-windows-install.md)，先做不需系統登錄的實作與測試。[03 — 取消與復原](docs/tickets/03-recover-scan.md) 的跨工作隔離及 20 次驗收持續追蹤。02／07 缺少原稿，01 的硬體異常情境亦保留。
 
 ## Decision Log
 
@@ -59,8 +59,13 @@
 | 核准本機 MI_00 配對、GUID 登錄與介面重啟 | 使用者回答「好」同意具體安裝範圍，限本機已備份目標 | 2026-09-13 | 02、05 |
 | 完整套件須支援別台 Windows 電腦與不同 USB 接孔 | 使用者明確補充可攜性要求；目前僅驗證開發機配對與能力查詢 | 2026-09-13 | 05 |
 | 加速保持解析度、色深、範圍與像素品質，資料處理可供其他機型沿用 | 使用者補充效能及共用需求，先量測耗時再選擇改善位置，機型協定各自驗證 | 2026-09-13 | 02、03、07 |
+| 建立持續完成完整驅動的目標 | 使用者要求逐步完成實作、驗證與推送，需要使用者介入時提出具體需求，可獨立工作繼續推進 | 2026-09-13 | 01、02、03、05、06、07 |
 
 ## Verified
+
+傳輸緩衝區版本：70 個 all-targets 測試、一般測試含 doc-tests、格式、Clippy（warnings 為錯誤）、核心及全部範例 release 建置通過。新增上限、短讀、尾塊、取消排空及參數測試，依 TDD 先失敗再實作核心功能。獨立審查後將公開掃描入口合併至同一預檢路徑，超限失敗亦保留要求大小及回報上限。實機 64／256 KiB 各一次 RGB600 成功，最終版 Gray75 重掃及獨立逐像素對照成功，見 [硬體紀錄](docs/hardware.md#64-kib-與-256-kib-影像讀取對照)。沒有調整掃描預設值或宣稱故障／品質已修復。
+
+Diff Inspector：根代理已查核本輪完整程式及文件差異，Luna 對傳輸關鍵流程複查，兩個預檢／診斷問題已修正，最終未發現新增 confirmed P1／P2。複查 `src/scan.rs` SHA256 為 `E20CB8A9434210AACA605A79F8CFEB212BCFE1B2F51C7FCDB464F10CF8365B6C`。上限預檢針對掃描入口，獨立 INQUIRY 維持既有 1024-byte 讀取，不把 RAW_IO 的限制外推成一般 WinUSB 的已確認故障。WIA 介面及服務帳號另完成唯讀查核，下一段實作與未確認的 WinUSB 共存條件記於 [05](docs/tickets/05-windows-install.md)。
 
 四次空平台 RGB600 按 100、500、500、100 ms 間隔對照皆成功，耗時依序 92.845、106.177、102.656、95.385 秒，尺寸與像素 bytes 相同且每次完整通過 wire／pixels 核對。影像讀取約 72 秒，解碼與呼叫端合計每次不到 0.1 秒，沒有支持優先平行化影像處理或改用 500 ms 的證據。這四次是各自獨立的程序，沒有重現先前故障，也沒有驗收文件品質或 20 次穩定性。量測與限制見 [硬體紀錄](docs/hardware.md#效能分段與-read-詢問間隔對照)。
 
@@ -129,11 +134,11 @@ Diff Inspector：本輪範圍符合診斷及可靠性調查，根代理已審查
 | [.gitignore](.gitignore) | 排除建置結果與本機實驗資料 |
 | [src/lib.rs](src/lib.rs) | 精確裝置識別、診斷分類與能力查詢入口 |
 | [src/windows.rs](src/windows.rs) | Windows 唯讀裝置與驅動查詢 |
-| [src/usb.rs](src/usb.rs) | WinUSB 裝置核對、端點查詢及單次 INQUIRY |
+| [src/usb.rs](src/usb.rs) | WinUSB 裝置核對、端點／讀取上限查詢及單次 INQUIRY |
 | [src/protocol.rs](src/protocol.rs) | 能力回覆框架驗證與欄位解析 |
-| [src/scan.rs](src/scan.rs) | 掃描工作、影像解碼、有限排空、階段／Busy 診斷與效能量測，開發用 READ 間隔實驗，保留原始錯誤 |
+| [src/scan.rs](src/scan.rs) | 掃描工作、影像解碼、有限排空、階段／Busy 診斷與效能量測，開發用 READ 間隔及緩衝區實驗，共用上限預檢 |
 | [examples/capture_scan.rs](examples/capture_scan.rs) | 私人實機證據擷取、定時／塊後取消與完成標記 |
-| [examples/scan_stability.rs](examples/scan_stability.rs) | 同程序連續掃描、獨立像素核對、成功／失敗 profile 與有範圍限制的 READ 間隔參數，任一失敗即停止 |
+| [examples/scan_stability.rs](examples/scan_stability.rs) | 同程序連續掃描、獨立像素核對、成功／失敗 profile 及有限範圍的 READ 間隔／緩衝區參數，任一失敗即停止 |
 | [src/main.rs](src/main.rs) | 繁體中文 doctor 與 inquiry 指令 |
 | [tests/device.rs](tests/device.rs) | 裝置與狀態測試 |
 | [tests/cli.rs](tests/cli.rs) | CLI 行程測試 |

@@ -11,7 +11,7 @@ use std::{
 
 use workcentre_3119::{
     protocol::Capabilities,
-    scan::{self, ColorMode, ImageBand, ScanRequest},
+    scan::{self, ColorMode, ImageBand, ScanRequest, ScanTuning},
 };
 
 const DEFAULT_COUNT: u32 = 20;
@@ -47,26 +47,39 @@ fn settings(args: &[String]) -> io::Result<u32> {
     }
 }
 
-fn capture_settings(args: &[String]) -> io::Result<(u32, Duration)> {
-    if let Some(index) = args.iter().position(|arg| arg == "--read-poll-ms") {
-        if index + 2 != args.len() {
-            return Err(invalid(
-                "--read-poll-ms must be the final option followed by 1..=1000",
-            ));
+fn capture_settings(args: &[String]) -> io::Result<(u32, ScanTuning)> {
+    let first_option = args
+        .iter()
+        .position(|arg| arg.starts_with("--"))
+        .unwrap_or(args.len());
+    let count = settings(&args[..first_option])?;
+    let mut tuning = ScanTuning::default();
+    let mut seen_poll = false;
+    let mut seen_buffer = false;
+    for pair in args[first_option..].chunks(2) {
+        if pair.len() != 2 {
+            return Err(invalid("Each transfer option requires an integer value"));
         }
-        let milliseconds = args[index + 1]
-            .parse::<u64>()
-            .map_err(|_| invalid("--read-poll-ms requires an integer in 1..=1000"))?;
-        if !(1..=1000).contains(&milliseconds) {
-            return Err(invalid("--read-poll-ms requires an integer in 1..=1000"));
+        let value = pair[1]
+            .parse::<usize>()
+            .map_err(|_| invalid("Transfer options require positive integers"))?;
+        match pair[0].as_str() {
+            "--read-poll-ms" if !seen_poll && (1..=1000).contains(&value) => {
+                seen_poll = true;
+                tuning.read_poll_interval = Duration::from_millis(value as u64);
+            }
+            "--read-buffer-kib" if !seen_buffer && (1..=1024).contains(&value) => {
+                seen_buffer = true;
+                tuning.read_buffer_bytes = value * 1024;
+            }
+            _ => {
+                return Err(invalid(
+                    "Unknown, repeated or out-of-range transfer option: --read-poll-ms 1..=1000; --read-buffer-kib 1..=1024",
+                ));
+            }
         }
-        Ok((
-            settings(&args[..index])?,
-            Duration::from_millis(milliseconds),
-        ))
-    } else {
-        Ok((settings(args)?, Duration::from_millis(100)))
     }
+    Ok((count, tuning))
 }
 
 fn record_scan_profile<T>(
@@ -168,7 +181,7 @@ fn verify_band(expected_mode: ColorMode, line_order: u8, band: &ImageBand) -> io
 }
 
 fn capture(args: &[String]) -> io::Result<()> {
-    let (count, read_poll_interval) = capture_settings(args)?;
+    let (count, tuning) = capture_settings(args)?;
     let directory = Path::new(&args[0]);
     // Atomic directory creation rejects every existing target before USB access.
     fs::create_dir(directory)?;
@@ -176,8 +189,9 @@ fn capture(args: &[String]) -> io::Result<()> {
     let result = (|| {
         writeln!(
             diagnostics,
-            "stability_count={count}; pattern=rgb600,rgb600,rgb300,gray600; read_poll_ms={}",
-            read_poll_interval.as_millis()
+            "stability_count={count}; pattern=rgb600,rgb600,rgb300,gray600; read_poll_ms={}; read_buffer_bytes={}",
+            tuning.read_poll_interval.as_millis(),
+            tuning.read_buffer_bytes
         )?;
         diagnostics.sync_all()?;
 
@@ -235,7 +249,7 @@ fn capture(args: &[String]) -> io::Result<()> {
                     diagnostics.flush()
                 },
                 &mut profile,
-                read_poll_interval,
+                tuning,
             );
             let elapsed_ms = started.elapsed().as_millis();
             let scan_result =
@@ -312,11 +326,13 @@ fn capture(args: &[String]) -> io::Result<()> {
 fn print_help() {
     println!(
         "Development-only scanner stability check. Usage:\n\
-scan_stability NEW_DIRECTORY [COUNT] [--read-poll-ms N]\n\
+scan_stability NEW_DIRECTORY [COUNT] [--read-poll-ms N] [--read-buffer-kib N]\n\
 Runs COUNT scans in one process using rgb600, rgb600, rgb300, gray600 repeatedly.\n\
 COUNT defaults to 20 and must be an integer from 1 through 20. Example: scan_stability artifacts/stability 20\n\
---read-poll-ms N is an experimental READ Busy interval in 1..=1000 milliseconds (default 100); it must be the final option. Example: scan_stability artifacts/poll500 1 --read-poll-ms 500\n\
-Only READ Busy polling changes. Other commands, the 120-second job deadline, image settings and transfer policy remain unchanged.\n\
+--read-poll-ms N is an experimental READ Busy interval in 1..=1000 milliseconds (default 100). Example: scan_stability artifacts/poll500 1 --read-poll-ms 500\n\
+--read-buffer-kib N sets each image read buffer in 1..=1024 KiB (default 64), bounded by the current WinUSB pipe limit. Example: scan_stability artifacts/buffer256 1 --read-buffer-kib 256\n\
+Options follow COUNT in either order and cannot repeat. Larger buffers or poll intervals can delay cancellation checks until the active call or sleep completes.\n\
+Only the selected READ Busy interval and image read buffer size change. Other commands, the 120-second job deadline, image settings and transfer policy remain unchanged.\n\
 Run with no arguments or --help to show this help. Requires Windows and a paired scanner MI_00.\n\
 Each run discovers capabilities in its own scan session and scans the full reported flatbed.\n\
 Only diagnostics.log is written during runs, including a timing profile on success or failure; no image or USB band bytes are saved. complete.txt is created only after every run succeeds.\n\
@@ -367,7 +383,7 @@ mod tests {
     fn polling_override_is_explicit_bounded_and_keeps_default_count() {
         assert_eq!(
             capture_settings(&["unused".into()]).unwrap(),
-            (20, std::time::Duration::from_millis(100))
+            (20, ScanTuning::from(std::time::Duration::from_millis(100)))
         );
         assert_eq!(
             capture_settings(&[
@@ -377,11 +393,11 @@ mod tests {
                 "500".into()
             ])
             .unwrap(),
-            (2, std::time::Duration::from_millis(500))
+            (2, ScanTuning::from(std::time::Duration::from_millis(500)))
         );
         assert_eq!(
             capture_settings(&["unused".into(), "--read-poll-ms".into(), "1".into()]).unwrap(),
-            (20, std::time::Duration::from_millis(1))
+            (20, ScanTuning::from(std::time::Duration::from_millis(1)))
         );
         for value in ["0", "1001", "-1", "1.5", "bad"] {
             assert!(
@@ -405,6 +421,61 @@ mod tests {
                 "--read-poll-ms",
                 "100",
             ],
+        ] {
+            assert!(
+                capture_settings(&args.into_iter().map(String::from).collect::<Vec<_>>()).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn buffer_override_is_bounded_and_can_be_combined_with_polling() {
+        assert_eq!(
+            capture_settings(&["unused".into()])
+                .unwrap()
+                .1
+                .read_buffer_bytes,
+            65_536
+        );
+        for order in [
+            [
+                "unused",
+                "1",
+                "--read-poll-ms",
+                "100",
+                "--read-buffer-kib",
+                "256",
+            ],
+            [
+                "unused",
+                "1",
+                "--read-buffer-kib",
+                "256",
+                "--read-poll-ms",
+                "100",
+            ],
+        ] {
+            let (count, tuning) = capture_settings(&order.map(String::from)).unwrap();
+            assert_eq!(count, 1);
+            assert_eq!(tuning.read_buffer_bytes, 262_144);
+            assert_eq!(tuning.read_poll_interval, Duration::from_millis(100));
+        }
+        for value in ["0", "1025", "-1", "1.5", "18446744073709551615"] {
+            assert!(
+                capture_settings(&["unused".into(), "--read-buffer-kib".into(), value.into()])
+                    .is_err()
+            );
+        }
+        for args in [
+            vec!["unused", "--read-buffer-kib"],
+            vec![
+                "unused",
+                "--read-buffer-kib",
+                "64",
+                "--read-buffer-kib",
+                "256",
+            ],
+            vec!["unused", "--read-buffer-kib", "64", "extra"],
         ] {
             assert!(
                 capture_settings(&args.into_iter().map(String::from).collect::<Vec<_>>()).is_err()

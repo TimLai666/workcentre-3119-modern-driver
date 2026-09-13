@@ -110,6 +110,21 @@ ABORT／RELEASE 沒有回報失敗，隨後 Gray75 又完整成功（648×871，
 
 實機證據在 `artifacts/profile-read100-20260913-e/`、`artifacts/profile-read500-20260913-e/`、`artifacts/profile-read500-reverse-20260913-e/` 與 `artifacts/profile-read100-reverse-20260913-e/`，彙整於 `artifacts/profile-comparison-20260913-e.json`。測試 `scan_stability.exe` SHA256 為 `7E56EF81CEA7FB688ED0B1D4440F6F89838402394DA168D94E40002FA1F26981`，其來源後續僅做格式整理。測試後 `doctor` 父裝置、MI_00、MI_01 問題碼皆為 0、started=true。這四次沒有重現故障，不能取代同一程序 20 次驗收，也沒有高解析度故障修復或跨機型加速的證據。
 
+## 64 KiB 與 256 KiB 影像讀取對照
+
+2026-09-13，以同一個 release 執行檔各掃描一次全平台 RGB600，READ Busy 間隔固定 100 ms。WinUSB bulk IN 當下回報 `MAXIMUM_TRANSFER_SIZE=2097152` bytes，端點封包為 512 bytes。兩次都是 5100×6961、117 塊、106503300 像素 bytes，逐塊獨立核對 wire／pixels 成功，並產生 `complete.txt`。
+
+| 讀取緩衝區 | 工作秒數 | 影像讀取秒數 | 資料描述秒數 | 全工作 USB 讀取呼叫 | Busy 次數 |
+| --- | --- | --- | --- | --- | --- |
+| 64 KiB | 97.010 | 72.549 | 24.153 | 1989 | 126 |
+| 256 KiB | 93.736 | 72.784 | 20.658 | 689 | 102 |
+
+較大緩衝區減少呼叫次數，但影像讀取階段沒有縮短。整體時間差主要出現在資料描述等候，只有一組比較，不能歸因於緩衝區或宣稱加速。維持 64 KiB 預設。兩次沒有重現自然故障，也不能取代同程序 20 次穩定性驗收。平台沒有文件，未驗收影像品質。
+
+證據為 `artifacts/buffer64-20260913-f/` 與 `artifacts/buffer256-20260913-f/` 的 `diagnostics.log`、`complete.txt`。測試 `scan_stability.exe` SHA256：`1A22C30348B549318670F445CE03DB4B5348369F4816637786A476EC97E4DF88`。其後只補正傳輸上限回覆的非法封包檢查、共用公開掃描入口的上限預檢及拒絕設定的診斷，沒有改動資料讀取迴圈。
+
+最終版本另經 `capture_scan` 完成 Gray75（648×871，564408 bytes，7.228 秒），保存於 `artifacts/buffer-final-gray75-20260913-f/`。PowerShell 獨立逐值核對全部 wire 有效樣本、像素及 PGM 相同，完成標記存在。實際檢視為空平台影像，不能用來驗收明暗品質。該擷取執行檔 SHA256 為 `50CC0C7F3F927775AD7FA2CB01C9BE022D4C974C50C849966B5D746B60E4517D`。測試後 `doctor` 父裝置、MI_00、MI_01 問題碼皆為 0、started=true。沒有重新安裝、重新插拔或修改系統設定。
+
 ## 首次實機影像傳輸
 
 ### 最新補充：600 dpi 彩色

@@ -74,9 +74,13 @@ USB API 回傳錯誤可能已消耗未知長度，不能沿用舊的剩餘數量
 
 初步離線測試重播已取得的完整 RGB600（117 塊、106503300 像素 bytes），以未修改的 `BandInfo::decode` release 最佳化編譯，預載資料後 2 次暖身、10 次量測為 31.641–32.526 ms，中位數 32.018 ms，結果與原像素完全相同。此測試含解碼配置，排除磁碟、USB、機器與呼叫端；不能當成完整掃描 profile，但沒有支持優先平行化 RGB 重排的證據。本機量測留於 `artifacts/performance-offline-20260913-d/`。
 
-`scan_with_profile` 提供開發量測：沿用同一 session 的準備與影像 callback，成功及一般錯誤返回皆保留 `ScanProfile`。每次呼叫先清空舊資料；參數拒絕、預先取消及 USB 開啟失敗時沒有工作量測。階段時間自開啟後的 INQUIRY 起算，涵蓋呼叫端及清理，USB 次數與耗時包含失敗呼叫。既有 API 的簽名與 100 ms 預設不變。
+`scan_with_profile` 提供開發量測：沿用同一 session 的準備與影像 callback，成功及一般錯誤返回皆保留 `ScanProfile`。每次呼叫先清空舊資料，參數拒絕、預先取消及 USB 開啟失敗時沒有工作量測。階段時間自開啟及上限查詢後的 INQUIRY 起算，涵蓋呼叫端及清理，USB 次數與耗時包含失敗呼叫。最後參數接受 `Into<ScanTuning>`，既有 `Duration` 呼叫沿用 64 KiB 讀取，`ScanTuning` 可指定開發用緩衝區大小。
 
 開發用 READ Busy 間隔限 1–1000 ms，只有 0x28 的 Busy 等待使用它；其他命令仍為 100 ms。較長間隔可能增加發現新資料或取消的延遲，最多另受當下睡眠及 USB 呼叫限制，不改工作／排空期限或傳輸政策。穩定性範例以 `--read-poll-ms` 暴露此實驗並保存 profile，即使掃描與診斷寫入同時失敗也保留原始掃描錯誤。此參數不屬於正式使用者的品質／速度選項。
+
+影像讀取緩衝區接受 1 KiB–1 MiB、1024 bytes 的整數倍，預設 64 KiB。在 INQUIRY／RESERVE 前以 `WinUsb_GetPipePolicy` 讀取當下 bulk IN 的 `MAXIMUM_TRANSFER_SIZE`，超過者拒絕，不啟動掃描。回覆須為正確大小的 ULONG、非零且至少可容納一個端點封包，不假定回報上限本身能整除封包大小。較大緩衝區可能減少呼叫次數，也可能延長下一次取消檢查前的等待，需實測判斷。緩衝區每塊以 heap 配置，仍按剩餘資料限制每次要求長度並保留短讀、超量與排空處理。profile 記錄要求大小及已查得上限，開啟／上限查詢時間不計入階段耗時。[Microsoft GetPipePolicy](https://learn.microsoft.com/en-us/windows/win32/api/winusb/nf-winusb-winusb_getpipepolicy)、[pipe policy](https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/winusb-functions-for-pipe-policy-modification)
+
+此處採用回報上限作為開發實驗的保守限制。Microsoft 對要求長度與封包倍數的嚴格限制適用於 `RAW_IO`，本專案未啟用該政策，不能據此斷言一般 WinUSB 超過此長度必定失敗。所有公開掃描入口共用預檢，拒絕超限時 profile 保留要求值與回報上限。64／256 KiB 實機比較沒有縮短影像讀取時間，預設維持 64 KiB，見 [測試證據](docs/hardware.md#64-kib-與-256-kib-影像讀取對照)。
 
 ### 掃描明暗品質
 

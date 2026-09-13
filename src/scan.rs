@@ -229,9 +229,77 @@ pub struct UsbProfile {
 pub struct ScanProfile {
     pub stages: std::collections::BTreeMap<&'static str, Duration>,
     pub usb: UsbProfile,
+    pub read_buffer_bytes: usize,
+    pub usb_read_limit: Option<usize>,
     pub busy_replies: u64,
     pub busy_sleep: Duration,
     pub total: Duration,
+}
+
+/// Development-only transfer experiment. Defaults preserve 100 ms READ Busy
+/// polling and 64 KiB reads. Buffer sizes must be multiples of 1024 bytes in
+/// 1 KiB..=1 MiB and no larger than the current WinUSB pipe's reported limit.
+/// Larger reads can defer cancellation until the active USB call returns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScanTuning {
+    pub read_poll_interval: Duration,
+    pub read_buffer_bytes: usize,
+}
+
+impl Default for ScanTuning {
+    fn default() -> Self {
+        Self {
+            read_poll_interval: Duration::from_millis(100),
+            read_buffer_bytes: 65_536,
+        }
+    }
+}
+
+/// Preserve callers that pass only the READ Busy interval.
+impl From<Duration> for ScanTuning {
+    fn from(read_poll_interval: Duration) -> Self {
+        Self {
+            read_poll_interval,
+            ..Self::default()
+        }
+    }
+}
+
+impl ScanTuning {
+    fn validate(self) -> io::Result<()> {
+        validate_poll_interval(self.read_poll_interval)?;
+        if !(1024..=1024 * 1024).contains(&self.read_buffer_bytes)
+            || !self.read_buffer_bytes.is_multiple_of(1024)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Read buffer must be a multiple of 1024 bytes within 1 KiB..=1 MiB",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(any(windows, test))]
+fn validate_read_buffer_limit(requested: usize, limit: usize) -> io::Result<()> {
+    if requested > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Read buffer {requested} exceeds the WinUSB pipe limit {limit}"),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn record_read_buffer_limit(
+    profile: &mut ScanProfile,
+    requested: usize,
+    limit: usize,
+) -> io::Result<()> {
+    profile.read_buffer_bytes = requested;
+    profile.usb_read_limit = Some(limit);
+    validate_read_buffer_limit(requested, limit)
 }
 
 #[derive(Clone, Copy)]
@@ -277,6 +345,7 @@ struct ScanDiagnostics {
     stage_started: Instant,
     profile: ScanProfile,
     read_poll_interval: Duration,
+    read_buffer_bytes: usize,
 }
 
 impl ScanDiagnostics {
@@ -293,6 +362,7 @@ impl ScanDiagnostics {
             stage_started: Instant::now(),
             profile: ScanProfile::default(),
             read_poll_interval: Duration::from_millis(100),
+            read_buffer_bytes: 65_536,
         }
     }
 
@@ -414,17 +484,9 @@ impl Transport for crate::usb::UsbSession {
 pub fn scan_to(
     request: ScanRequest,
     cancel: &AtomicBool,
-    mut sink: impl FnMut(&ImageBand) -> io::Result<()>,
+    sink: impl FnMut(&ImageBand) -> io::Result<()>,
 ) -> io::Result<ScanSummary> {
-    if cancel.load(Ordering::Relaxed) {
-        return Err(io::Error::new(io::ErrorKind::Interrupted, "Scan cancelled"));
-    }
-    run_job(
-        &mut crate::usb::UsbSession::open()?,
-        request,
-        cancel,
-        &mut sink,
-    )
+    scan_with_evidence(cancel, |_| Ok(request), sink)
 }
 
 #[cfg(not(windows))]
@@ -456,27 +518,31 @@ pub fn scan_with_evidence(
     )
 }
 
-/// Development-only timing and READ Busy polling experiment.
+/// Development-only timing and transfer experiment.
 /// `profile` is reset before validation and retained on every ordinary return.
-/// `read_poll_interval` must be between 1 and 1000 ms, inclusive; only READ
-/// metadata Busy polling uses it. Other commands retain 100 ms, and all scan
+/// `tuning` accepts a READ Busy Duration (1..=1000 ms, 64 KiB buffer) or
+/// `ScanTuning` with a bounded read buffer size. Other commands retain 100 ms, and all scan
 /// settings, transfer policies and job/drain deadlines remain unchanged.
-/// Validation and pre-cancellation precede USB open. Opening time is excluded;
-/// open failures leave an empty profile. No image or identity data is recorded.
+/// Parameter validation and pre-cancellation precede USB open. The live pipe
+/// limit is checked before INQUIRY or RESERVE. Open and limit-query time are
+/// excluded; their failures have no stage timings. No image or identity is recorded.
 #[cfg(windows)]
 pub fn scan_with_profile(
     cancel: &AtomicBool,
     prepare: impl FnOnce(&crate::InquiryEvidence) -> io::Result<ScanRequest>,
     mut sink: impl FnMut(&ImageBand) -> io::Result<()>,
     profile: &mut ScanProfile,
-    read_poll_interval: Duration,
+    tuning: impl Into<ScanTuning>,
 ) -> io::Result<ScanSummary> {
     *profile = ScanProfile::default();
-    validate_poll_interval(read_poll_interval)?;
+    let tuning = tuning.into();
+    tuning.validate()?;
     if cancel.load(Ordering::Relaxed) {
         return Err(io::Error::new(io::ErrorKind::Interrupted, "Scan cancelled"));
     }
     let mut usb = crate::usb::UsbSession::open()?;
+    let read_limit = usb.maximum_read_transfer_size()?;
+    record_read_buffer_limit(profile, tuning.read_buffer_bytes, read_limit)?;
     let mut evidence = crate::InquiryEvidence {
         device_descriptor: usb.descriptor,
         interface_descriptor: usb.interface,
@@ -486,7 +552,7 @@ pub fn scan_with_profile(
         bulk_out_max_packet: usb.bulk_out_max_packet,
         reply: Vec::new(),
     };
-    run_prepared_job_profiled(
+    let result = run_prepared_job_profiled(
         &mut usb,
         cancel,
         &mut sink,
@@ -495,8 +561,10 @@ pub fn scan_with_profile(
             prepare(&evidence)
         },
         profile,
-        read_poll_interval,
-    )
+        tuning,
+    );
+    profile.usb_read_limit = Some(read_limit);
+    result
 }
 
 #[cfg(not(windows))]
@@ -517,10 +585,10 @@ pub fn scan_with_profile(
     _: impl FnOnce(&crate::InquiryEvidence) -> io::Result<ScanRequest>,
     _: impl FnMut(&ImageBand) -> io::Result<()>,
     profile: &mut ScanProfile,
-    read_poll_interval: Duration,
+    tuning: impl Into<ScanTuning>,
 ) -> io::Result<ScanSummary> {
     *profile = ScanProfile::default();
-    validate_poll_interval(read_poll_interval)?;
+    tuning.into().validate()?;
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "Scanning requires Windows",
@@ -666,6 +734,7 @@ fn finish(
     }
 }
 
+#[cfg(test)]
 fn run_job(
     usb: &mut impl Transport,
     request: ScanRequest,
@@ -707,7 +776,7 @@ fn read_image_band(
     };
     *synchronized = false;
     let mut raw = Vec::with_capacity(length);
-    let mut buffer = [0; 65536];
+    let mut buffer = vec![0; diagnostics.read_buffer_bytes];
     let mut failure = None;
     let mut drain_deadline = None;
     let mut empty_reads = 0;
@@ -789,6 +858,7 @@ fn read_image_band(
     Ok(raw)
 }
 
+#[cfg(test)]
 fn run_prepared_job(
     usb: &mut impl Transport,
     cancel: &AtomicBool,
@@ -811,12 +881,15 @@ fn run_prepared_job_profiled(
     sink: &mut impl FnMut(&ImageBand) -> io::Result<()>,
     prepare: impl FnOnce(&[u8]) -> io::Result<ScanRequest>,
     profile: &mut ScanProfile,
-    read_poll_interval: Duration,
+    tuning: impl Into<ScanTuning>,
 ) -> io::Result<ScanSummary> {
     *profile = ScanProfile::default();
-    validate_poll_interval(read_poll_interval)?;
+    let tuning = tuning.into();
+    tuning.validate()?;
     let mut diagnostics = ScanDiagnostics::new();
-    diagnostics.read_poll_interval = read_poll_interval;
+    diagnostics.read_poll_interval = tuning.read_poll_interval;
+    diagnostics.read_buffer_bytes = tuning.read_buffer_bytes;
+    diagnostics.profile.read_buffer_bytes = tuning.read_buffer_bytes;
     let mut timed = TimedTransport {
         inner: usb,
         metrics: UsbProfile::default(),
@@ -1209,6 +1282,170 @@ mod tests {
         assert_eq!(pixels, [42, 190]);
         assert_eq!((summary.width, summary.height), (2, 1));
         assert_eq!(usb.writes, [0x12, 0x16, 0x24, 0x31, 0x28, 0x29, 0x17]);
+    }
+
+    #[test]
+    fn rejected_live_limit_keeps_requested_size_for_diagnostics() {
+        let mut profile = ScanProfile::default();
+        let error = record_read_buffer_limit(&mut profile, 262_144, 65_535).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(profile.read_buffer_bytes, 262_144);
+        assert_eq!(profile.usb_read_limit, Some(65_535));
+        assert!(profile.stages.is_empty());
+        assert_eq!(profile.usb.read_calls, 0);
+        assert!(record_read_buffer_limit(&mut profile, 32_768, 65_535).is_ok());
+        assert_eq!(profile.read_buffer_bytes, 32_768);
+    }
+
+    #[test]
+    fn read_buffer_options_reject_invalid_sizes_before_transport() {
+        for bytes in [0, 1, 1023, 1025, 1024 * 1024 + 1024, usize::MAX] {
+            let mut usb = synthetic();
+            let mut profile = ScanProfile::default();
+            let error = run_prepared_job_profiled(
+                &mut usb,
+                &AtomicBool::new(false),
+                &mut |_| Ok(()),
+                |_| Ok(request()),
+                &mut profile,
+                ScanTuning {
+                    read_buffer_bytes: bytes,
+                    ..ScanTuning::default()
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(usb.writes.is_empty());
+            assert_eq!(profile.usb.read_calls, 0);
+        }
+        assert!(validate_read_buffer_limit(256 * 1024, 64 * 1024).is_err());
+        assert!(validate_read_buffer_limit(64 * 1024, 64 * 1024).is_ok());
+        assert!(validate_read_buffer_limit(256 * 1024, 1024 * 1024).is_ok());
+    }
+
+    #[test]
+    fn larger_read_buffers_preserve_bytes_short_reads_and_final_padding_request() {
+        struct Stream {
+            data: Vec<u8>,
+            position: usize,
+            requests: Vec<usize>,
+            short: bool,
+        }
+        impl Transport for Stream {
+            fn write(&mut self, _: &[u8]) -> io::Result<()> {
+                panic!("No commands in image stream")
+            }
+            fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+                self.requests.push(output.len());
+                let available = self.data.len() - self.position;
+                let count =
+                    available
+                        .min(output.len())
+                        .min(if self.short { 513 } else { usize::MAX });
+                output[..count].copy_from_slice(&self.data[self.position..self.position + count]);
+                self.position += count;
+                Ok(count)
+            }
+        }
+        let expected: Vec<u8> = (0..524_305).map(|index| (index % 251) as u8).collect();
+        for bytes in [1024, 65_536, 262_144, 1_048_576] {
+            for short in [false, true] {
+                let mut usb = Stream {
+                    data: expected.clone(),
+                    position: 0,
+                    requests: vec![],
+                    short,
+                };
+                let mut diagnostics = ScanDiagnostics::new();
+                diagnostics.read_buffer_bytes = bytes;
+                let mut synchronized = false;
+                let output = read_image_band(
+                    &mut usb,
+                    expected.len(),
+                    &AtomicBool::new(false),
+                    Instant::now() + Duration::from_secs(5),
+                    &mut synchronized,
+                    &mut diagnostics,
+                )
+                .unwrap();
+                assert_eq!(output, expected);
+                assert!(synchronized);
+                assert!(
+                    usb.requests
+                        .iter()
+                        .all(|&size| size <= bytes && size % 1024 == 0)
+                );
+                if !short {
+                    assert_eq!(usb.requests.len(), expected.len().div_ceil(bytes));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn larger_buffer_reaches_job_and_cancelled_stream_is_drained_without_delivery() {
+        let mut usb = synthetic();
+        let mut profile = ScanProfile::default();
+        let mut delivered = vec![];
+        run_prepared_job_profiled(
+            &mut usb,
+            &AtomicBool::new(false),
+            &mut |band| {
+                delivered.extend_from_slice(&band.pixels);
+                Ok(())
+            },
+            |_| Ok(request()),
+            &mut profile,
+            ScanTuning {
+                read_buffer_bytes: 262_144,
+                ..ScanTuning::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(delivered, [42, 190]);
+        assert_eq!(profile.read_buffer_bytes, 262_144);
+        assert_eq!(usb.writes, [0x12, 0x16, 0x24, 0x31, 0x28, 0x29, 0x17]);
+
+        struct CancelAfterRead<'a> {
+            cancel: &'a AtomicBool,
+            calls: usize,
+            remaining: usize,
+        }
+        impl Transport for CancelAfterRead<'_> {
+            fn write(&mut self, _: &[u8]) -> io::Result<()> {
+                panic!("No command inside image data")
+            }
+            fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+                self.calls += 1;
+                let count = self.remaining.min(output.len());
+                output[..count].fill(42);
+                self.remaining -= count;
+                self.cancel.store(true, Ordering::Relaxed);
+                Ok(count)
+            }
+        }
+        let cancel = AtomicBool::new(false);
+        let mut usb = CancelAfterRead {
+            cancel: &cancel,
+            calls: 0,
+            remaining: 524_305,
+        };
+        let mut diagnostics = ScanDiagnostics::new();
+        diagnostics.read_buffer_bytes = 262_144;
+        let mut synchronized = false;
+        let error = read_image_band(
+            &mut usb,
+            524_305,
+            &cancel,
+            Instant::now() + Duration::from_secs(5),
+            &mut synchronized,
+            &mut diagnostics,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(synchronized);
+        assert_eq!(usb.remaining, 0);
+        assert_eq!(usb.calls, 3);
     }
 
     #[test]

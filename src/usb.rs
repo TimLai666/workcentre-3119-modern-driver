@@ -9,6 +9,7 @@ const INVALID_HANDLE: Handle = -1isize as Handle;
 const ERROR_INSUFFICIENT_BUFFER: i32 = 122;
 const ERROR_NO_MORE_ITEMS: i32 = 259;
 const MAX_TRANSFER_BYTES: usize = 1024 * 1024;
+const MAXIMUM_TRANSFER_SIZE_POLICY: u32 = 0x08;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -132,6 +133,13 @@ unsafe extern "system" {
         policy: u32,
         length: u32,
         value: *const c_void,
+    ) -> i32;
+    fn WinUsb_GetPipePolicy(
+        interface: Handle,
+        pipe: u8,
+        policy: u32,
+        length: *mut u32,
+        value: *mut c_void,
     ) -> i32;
     fn WinUsb_WritePipe(
         interface: Handle,
@@ -471,6 +479,26 @@ fn validate_read_buffer(length: usize, maximum_packet: u16) -> io::Result<()> {
     Ok(())
 }
 
+fn validate_maximum_read_transfer_size(
+    value_length: u32,
+    value: u32,
+    maximum_packet: u16,
+) -> io::Result<usize> {
+    if value_length != size_of::<u32>() as u32 {
+        return Err(invalid("Invalid MAXIMUM_TRANSFER_SIZE policy length"));
+    }
+    if ![8, 16, 32, 64, 512, 1024].contains(&maximum_packet) {
+        return Err(invalid("Invalid bulk IN maximum packet size"));
+    }
+    let value = u64::from(value);
+    let maximum_packet = u64::from(maximum_packet);
+    if maximum_packet == 0 || value == 0 || value < maximum_packet {
+        return Err(invalid("Invalid MAXIMUM_TRANSFER_SIZE policy value"));
+    }
+    // Windows targets supported by this crate have usize wide enough for ULONG.
+    Ok(value as usize)
+}
+
 fn validate_complete_write(transferred: u32, expected: usize) -> io::Result<()> {
     if expected == 0 || expected > MAX_TRANSFER_BYTES || u64::from(transferred) != expected as u64 {
         return Err(io::Error::new(
@@ -630,6 +658,31 @@ impl UsbSession {
             bulk_in_max_packet: selected.input_max_packet,
             bulk_out_max_packet: selected.output_max_packet,
         })
+    }
+
+    /// Query WinUSB's current maximum transfer size for the bulk IN pipe.
+    ///
+    /// WinUSB documents `MAXIMUM_TRANSFER_SIZE` (policy `0x08`) as a read-only
+    /// policy returned as a `ULONG`. The value is returned without the session's
+    /// application buffer cap; callers must apply their own finite buffer limit.
+    pub(crate) fn maximum_read_transfer_size(&self) -> io::Result<usize> {
+        let mut value: u32 = 0;
+        let mut value_length = size_of::<u32>() as u32;
+        win_result(
+            // SAFETY: the session owns a live WinUSB handle and bulk IN pipe;
+            // both output pointers refer to writable ULONG-sized storage.
+            unsafe {
+                WinUsb_GetPipePolicy(
+                    self.usb.0,
+                    self.bulk_in,
+                    MAXIMUM_TRANSFER_SIZE_POLICY,
+                    &mut value_length,
+                    (&mut value as *mut u32).cast(),
+                )
+            },
+            "Read WinUSB maximum read transfer size",
+        )?;
+        validate_maximum_read_transfer_size(value_length, value, self.bulk_in_max_packet)
     }
 
     /// Write one complete command without retrying a short transfer.
@@ -807,6 +860,43 @@ mod tests {
             assert!(validate_read_buffer(length, max_packet).is_err());
         }
         assert!(validate_read_buffer(MAX_TRANSFER_BYTES + 1, 64).is_err());
+    }
+
+    #[test]
+    fn validates_maximum_transfer_policy_shape_and_packet_size() {
+        let ulong_bytes = size_of::<u32>() as u32;
+        assert_eq!(
+            validate_maximum_read_transfer_size(ulong_bytes, 64, 64).unwrap(),
+            64
+        );
+        assert_eq!(
+            validate_maximum_read_transfer_size(ulong_bytes, 1024, 512).unwrap(),
+            1024
+        );
+        assert_eq!(
+            validate_maximum_read_transfer_size(ulong_bytes, 65_535, 512).unwrap(),
+            65_535
+        );
+        // Do not impose the session's 1 MiB application buffer cap on the OS
+        // policy value. The caller still chooses a separately bounded buffer.
+        assert_eq!(
+            validate_maximum_read_transfer_size(ulong_bytes, 0xffff_ffc0, 64).unwrap(),
+            0xffff_ffc0
+        );
+        for (length, value, packet) in [
+            (0, 64, 64),
+            (ulong_bytes - 1, 64, 64),
+            (ulong_bytes + 1, 64, 64),
+            (ulong_bytes, 0, 64),
+            (ulong_bytes, 63, 64),
+            (ulong_bytes, 512, 0),
+            (ulong_bytes, 512, 3),
+        ] {
+            assert!(
+                validate_maximum_read_transfer_size(length, value, packet).is_err(),
+                "accepted malformed MAXIMUM_TRANSFER_SIZE length={length} value={value} packet={packet}"
+            );
+        }
     }
 
     #[test]
