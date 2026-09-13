@@ -2,7 +2,7 @@
 
 ## 目標與現況
 
-目標是在 Windows 11 x64 用 Rust 完成可以長期使用的純驅動，掃描優先，列印接續。不開發 GUI 或掃描 App，操作由 Windows 掃描等既有軟體提供。現有實作包含裝置診斷與待實機驗證的 USB 能力查詢。功能的驗收條件與失敗情境由 [工作項目](docs/tickets/) 管理，進度由 [delivery-status.md](delivery-status.md) 管理。
+目標是在 Windows 11 x64 用 Rust 完成可以長期使用的純驅動，掃描優先，列印接續。不開發 GUI 或掃描 App，操作由 Windows 掃描等既有軟體提供。現有實作包含裝置診斷與 USB 能力查詢；2026-09-13 已在開發機完成 MI_00 的 WinUSB 配對及真實 INQUIRY。這只代表單一開發機／裝置實例已驗證，跨電腦安裝、USB 換孔／拔插／重開機及 WIA 尚未驗證。功能的驗收條件與失敗情境由 [工作項目](docs/tickets/) 管理，進度由 [delivery-status.md](delivery-status.md) 管理。
 
 ## 使用流程與架構
 
@@ -22,6 +22,8 @@
 
 目前 `doctor` 只確認 PnP 驅動狀態。`DriverStarted` 表示 WinUSB 服務已啟動，不能當成已開啟 USB、端點可用或已支援 WIA。
 
+`doctor` 透過 Configuration Manager 列舉目前裝置；`inquiry` 則由裝置介面 GUID 重新取得當下的裝置路徑，再核對精確 MI_00。實作見 [裝置辨識](src/lib.rs)、[診斷列舉](src/windows.rs)及 [USB 開啟](src/usb.rs)。WIA 與正式掃描流程須在換孔、拔插或重開機後重新發現，不得把開發機的完整實例 ID、序號、介面路徑或 USB 接孔位置寫死成安裝或執行條件。
+
 ### 掃描 USB 存取
 
 初期建議用 Windows 內建 WinUSB 搭配 Rust 使用者模式程式。這讓硬體通訊與協定在一般程式內驗證，避免為探索封包新增核心程式碼。精確綁定 MI_00，保留父裝置與 MI_01。
@@ -30,9 +32,13 @@
 
 能力欄位依 [SANE 1.4.0 INQUIRY](https://gitlab.com/sane-project/backends/-/blob/1.4.0/backend/xerox_mfp.c#L775) 與 [解析度位元定義](https://gitlab.com/sane-project/backends/-/blob/1.4.0/backend/xerox_mfp.c#L403) 獨立實作。能力位元與設定命令的解析度代碼不同，不可互換。幾何值保留 1/1200 英吋單位，尚未依未驗證的機型補償轉成有效掃描範圍。
 
-綁定及正式簽署方式尚未核准。自訂 INF 需要簽章目錄檔，目前只有 [INF 設計稿](driver/wc3119-winusb.inf)，不是可分發的套件。開發機另有 [Rust 配對工具](examples/winusb_setup.rs)，已實測內建 WinUSB 候選列舉，實際綁定仍未驗證。預設只預檢；明確指定完整 MI_00 ID 後，安裝路徑再次核對裝置與其專屬候選，再呼叫 DiInstallDevice。備份、GUID 登錄與復原由外部操作流程負責，範圍見 [安裝方案](driver/README.md)。
+[INF 設計稿](driver/wc3119-winusb.inf) 以型號／功能介面 `USB\VID_0924&PID_4265&MI_00` 配對並登錄固定 GUID，不含特定實例或孔位。它仍缺少 WDK 驗證與簽署 catalog，尚不能作為可分發的套件。
+
+開發機的 [Rust 配對工具](examples/winusb_setup.rs) 要求完整實例 ID，只搜尋本機內建 `C:\Windows\INF\winusb.inf`，以 `DiInstallDevice` 綁定單一裝置。本機已獲授權並完成配對與真實 INQUIRY，結果見 [硬體紀錄](docs/hardware.md)。這次完整實例 ID 只限定被授權操作的目標，不是正式套件的匹配條件；正式套件仍需支援其他電腦的系統路徑、裝置實例及 USB 接孔。
 
 真正的 Windows 掃描整合需要實作 WIA 驅動與安裝登錄。WinUSB 本身不會把裝置變成 Windows 掃描器。WIA 如何發現裝置、COM 生命週期、USB 句柄交接與一般使用者權限須先完成實機小範圍驗證，再確定正式安裝架構。
+
+跨電腦安裝、換孔、拔插與重新開機的實機驗收集中於 [05](docs/tickets/05-windows-install.md)。單次工作可以使用目前取得的裝置路徑，重連後必須重新取得；多台候選不可任意選第一台。
 
 ### 掃描工作與影像
 
@@ -65,7 +71,7 @@ WIA 的亮度與對比設定由驅動維護，標準正常值皆為 0。遵循 [
 | 未來掃描工作與 USB 傳輸交界 | 封包、短讀寫、取消、長度上限、錯誤復原 | 合成資料須另有真實硬體對照 |
 | 實機端到端 | 實際文件、色彩、範圍、重掃、拔線、暖機、睡眠 | 需要已核准的驅動綁定 |
 | 掃描明暗品質 | 同一原稿逐段比較、淺灰與近白細節、亮度方向與中性值 | 目前無影像，不能宣稱偏白已修復 |
-| Windows 整合及乾淨安裝 | Windows 掃描、一般使用者、重開機、解除安裝、列印 | 需簽署及安裝驗證環境 |
+| Windows 整合及可攜安裝 | 第二台乾淨支援 Windows 11 x64、模型套件安裝、一般使用者 WIA 掃描、換孔／拔插／重開機後重新發現、解除安裝及列印 | 開發機只驗證配對與 INQUIRY；尚無跨電腦、WIA 或換孔／拔插／重開機證據，且仍缺 catalog 與適用簽署 |
 
 不為每個內部函式另建替身。掃描、影像輸出與取消優先從公開工作介面測試，保留真實底層呼叫的整合測試。
 

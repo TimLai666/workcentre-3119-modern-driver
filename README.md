@@ -2,7 +2,9 @@
 
 以 Rust 開發 Xerox WorkCentre 3119 的 Windows 11 x64 純驅動，優先支援掃描。使用 Windows 掃描等既有軟體操作，不另外開發 GUI 或掃描 App。
 
-**目前是開發初期，尚不能掃描或列印。** 工具可檢查 USB 驅動狀態，另已加入 WinUSB 能力查詢程式。後者仍待掃描介面配對後完成實機驗證。
+**目前是開發初期，尚不能掃描或列印。** 工具可檢查 USB 驅動狀態；開發機已成功配對 WinUSB，Rust 已取得真實掃描能力回覆。跨電腦安裝、USB 換孔及 Windows 掃描整合仍待驗證。
+
+`MI_00` 表示複合式 USB 裝置的第 0 個功能介面，數字取自裝置描述，與電腦上的 USB 接孔編號無關。3119 的 MI_00 已回覆掃描能力，MI_01 使用列印傳輸服務。正式套件會依型號與功能介面辨識，不以開發機的孔位或完整實例路徑限定使用。[Microsoft USB 識別碼定義](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/standard-usb-identifiers)
 
 ## 執行診斷
 
@@ -31,7 +33,7 @@ cargo run --offline -- inquiry
 - 真實平台掃描，依機器能力提供灰階、彩色與解析度設定。
 - 調查並修正使用者回報的偏亮偏白問題，以保留淺色細節及正確的亮度／對比映射驗收，目前尚未確認原因或完成修復。
 - 透過 Windows 掃描介面提供影像傳輸、取消、重掃、進度與錯誤回報。
-- Windows 掃描整合與可安裝、更新、解除安裝的套件。
+- Windows 掃描整合與可在其他 Windows 11 x64 電腦安裝、更新、解除安裝的套件，支援 USB 換孔、拔插與重新開機。
 - 掃描穩定後完成列印協定與 Windows 列印整合。
 
 所有項目需要實機驗證，進度見 [delivery-status.md](delivery-status.md)。本機已確認的裝置資訊見 [硬體紀錄](docs/hardware.md)，系統變更提案見 [掃描介面安裝方案](driver/README.md)。

@@ -9,7 +9,7 @@
 - Windows SDK `10.0.26100.0` 已存在。SDK 內找到 signtool，沒有找到 InfVerif / Inf2Cat，因此沒有完成 WDK 套件驗證。
 - `C:\Windows\System32\drivers\winusb.sys` 的 Authenticode 檢查為 Valid，簽署者 Microsoft Windows。這不是自訂 INF 已簽署的證據。
 
-## 已連接的 Xerox USB 裝置
+## 配對前的 Xerox USB 裝置
 
 | 目標 | 硬體 ID | 服務 | 問題碼 | 已啟動 |
 | --- | --- | --- | --- | --- |
@@ -49,4 +49,26 @@ Xerox WorkCentre 3119 · USB 0924:4265
 
 加入能力查詢後，2026-09-13 再次以 release 執行 `doctor`，三個介面的服務、問題碼及啟動狀態與上表相同。`wc3119 inquiry` 回報 `Scanner WinUSB interface is unavailable; MI_00 must be paired and its interface GUID registered before inquiry`，結束碼 1。此次失敗發生在已登錄裝置介面的列舉階段，未開啟 USB 或送出 INQUIRY。
 
-尚未讀取 USB 端點描述、INQUIRY 能力回覆或任何影像。沒有執行掃描、修改驅動綁定、建立 WIA 裝置、建立列印佇列或修改安全設定。
+以上為配對前紀錄。當時沒有取得 USB 通訊或影像證據。
+
+## 授權配對後的最新結果
+
+2026-09-13 經使用者授權及 UAC，只對已備份的完整 MI_00 實例綁定內建 WinUSB、登錄專案 GUID 及重新啟動介面。安裝與介面重啟結束碼均為 0，無需重開機。原生協調腳本核對父裝置／MI_01 的服務、INF、問題碼、ClassGuid、Parent 均與備份一致。
+
+| 目標 | 服務 | 問題碼 | 已啟動 |
+| --- | --- | --- | --- |
+| 父裝置 | usbccgp | 0 | 是 |
+| MI_00 | WINUSB | 0 | 是 |
+| MI_01 | usbprint | 0 | 是 |
+
+一般權限執行 release `doctor` 與 `inquiry` 皆回傳 0。`inquiry` 已讀取並核對 USB 裝置／介面描述與唯一 bulk IN／OUT，再收到有效能力回覆：
+
+| 回覆欄位 | 真實回報值 |
+| --- | --- |
+| 機器識別 | SAMSUNG ORION |
+| 已辨識解析度 | 75、100、150、200、300、600 dpi |
+| 解析度／模式旗標 | 0x00353f／0x29 |
+| 寬／最大長／平台長 | 10200／14040／14040，單位 1/1200 英吋 |
+| 行序／壓縮旗標 | 0x01／0x2f |
+
+端點數值與原始回覆尚未由 CLI 保存。未啟動掃描，未取得影像；回報解析度不等於光學解析度驗證。尚無 WIA、列印佇列、復原、換孔或跨電腦驗證。未變更系統安全設定。
