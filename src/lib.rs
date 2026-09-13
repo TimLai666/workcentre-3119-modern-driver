@@ -7,6 +7,9 @@ pub mod protocol;
 pub mod scan;
 
 #[cfg(windows)]
+pub mod com_stream;
+
+#[cfg(windows)]
 mod usb;
 
 /// Query reported scanner capabilities. This sends INQUIRY but does not start a scan.

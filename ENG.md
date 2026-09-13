@@ -72,7 +72,11 @@ USB API 回傳錯誤可能已消耗未知長度，不能沿用舊的剩餘數量
 
 使用無壓縮 BMP、40-byte BITMAPINFOHEADER、負高度的由上而下行序，避免為翻轉影像而暫存整張原稿。灰階採 8-bit 與中性灰色盤，RGB 採 24-bit BGR，每列補齊四位元組。保留裝置交付的列順序，只改通道排列與填補，不套亮度、gamma、色彩描述或壓縮。原稿的實體上下方向仍待有內容的文件驗證。額外暫存限一列，尺寸及累計資料量另設上限。[Microsoft DIB 行序](https://learn.microsoft.com/en-us/windows/win32/gdi/device-independent-bitmaps)、[BMP 儲存格式](https://learn.microsoft.com/en-us/windows/win32/gdi/bitmap-storage)
 
-這是供 WIA 轉接元件使用的影像編碼，不是已完成的 WIA 驅動。未來的 IStream 轉接須正確轉換 HRESULT、部分寫入及 Seek，不能假定串流有 `Read`、`Stat` 或 `Commit`。此編碼器不依賴這些方法或 flush，檔案同步由開發擷取範例負責。`finish` 成功後串流位置在 byte 2，後續定位及交付由呼叫端管理；不是已確認的 WIA 結束位置規則。WIA 裝置發現、屬性、COM 生命週期及 Windows 掃描的 top-down BMP 相容性仍須依 [05](docs/tickets/05-windows-install.md) 驗證。[Microsoft WIA 串流規則](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/istream-data-transfer-driver-changes)
+這是供 WIA 轉接元件使用的影像編碼，不是已完成的 WIA 驅動。`com_stream::ComOutputStream` 已提供 Windows 原生 IStream 的 `Write + Seek` 轉接，不依賴 `Read`、`Stat`、`Commit` 或 `SetSize`，`flush` 明確回報不支援。檔案同步仍由開發擷取範例負責。`finish` 成功後串流位置在 byte 2，後續定位及交付由呼叫端管理；不是已確認的 WIA 結束位置規則。WIA 裝置發現、屬性、minidriver COM 生命週期及 Windows 掃描的 top-down BMP 相容性仍須依 [05](docs/tickets/05-windows-install.md) 驗證。[Microsoft WIA 串流規則](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/istream-data-transfer-driver-changes)
+
+`ComOutputStream::from_raw_owned` 接收一個已擁有的 IStream 參考，呼叫端負責 COM 執行緒初始化及指標有效性，轉接物件只在原執行緒使用並於 Drop 釋放一次。原生寫入每次最多 ULONG 長度，短寫按回報數量繼續，零進度及超量回報拒絕；任何非 S_OK 結果均回傳 `StreamError` 保留原始 HRESULT，包括已寫入部分資料後的失敗。`write_all` 遇 Interrupted 立即停止，不採標準函式的自動重試。S_FALSE 在此只是未支援的串流回覆，不推論為 WIA callback 的取消。絕對 Seek 保留完整 u64 位元，對應 COM 在 STREAM_SEEK_SET 時以無號解釋位移的規則。[Microsoft Write](https://learn.microsoft.com/en-us/windows/win32/api/objidl/nf-objidl-isequentialstream-write)、[Microsoft Seek](https://learn.microsoft.com/en-us/windows/win32/api/objidl/nf-objidl-istream-seek)
+
+原生邊界以 Windows SDK 10.0.26100.0 `objidlbase.h` 的 IStream 方法順序核對，並使用 Windows `CreateStreamOnHGlobal` 真實物件完成 BMP 寫入及讀回測試。該測試只在測試執行緒初始化 COM，釋放串流後解除初始化，不登錄 DLL、不啟動掃描。這證明目前 Windows x64 的串流呼叫可運作，不替代 WIA 服務提供的實際串流驗收。[Microsoft OLE 記憶體串流](https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-createstreamonhglobal)
 
 ### 效能與跨機型共用
 
