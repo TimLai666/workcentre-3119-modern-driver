@@ -32,7 +32,9 @@
 
 ### 程式化配對的已知限制
 
-本機 `winusb.inf` 的一般模型匹配 `USB\MS_COMP_WINUSB`，沒有 3119 的硬體 ID，因此一般 `pnputil /add-driver /install` 不會自動完成這次配對。候選路線是由 SetupAPI 選取內建模型，再用 [DiInstallDevice](https://learn.microsoft.com/en-us/windows/win32/api/newdev/nf-newdev-diinstalldevice) 指定完整 MI_00 裝置實例。無驅動介面能否選取不同裝置類別的模型仍未實測，不能把這段研究當成可執行安裝器。
+本機 `winusb.inf` 的一般模型匹配 `USB\MS_COMP_WINUSB`，沒有 3119 的硬體 ID，因此一般 `pnputil /add-driver /install` 不會自動完成這次配對。2026-09-13 已用 [Rust 配對工具](../examples/winusb_setup.rs) 實測：MI_00 的裝置專屬 CLASS 清單包含 3 個候選，只有 1 個符合內建 `winusb.inf`、`WINUSB` 區段、Microsoft 與 `USB\MS_COMP_WINUSB`。其他 BILLBOARD／ADB 候選均被排除。預檢前後 MI_00 維持無服務／INF、問題碼 28。
+
+不帶參數執行 `cargo run --offline --example winusb_setup` 只列舉候選。已實作的 `--install-mi00` 路徑要求完整預期裝置 ID，再次核對唯一在線裝置、無既有驅動及專屬清單候選，才呼叫 [DiInstallDevice](https://learn.microsoft.com/en-us/windows/win32/api/newdev/nf-newdev-diinstalldevice)。它不負責備份、GUID 登錄或復原，不是可分發的完整安裝套件。執行前仍需完成本文件的授權與備份要求；回傳 3010 表示 Windows 要求重新開機，工具不會自動重開機。
 
 不可改造 USB 裝置的硬體 ID 或相容 ID 來假冒 WinUSB 相容裝置。[Microsoft 屬性限制](https://learn.microsoft.com/en-us/windows/win32/api/setupapi/nf-setupapi-setupdisetdeviceregistrypropertyw)也不允許直接以該 API 寫入保留的 CLASSGUID、CLASS、SERVICE 屬性。
 

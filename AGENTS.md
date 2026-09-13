@@ -19,6 +19,7 @@
 - 原生 API 的 `unsafe` 必須限縮在封裝內，註明指標、長度、生命週期及資源釋放的依據。
 - 新核心功能採 TDD，先驗證測試會失敗，再實作。模擬封包須明示為合成資料，實機資料須記錄取得方式。
 - 每次交付執行 `cargo fmt --all -- --check`、`cargo clippy --offline --all-targets -- -D warnings`、`cargo test --offline`、`cargo build --offline --release`。新增依賴後先完成抓取再離線驗證。
+- `examples/winusb_setup.rs` 是開發機配對工具。更動後另跑 `cargo test --offline --example winusb_setup` 與 `cargo build --offline --release --example winusb_setup`。不帶參數僅預檢，帶 `--install-mi00` 才會修改系統，執行前須依 `driver/README.md` 核對授權、備份與復原範圍。
 - 硬體存取改動另執行實機測試。掃描交付須保留匿名化測試紀錄與實際影像檢查結果，不把測試樣本、序號或使用者文件提交到 Git。
 - 每次修改先讀取檔案，使用原文比對的補丁。整檔工具改寫前確認內容雜湊沒有變動，遇到其他人的變更先重新檢查。
 - 紀錄完成、部分完成、未驗證與受阻狀態。功能完成後同步更新文件，不留下未實作卻宣稱可用的選項。
@@ -45,3 +46,5 @@
 以台灣繁體中文簡短回報成果、限制及待決策事項。列出實際使用的 Skills。使用者已授權本專案必要的 commit 與 push，可在驗證後自行提交及推送至既有遠端，不需逐次確認。不得強制推送或覆蓋他人變更。此授權不包含系統驅動安裝、付費簽署或正式版本發布。架構與功能狀態存入上述專案文件，不寫入個人記憶。
 
 提交訊息預設使用英文 Conventional Commits，例如 `feat(usb): add scanner inquiry transport`。
+
+使用者指定子代理分工：簡單驗證用 `gpt-5.3-codex-spark`，較複雜的實作與審查用 `gpt-5.6-luna`，effort 設為該模型支援的最高值，目前分別為 `xhigh` 與 `max`。本專案已成功啟動這兩種子代理，不能只因工具清單未列出 Spark 就判定不可用。

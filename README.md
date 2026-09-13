@@ -46,7 +46,10 @@ cargo run --offline -- inquiry
 cargo fmt --all -- --check
 cargo clippy --offline --all-targets -- -D warnings
 cargo test --offline
+cargo test --offline --example winusb_setup
 cargo build --offline --release
 ```
+
+開發機的 WinUSB 候選預檢可執行 `cargo run --offline --example winusb_setup`。不帶參數時不安裝驅動。實際配對需另外依 [安裝方案](driver/README.md)備份及取得系統變更授權，這個工具不是正式安裝套件。
 
 本專案目前的原創程式採 MIT。SANE 上游的授權不同，尚未把其實作移植進本專案。這是獨立開發專案，並非 Xerox 官方驅動。

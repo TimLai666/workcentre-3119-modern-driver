@@ -30,7 +30,7 @@
 
 能力欄位依 [SANE 1.4.0 INQUIRY](https://gitlab.com/sane-project/backends/-/blob/1.4.0/backend/xerox_mfp.c#L775) 與 [解析度位元定義](https://gitlab.com/sane-project/backends/-/blob/1.4.0/backend/xerox_mfp.c#L403) 獨立實作。能力位元與設定命令的解析度代碼不同，不可互換。幾何值保留 1/1200 英吋單位，尚未依未驗證的機型補償轉成有效掃描範圍。
 
-綁定及正式簽署方式尚未核准。自訂 INF 需要簽章目錄檔，目前只有 [INF 設計稿](driver/wc3119-winusb.inf)，不是可分發的套件。開發機可評估 Microsoft 文件中的內建 WinUSB 手動配對方式，但本機尚未驗證該流程。
+綁定及正式簽署方式尚未核准。自訂 INF 需要簽章目錄檔，目前只有 [INF 設計稿](driver/wc3119-winusb.inf)，不是可分發的套件。開發機另有 [Rust 配對工具](examples/winusb_setup.rs)，已實測內建 WinUSB 候選列舉，實際綁定仍未驗證。預設只預檢；明確指定完整 MI_00 ID 後，安裝路徑再次核對裝置與其專屬候選，再呼叫 DiInstallDevice。備份、GUID 登錄與復原由外部操作流程負責，範圍見 [安裝方案](driver/README.md)。
 
 真正的 Windows 掃描整合需要實作 WIA 驅動與安裝登錄。WinUSB 本身不會把裝置變成 Windows 掃描器。WIA 如何發現裝置、COM 生命週期、USB 句柄交接與一般使用者權限須先完成實機小範圍驗證，再確定正式安裝架構。
 
