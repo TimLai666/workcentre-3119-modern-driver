@@ -6,6 +6,12 @@
 
 `MI_00` 表示複合式 USB 裝置的第 0 個功能介面，數字取自裝置描述，與電腦上的 USB 接孔編號無關。3119 的 MI_00 已回覆掃描能力，MI_01 使用列印傳輸服務。正式套件會依型號與功能介面辨識，不以開發機的孔位或完整實例路徑限定使用。[Microsoft USB 識別碼定義](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/standard-usb-identifiers)
 
+## 解析度與模式
+
+[Xerox 官方規格](https://www.office.xerox.com/latest/W31BR-01.PDF)標示光學最高 600 × 2400 dpi、插值最高 4800 dpi，模式含 1-bit 黑白線稿／半色調、8-bit 灰階及 24-bit 彩色。插值會增加輸出像素，不能當成新增的光學細節。
+
+目前此機器的 INQUIRY 已辨識回報為 75、100、150、200、300、600 dpi，本核心以相同 X／Y 解析度設定，僅開放灰階與彩色。兩者皆已完成 600 dpi 空平台傳輸；黑白線稿、半色調與非對稱 600 × 2400 dpi 尚未實作／驗證。不能以當前協定回報推論整台機器的完整上限。
+
 ## 執行診斷
 
 需要 Rust stable MSVC 工具鏈及 Visual Studio C++ 建置工具。診斷程式沒有第三方 Rust 依賴。
@@ -36,7 +42,7 @@ cargo run --offline -- inquiry
 cargo run --offline --release --example capture_scan -- artifacts/my-scan gray 75
 ```
 
-可選 `gray`／`rgb`，解析度接受 75、100、150、200、300、600，並以機器當次回報再次限制。已實機驗證的組合見 [硬體紀錄](docs/hardware.md)，不能把可接受參數都當成已驗證。加 `--cancel-after-band` 可測第一塊傳輸後取消，預期回傳失敗且不產生完成標記。
+可選 `gray`／`rgb`，解析度接受 75、100、150、200、300、600，並以機器當次回報再次限制。已實機驗證的組合見 [硬體紀錄](docs/hardware.md)，不能把可接受參數都當成已驗證。加 `--cancel-after-band` 可測第一塊傳輸後取消，或用 `--cancel-after-ms N` 在 1–120000 毫秒後提出取消；兩者不可同時使用。取消預期回傳失敗且不產生完成標記。詳見範例的 `--help`。
 
 目錄保存 USB 原文、解碼像素及 PGM／PPM；只有掃描釋放與檔案同步成功才有 `complete.txt`，其餘目錄視為中斷資料。影像依 READ 實際尺寸保存，沒有自動提亮、gamma、裁切或幾何補償。檔案可能包含私人文件，`artifacts/` 不提交至 Git。這是開發驗證範例，Windows 掃描尚不能使用此核心。
 

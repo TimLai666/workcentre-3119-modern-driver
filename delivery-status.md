@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-2026-09-13：Rust 核心已取得實機空平台灰階／彩色影像，並驗證第一塊後取消與立即重掃。專案為純驅動，不開發 GUI；文件品質、異常復原、WIA、正式套件及列印仍未完成。
+2026-09-13：灰階與彩色皆已完成 600 dpi 實機傳輸。新增已知資料長度的有限排空，早期／進行中定時取消及其後重掃成功。專案為純驅動，不開發 GUI；文件品質、完整異常復原、WIA、正式套件及列印仍未完成。
 
 ## Stage Objective
 
@@ -11,7 +11,7 @@
 ## Active Workstreams
 
 - 裝置診斷已實作並實跑，尚缺拔線競態、多台裝置及權限拒絕的實機驗證。
-- Rust 已完成 Gray75、RGB75、RGB300、Gray600 空平台傳輸。最新擷取版本在同一個獨占 session 保存能力與影像，防止開啟兩次造成目標不一致。
+- Rust 已完成 Gray75、RGB75、RGB300、Gray600、RGB600 空平台傳輸。能力與影像來自同一個獨占 session。
 - 本機 MI_00 綁定、GUID 登錄及介面重啟成功，不需重開機，父裝置與 MI_01 符合原始備份；復原未執行。
 - 使用者回報 Windows 掃描搭配原廠驅動時彩色像過曝、灰階偏淡。已建立 07 的逐段比對與驗收條件，尚未重現或修復。
 
@@ -22,7 +22,7 @@
 | init | Rust 專案與接手文件 | 開發者 | done | 五個測試、Clippy、格式檢查、release 建置通過 |
 | 01 | 唯讀診斷完整情境 | 開發者 | in_progress | 本機問題碼 28 可重現，硬體異常情境未全部驗證 |
 | 02 | 第一張實機掃描 | 開發者 | in_progress | 空平台灰階／彩色及獨立像素比對成功；文件、色彩及精確幾何待驗收 |
-| 03 | 取消與復原 | 開發者 | in_progress | 實機第一塊後取消、重掃與互斥成功；異常復原及完整矩陣未完成 |
+| 03 | 取消與復原 | 開發者 | in_progress | 已知長度有限排空通過合成測試；實機早期／進行中取消、重掃與互斥成功；失同步復原未完成 |
 | 05 | Windows 掃描與安裝 | 開發者 | in_progress | 本機開發配對成功；完整套件、復原、WIA 與跨電腦／換孔未驗證 |
 | 06 | 列印 | 開發者 | not_started | 尚無 |
 | 07 | 掃描明暗品質 | 開發者 | blocked | 已有空平台影像，缺少可對照原稿；歷史偏白仍未重現 |
@@ -59,7 +59,9 @@
 
 ## Verified
 
-本次最終程式驗證：格式檢查、Clippy（all targets，warnings 為錯誤）、42 個 all-targets 測試與 release 建置全部通過。擷取範例 release SHA256：`345C98C692645E658C2EC57EEAA30A26B6B4D1B235EDF613A308C7744F8736D0`。開發配對工具未修改／重跑安裝。
+本次最終程式驗證：格式檢查、Clippy（all targets，warnings 為錯誤）、47 個 all-targets 測試、一般測試含 doc-tests 與核心／擷取範例 release 建置全部通過。擷取範例 release SHA256：`74848DAF2F002A4A3665DCD0DAE044B97018C2FEC963AD296057474F53863775`。新增測試先失敗再實作；範例 help 已實跑核對定時取消、預設值、錯誤及用法。開發配對工具未修改／重跑安裝。
+
+最新實機證據：RGB600 5100×6961、117 塊、106503300 bytes，94.951 秒完成；獨立逐像素對照與 USB 資料一致。100 ms 早期取消及 8000 ms 進行中取消皆回傳失敗、不產生完成標記，隨後 Gray75 重掃成功。沒有注入實機 USB 錯誤，也沒有驗收文件品質。Luna 獨立審查本次有限排空未發現新增的傳輸重試缺陷；失同步後 API 尚未強制阻擋下一個工作是既有缺口，持續追蹤於 [03](docs/tickets/03-recover-scan.md)。
 
 首次影像傳輸：Gray75 648×871、RGB75 648×871、RGB300 2556×3476、Gray600 5100×6959，皆正常完成並釋放。RGB75 第一塊後取消回傳 Interrupted、沒有完成標記，立即重掃成功。300RGB 工作中另一行程被拒（OS error 5）且原工作完成。獨立 Python/Pillow 對照所有成功初始掃描的 wire 與像素相同，RGB 僅重新排列；75 dpi 影像實際檢視為空平台，不能驗收偏白修復。詳見 [硬體證據](docs/hardware.md)。
 
@@ -112,6 +114,8 @@
 | [src/windows.rs](src/windows.rs) | Windows 唯讀裝置與驅動查詢 |
 | [src/usb.rs](src/usb.rs) | WinUSB 裝置核對、端點查詢及單次 INQUIRY |
 | [src/protocol.rs](src/protocol.rs) | 能力回覆框架驗證與欄位解析 |
+| [src/scan.rs](src/scan.rs) | 掃描工作、影像解碼與已知長度的有限排空，保留取消原因 |
+| [examples/capture_scan.rs](examples/capture_scan.rs) | 私人實機證據擷取、定時／塊後取消與完成標記 |
 | [src/main.rs](src/main.rs) | 繁體中文 doctor 與 inquiry 指令 |
 | [tests/device.rs](tests/device.rs) | 裝置與狀態測試 |
 | [tests/cli.rs](tests/cli.rs) | CLI 行程測試 |
@@ -132,6 +136,10 @@
 | [driver/README.md](driver/README.md) | 安裝範圍、風險與復原要求 |
 
 ## Actions
+
+本次只執行掃描、取消、唯讀診斷及建置驗證，未新增系統安裝或登錄變更。原始影像與裝置證據保留在 Git 排除的 `artifacts/`。
+
+前次掃描核心已提交並推送至 `origin/main`，commit `1bed8448b07175f59a630c8172dc8a79cc72f401`，當時已核對遠端相符。本次有限排空與定時取消的提交識別由 Git 記錄。
 
 使用者核准後，經 Windows UAC 執行精確 MI_00 的內建 WinUSB 配對、GUID 登錄及介面重啟，全部成功。沒有重開機、執行復原或變更安全設定。備份及含私人裝置 ID 的安裝紀錄只存於 Git 排除目錄。
 

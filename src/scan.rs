@@ -407,6 +407,82 @@ fn run_job(
     run_prepared_job(usb, cancel, sink, |_| Ok(request))
 }
 
+/// Drain only data whose exact remaining length is known. An opaque USB error
+/// may have consumed unknown bytes, so it cannot be recovered by this routine.
+fn read_image_band(
+    usb: &mut impl Transport,
+    length: usize,
+    cancel: &AtomicBool,
+    deadline: Instant,
+    synchronized: &mut bool,
+) -> io::Result<Vec<u8>> {
+    let failed = |original: &Option<io::Error>, error: io::Error| match original {
+        Some(original) => io::Error::new(
+            original.kind(),
+            format!("{original}; image drain failed: {error}"),
+        ),
+        None => error,
+    };
+    *synchronized = false;
+    let mut raw = Vec::with_capacity(length);
+    let mut buffer = [0; 65536];
+    let mut failure = None;
+    let mut drain_deadline = None;
+    let mut empty_reads = 0;
+    while raw.len() < length {
+        if failure.is_none() {
+            failure = checkpoint(cancel, deadline).err();
+        }
+        if failure.is_some() && drain_deadline.is_none() {
+            drain_deadline = Some(Instant::now() + Duration::from_secs(10));
+        }
+        if drain_deadline.is_some_and(|end| Instant::now() >= end) {
+            return Err(failed(
+                &failure,
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Image drain exceeded 10 seconds; stream synchronization lost",
+                ),
+            ));
+        }
+        let remaining = length - raw.len();
+        let capacity = remaining
+            .div_ceil(1024)
+            .saturating_mul(1024)
+            .min(buffer.len());
+        let count = match usb.read(&mut buffer[..capacity]) {
+            Ok(count) => count,
+            Err(error) => return Err(failed(&failure, error)),
+        };
+        if count > capacity || count > remaining {
+            return Err(failed(
+                &failure,
+                invalid("Image read exceeded advertised band length; stream synchronization lost"),
+            ));
+        }
+        if count == 0 {
+            empty_reads += 1;
+            if failure.is_none() {
+                failure = Some(invalid("Image read made no progress"));
+            }
+            if empty_reads >= 2 {
+                return Err(failed(
+                    &failure,
+                    invalid("Image drain made no progress twice; stream synchronization lost"),
+                ));
+            }
+            continue;
+        }
+        raw.extend_from_slice(&buffer[..count]);
+    }
+    *synchronized = true;
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    checkpoint(cancel, deadline)?;
+    Ok(raw)
+}
+
 fn run_prepared_job(
     usb: &mut impl Transport,
     cancel: &AtomicBool,
@@ -455,31 +531,7 @@ fn run_prepared_job(
             }
             synchronized = false;
             usb.write(&[0x1b, 0xa8, 0x29, 0])?;
-            let mut raw = Vec::with_capacity(band.length);
-            let mut buffer = [0; 65536];
-            while raw.len() < band.length {
-                // Drain this known band before honoring cancellation, keeping command framing intact.
-                if Instant::now() >= deadline {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "Image transfer deadline exceeded",
-                    ));
-                }
-                let remaining = band.length - raw.len();
-                let capacity = remaining
-                    .div_ceil(1024)
-                    .saturating_mul(1024)
-                    .min(buffer.len());
-                let n = usb.read(&mut buffer[..capacity])?;
-                if n == 0 || n > capacity || n > remaining {
-                    return Err(invalid(
-                        "Image read made no progress or exceeded advertised band length",
-                    ));
-                }
-                raw.extend_from_slice(&buffer[..n]);
-            }
-            synchronized = true;
-            checkpoint(cancel, deadline)?;
+            let raw = read_image_band(usb, band.length, cancel, deadline, &mut synchronized)?;
             let pixels = band.decode(&raw, request.mode, caps.line_order)?;
             summary.width = band.width as u32;
             summary.height = summary
@@ -695,6 +747,106 @@ mod tests {
             .is_err()
         );
         assert!(usb.writes.is_empty());
+    }
+
+    #[test]
+    fn zero_length_transfer_is_drained_before_abort_and_preserves_the_failure() {
+        let mut usb = synthetic();
+        usb.replies.insert(5, vec![]);
+        usb.replies.push_back(reply(0));
+        let mut delivered = 0;
+        let error = run_job(&mut usb, request(), &AtomicBool::new(false), &mut |_| {
+            delivered += 1;
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("no progress"));
+        assert_eq!(delivered, 0);
+        assert_eq!(usb.writes, [0x12, 0x16, 0x24, 0x31, 0x28, 0x29, 0x06, 0x17]);
+        assert!(usb.replies.is_empty());
+    }
+
+    #[test]
+    fn cancelled_and_expired_reads_drain_known_data_but_repeated_empty_reads_stop() {
+        for cancelled in [true, false] {
+            let mut usb = Synthetic {
+                replies: [vec![1, 2], vec![3, 4]].into(),
+                writes: vec![],
+            };
+            let mut synchronized = false;
+            let deadline = if cancelled {
+                Instant::now() + Duration::from_secs(1)
+            } else {
+                Instant::now() - Duration::from_secs(1)
+            };
+            let error = read_image_band(
+                &mut usb,
+                4,
+                &AtomicBool::new(cancelled),
+                deadline,
+                &mut synchronized,
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.kind(),
+                if cancelled {
+                    io::ErrorKind::Interrupted
+                } else {
+                    io::ErrorKind::TimedOut
+                }
+            );
+            assert!(synchronized);
+            assert!(usb.replies.is_empty());
+        }
+        let mut usb = Synthetic {
+            replies: [vec![], vec![], vec![1, 2]].into(),
+            writes: vec![],
+        };
+        let mut synchronized = false;
+        assert!(
+            read_image_band(
+                &mut usb,
+                2,
+                &AtomicBool::new(false),
+                Instant::now() + Duration::from_secs(1),
+                &mut synchronized
+            )
+            .is_err()
+        );
+        assert!(!synchronized);
+        assert_eq!(usb.replies.len(), 1);
+    }
+
+    #[test]
+    fn opaque_usb_failure_is_not_retried_and_keeps_cancellation_reason() {
+        struct FailedRead(usize);
+        impl Transport for FailedRead {
+            fn write(&mut self, _: &[u8]) -> io::Result<()> {
+                panic!("No recovery command allowed");
+            }
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                self.0 += 1;
+                Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "synthetic disconnected transfer",
+                ))
+            }
+        }
+        let mut usb = FailedRead(0);
+        let mut synchronized = false;
+        let error = read_image_band(
+            &mut usb,
+            18,
+            &AtomicBool::new(true),
+            Instant::now() + Duration::from_secs(1),
+            &mut synchronized,
+        )
+        .unwrap_err();
+        assert_eq!(usb.0, 1);
+        assert!(!synchronized);
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(error.to_string().contains("Scan cancelled"));
+        assert!(error.to_string().contains("disconnected transfer"));
     }
 
     #[test]

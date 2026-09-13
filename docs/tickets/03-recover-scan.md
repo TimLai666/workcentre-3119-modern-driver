@@ -19,8 +19,12 @@ Blocked by：部分硬體異常驗收需要實際拔線／重插與睡眠操作�
 
 ## 測試
 
+2026-09-13 後續：新增已知剩餘長度的有限排空。合成測試證明取消、期限到達與單次零進度可在排空後 ABORT／RELEASE，且仍回傳原始失敗；第二次空讀、超量或不明 USB 失敗不繼續嘗試。定時取消實機測試：100 ms 取消回傳 Interrupted；600RGB 於 8000 ms 取消前已收到 4 塊，亦正常取消；其後 Gray75 重掃成功。這證明早期與進行中取消，但沒有追蹤到發生取消當下精確落在哪個 USB 呼叫，不能宣稱所有階段已驗收。
+
 2026-09-13：實機 RGB75 第一塊後取消回傳 Interrupted，ABORT／RELEASE 成功，立即重掃成功且不需重插。掃描期間第二行程的能力查詢被拒，原掃描完成。合成測試已覆蓋開始前取消、消費端錯誤／panic、零進度、短讀、清理失敗及未持有保留權時不釋放。
 
 尚未完成：暖機／USB 讀取途中取消、拔線重插、睡眠、逾時後復原及連續 20 次測試。現在若原始影像傳輸失敗而無法確認排空，會關閉 USB 資源、回報需重插，保留權與機器狀態未確認恢復。不得宣稱這是可直接重掃的復原，也不能在忽略此錯誤後盲目重送。正式整合前需完成可驗證的重連狀態與復原策略。
+
+跨工作隔離仍是已確認的缺口：目前失同步只在該次工作回報需重插，API 尚未強制阻擋下一次開啟。後續須讓失同步裝置停止接受工作，並驗證解除條件。`DEVPKEY_Device_LastArrivalDate` 只有活動時間戳記定義；Windows 的 arrival／removal 通知是介面啟用／停用，不能單靠時間戳記變動推論實體拔插完成。不得把它直接當成解除隔離的證據。[Microsoft 屬性定義](https://raw.githubusercontent.com/microsoft/win32metadata/main/generation/WinSDK/RecompiledIdlHeaders/shared/devpkey.h)、[PnP 事件定義](https://learn.microsoft.com/en-us/windows/win32/api/cfgmgr32/ne-cfgmgr32-cm_notify_action)
 
 掃描工作交界的取消與錯誤注入，搭配實機故障操作。20 次是專案驗收門檻，不是既有產品表現。

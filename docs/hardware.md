@@ -75,6 +75,14 @@ Xerox WorkCentre 3119 · USB 0924:4265
 
 ## 首次實機影像傳輸
 
+### 最新補充：600 dpi 彩色
+
+定時取消驗證：`artifacts/scan-early-cancel-20260913-b` 設定 100 ms，結束碼 1，耗時約 0.38 秒；`scan-active-cancel-20260913-b` 設定 8000 ms、600RGB，收到 4 塊後以取消結束，總耗時約 8.71 秒。兩次都沒有 `complete.txt`，錯誤沒有清理失敗訊息。隨後 `scan-after-timed-cancel-20260913-b` 以 Gray75 得到 648 × 871 並正常完成，不需重插。定時器設定記於 `evidence.txt`；取消當下的精確 USB 階段未另追蹤。
+
+2026-09-13 後續執行 `capture_scan artifacts/scan-rgb600-20260913-b rgb 600` 成功，回傳 5100 × 6961、117 塊、106503300 bytes，耗時 94.951 秒並正常釋放。逐塊移除 16-byte 尾端填補後，以獨立 Python/Pillow 核對平面 RGB 與 PPM 的所有像素相符。PPM SHA256：`d8746ed2e27214d64d1de203c37683e19727cf5ad86b25c775386e0d24fbee4b`，本機 `verification.json` 保留結果。這仍是空平台，不代表色彩或幾何品質已驗收。
+
+此後灰階及彩色皆已驗證到 600 dpi。官方規格另標示光學 600 × 2400 dpi、插值 4800 dpi，與當前協定回報及相同 X／Y 設定的上限不同；非對稱設定尚未查明，見 [02](tickets/02-first-scan.md)。下方為較早的首次掃描紀錄。
+
 2026-09-13，以一般權限執行原創 Rust `capture_scan` 範例，使用者確認平台沒有文件。以下皆為空平台，不能用來驗收文字、色彩、尺寸準確度或歷史偏白症狀。
 
 端點由每次開啟時重新查詢：bulk IN `0x84`、OUT `0x03`，maximum packet 皆 512。裝置與介面描述如下，不含序號字串：
