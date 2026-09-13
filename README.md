@@ -2,7 +2,7 @@
 
 以 Rust 開發 Xerox WorkCentre 3119 的 Windows 11 x64 純驅動，優先支援掃描。使用 Windows 掃描等既有軟體操作，不另外開發 GUI 或掃描 App。
 
-**目前是開發初期，尚不能掃描或列印。** 工具可檢查 USB 驅動狀態；開發機已成功配對 WinUSB，Rust 已取得真實掃描能力回覆。跨電腦安裝、USB 換孔及 Windows 掃描整合仍待驗證。
+**Rust 核心已取得實機灰階／彩色影像，目前仍不是完整可安裝的驅動。** 已驗證空平台掃描、取消後重掃及跨行程互斥；文字、色彩、精確幾何與偏白問題尚未驗收。Windows 掃描整合、正式安裝套件、跨電腦／換孔及列印仍未完成。
 
 `MI_00` 表示複合式 USB 裝置的第 0 個功能介面，數字取自裝置描述，與電腦上的 USB 接孔編號無關。3119 的 MI_00 已回覆掃描能力，MI_01 使用列印傳輸服務。正式套件會依型號與功能介面辨識，不以開發機的孔位或完整實例路徑限定使用。[Microsoft USB 識別碼定義](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/standard-usb-identifiers)
 
@@ -28,6 +28,18 @@ cargo run --offline -- inquiry
 
 程式核對唯一裝置、USB 描述與端點後，只送出 INQUIRY 能力查詢，不啟動掃描。成功時列出機器回報的型號、解析度、模式及範圍，回傳 0。找不到已登錄介面、存取失敗、逾時或回覆不合法時回傳 1，不會安裝驅動或自動重試。能力回報不代表掃描及影像品質已驗證。
 
+## 開發用影像擷取
+
+本機已配對的 MI_00 可透過 Rust `scan::scan_to` 回傳無壓縮影像。以下範例會啟動完整平台掃描，輸出目錄必須不存在：
+
+```powershell
+cargo run --offline --release --example capture_scan -- artifacts/my-scan gray 75
+```
+
+可選 `gray`／`rgb`，解析度接受 75、100、150、200、300、600，並以機器當次回報再次限制。已實機驗證的組合見 [硬體紀錄](docs/hardware.md)，不能把可接受參數都當成已驗證。加 `--cancel-after-band` 可測第一塊傳輸後取消，預期回傳失敗且不產生完成標記。
+
+目錄保存 USB 原文、解碼像素及 PGM／PPM；只有掃描釋放與檔案同步成功才有 `complete.txt`，其餘目錄視為中斷資料。影像依 READ 實際尺寸保存，沒有自動提亮、gamma、裁切或幾何補償。檔案可能包含私人文件，`artifacts/` 不提交至 Git。這是開發驗證範例，Windows 掃描尚不能使用此核心。
+
 ## 完整交付目標
 
 - 真實平台掃描，依機器能力提供灰階、彩色與解析度設定。
@@ -49,7 +61,9 @@ cargo fmt --all -- --check
 cargo clippy --offline --all-targets -- -D warnings
 cargo test --offline
 cargo test --offline --example winusb_setup
+cargo test --offline --example capture_scan
 cargo build --offline --release
+cargo build --offline --release --example capture_scan
 ```
 
 開發機的 WinUSB 候選預檢可執行 `cargo run --offline --example winusb_setup`。不帶參數時不安裝驅動。實際配對需另外依 [安裝方案](driver/README.md)備份及取得系統變更授權，這個工具不是正式安裝套件。

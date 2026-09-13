@@ -3,6 +3,7 @@
 //! Transport readiness does not imply that scanning or WIA integration works.
 
 pub mod protocol;
+pub mod scan;
 
 #[cfg(windows)]
 mod usb;
@@ -11,6 +12,45 @@ mod usb;
 #[cfg(windows)]
 pub fn inquiry() -> std::io::Result<protocol::Capabilities> {
     protocol::Capabilities::parse(&usb::inquiry()?)
+}
+
+/// Non-identifying USB metadata and raw INQUIRY for reproducible diagnostics.
+#[derive(Debug)]
+pub struct InquiryEvidence {
+    pub device_descriptor: [u8; 18],
+    pub interface_descriptor: [u8; 9],
+    pub bulk_in: u8,
+    pub bulk_out: u8,
+    pub bulk_in_max_packet: u16,
+    pub bulk_out_max_packet: u16,
+    pub reply: Vec<u8>,
+}
+
+#[cfg(windows)]
+pub fn inquiry_evidence() -> std::io::Result<InquiryEvidence> {
+    let mut session = usb::UsbSession::open()?;
+    session.write(&[0x1b, 0xa8, 0x12, 0])?;
+    let mut reply = vec![0; 1024];
+    let n = session.read(&mut reply)?;
+    reply.truncate(n);
+    protocol::Capabilities::parse(&reply)?;
+    Ok(InquiryEvidence {
+        device_descriptor: session.descriptor,
+        interface_descriptor: session.interface,
+        bulk_in: session.bulk_in,
+        bulk_out: session.bulk_out,
+        bulk_in_max_packet: session.bulk_in_max_packet,
+        bulk_out_max_packet: session.bulk_out_max_packet,
+        reply,
+    })
+}
+
+#[cfg(not(windows))]
+pub fn inquiry_evidence() -> std::io::Result<InquiryEvidence> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "USB inquiry requires Windows",
+    ))
 }
 
 #[cfg(not(windows))]

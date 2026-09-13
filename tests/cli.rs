@@ -1,7 +1,7 @@
 use std::process::Command;
 
 #[test]
-fn help_states_actual_capability_without_claiming_scanning() {
+fn help_distinguishes_diagnostics_from_development_scanning_and_wia() {
     let output = Command::new(env!("CARGO_BIN_EXE_wc3119"))
         .arg("--help")
         .output()
@@ -10,7 +10,8 @@ fn help_states_actual_capability_without_claiming_scanning() {
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("wc3119 doctor"));
     assert!(text.contains("wc3119 inquiry"));
-    assert!(text.contains("尚未提供掃描功能"));
+    assert!(text.contains("capture_scan"));
+    assert!(text.contains("尚未提供 Windows 掃描整合"));
 }
 
 #[test]

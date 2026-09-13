@@ -10,7 +10,7 @@ fn run() -> io::Result<u8> {
     if args.is_empty() || (args.len() == 1 && (args[0] == "--help" || args[0] == "-h")) {
         writeln!(
             out,
-            "wc3119 doctor\n  唯讀檢查 Xerox WorkCentre 3119 的 USB 介面與驅動狀態。\nwc3119 inquiry\n  核對 USB 描述後查詢機器回報的能力，需要 MI_00 已配對 WinUSB。\n  本版本尚未提供掃描功能。\n\n結束碼：0 指令成功（不代表可以掃描）；2 裝置未就緒；1 檢查失敗；64 參數錯誤。"
+            "wc3119 doctor\n  唯讀檢查 Xerox WorkCentre 3119 的 USB 介面與驅動狀態。\nwc3119 inquiry\n  核對 USB 描述後查詢機器回報的能力，需要 MI_00 已配對 WinUSB。\n  開發用影像擷取請參閱 examples/capture_scan.rs；尚未提供 Windows 掃描整合。\n\n結束碼：0 指令成功（不代表完整驅動已可用）；2 裝置未就緒；1 檢查失敗；64 參數錯誤。"
         )?;
         return Ok(0);
     }

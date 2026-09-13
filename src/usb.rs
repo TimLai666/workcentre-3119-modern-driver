@@ -1,4 +1,4 @@
-//! A single, bounded scanner capability inquiry through Windows WinUSB.
+//! Exclusive, bounded scanner transfers through Windows WinUSB.
 
 use std::{ffi::c_void, io, mem::size_of, ptr};
 
@@ -8,6 +8,7 @@ type Handle = *mut c_void;
 const INVALID_HANDLE: Handle = -1isize as Handle;
 const ERROR_INSUFFICIENT_BUFFER: i32 = 122;
 const ERROR_NO_MORE_ITEMS: i32 = 259;
+const MAX_TRANSFER_BYTES: usize = 1024 * 1024;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -52,6 +53,14 @@ struct PipeInfo {
     id: u8,
     maximum_packet: u16,
     interval: u8,
+}
+
+#[derive(Clone, Copy)]
+struct BulkPipes {
+    input: u8,
+    output: u8,
+    input_max_packet: u16,
+    output_max_packet: u16,
 }
 
 #[link(name = "Setupapi")]
@@ -165,11 +174,30 @@ impl Drop for DeviceFile {
 struct UsbHandle(Handle);
 impl Drop for UsbHandle {
     fn drop(&mut self) {
-        // SAFETY: owns a successful initialization; inquiry drops it before its file.
+        // SAFETY: this is the sole owner of a successful WinUsb_Initialize result.
         unsafe {
             WinUsb_Free(self.0);
         }
     }
+}
+
+/// An exclusively opened scanner interface and its validated bulk transport.
+///
+/// `usb` is declared before `file` because struct fields are dropped in
+/// declaration order. This releases the WinUSB interface before closing the
+/// underlying device file.
+pub(crate) struct UsbSession {
+    usb: UsbHandle,
+    #[allow(dead_code)]
+    // Kept alive for the WinUSB interface lifetime; field declaration order
+    // releases the USB handle before this underlying file handle.
+    file: DeviceFile,
+    pub(crate) descriptor: [u8; 18],
+    pub(crate) interface: [u8; 9],
+    pub(crate) bulk_in: u8,
+    pub(crate) bulk_out: u8,
+    pub(crate) bulk_in_max_packet: u16,
+    pub(crate) bulk_out_max_packet: u16,
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -359,7 +387,7 @@ fn validate_interface(descriptor: &[u8; 9], current: u8) -> io::Result<u8> {
     Ok(descriptor[4])
 }
 
-fn select_pipes(pipes: &[PipeInfo]) -> io::Result<(u8, u8)> {
+fn select_bulk_pipes(pipes: &[PipeInfo]) -> io::Result<BulkPipes> {
     let (mut input, mut output) = (None, None);
     let mut addresses = [false; 256];
     for pipe in pipes {
@@ -383,15 +411,28 @@ fn select_pipes(pipes: &[PipeInfo]) -> io::Result<(u8, u8)> {
         } else {
             &mut output
         };
-        if slot.replace(pipe.id).is_some() {
+        if slot.replace((pipe.id, pipe.maximum_packet)).is_some() {
             return Err(invalid("Ambiguous bulk endpoints; no command was sent"));
         }
     }
-    input
+    let (input, output) = input
         .zip(output)
-        .ok_or_else(|| invalid("Scanner requires a unique bulk IN and OUT endpoint"))
+        .ok_or_else(|| invalid("Scanner requires a unique bulk IN and OUT endpoint"))?;
+    Ok(BulkPipes {
+        input: input.0,
+        output: output.0,
+        input_max_packet: input.1,
+        output_max_packet: output.1,
+    })
 }
 
+#[cfg(test)]
+fn select_pipes(pipes: &[PipeInfo]) -> io::Result<(u8, u8)> {
+    let selected = select_bulk_pipes(pipes)?;
+    Ok((selected.input, selected.output))
+}
+
+#[cfg(test)]
 fn validate_write(transferred: u32) -> io::Result<()> {
     if transferred != 4 {
         return Err(io::Error::new(
@@ -402,154 +443,255 @@ fn validate_write(transferred: u32) -> io::Result<()> {
     Ok(())
 }
 
+fn validate_transfer_buffer(length: usize) -> io::Result<()> {
+    if length == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "USB transfer buffer must not be empty",
+        ));
+    }
+    if length > MAX_TRANSFER_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "USB transfer buffer exceeds the 1 MiB limit",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_read_buffer(length: usize, maximum_packet: u16) -> io::Result<()> {
+    validate_transfer_buffer(length)?;
+    let maximum_packet = usize::from(maximum_packet);
+    if maximum_packet == 0 || !length.is_multiple_of(maximum_packet) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "USB read buffer must be a multiple of the bulk IN maximum packet",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_complete_write(transferred: u32, expected: usize) -> io::Result<()> {
+    if expected == 0 || expected > MAX_TRANSFER_BYTES || u64::from(transferred) != expected as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::WriteZero,
+            "Incomplete USB write; command will not be retried",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_bounded_read(transferred: u32, capacity: usize) -> io::Result<usize> {
+    if u64::from(transferred) > capacity as u64 {
+        return Err(invalid("Oversized USB response"));
+    }
+    Ok(transferred as usize)
+}
+
 fn validate_read(transferred: u32, capacity: usize) -> io::Result<usize> {
-    if transferred == 0 || transferred as usize > capacity {
+    if transferred == 0 || u64::from(transferred) > capacity as u64 {
         return Err(invalid("Empty or oversized INQUIRY response"));
     }
     Ok(transferred as usize)
+}
+
+impl UsbSession {
+    /// Open and validate the one present scanner MI_00 transport.
+    ///
+    /// This performs descriptor and pipe discovery plus the existing bounded
+    /// WinUSB policy setup. It does not send a device command.
+    pub(crate) fn open() -> io::Result<Self> {
+        let path = scanner_path()?;
+        // GENERIC_READ | GENERIC_WRITE, exclusive sharing, OPEN_EXISTING,
+        // FILE_FLAG_OVERLAPPED (required by WinUSB even for synchronous transfers).
+        // SAFETY: path is owned and terminated; optional pointers are null.
+        let raw_file = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                0xc000_0000,
+                0,
+                ptr::null(),
+                3,
+                0x4000_0000,
+                ptr::null_mut(),
+            )
+        };
+        if raw_file == INVALID_HANDLE {
+            return Err(io::Error::last_os_error());
+        }
+        let file = DeviceFile(raw_file);
+        let mut raw_usb = ptr::null_mut();
+        win_result(
+            // SAFETY: file is valid and remains alive longer than the resulting handle.
+            unsafe { WinUsb_Initialize(file.0, &mut raw_usb) },
+            "Initialize scanner WinUSB",
+        )?;
+        if raw_usb.is_null() {
+            return Err(invalid("WinUSB returned an empty interface handle"));
+        }
+        let usb = UsbHandle(raw_usb);
+
+        let mut descriptor = [0u8; 18];
+        let mut transferred = 0;
+        win_result(
+            // SAFETY: owned USB handle, valid descriptor selector and 18-byte output.
+            unsafe {
+                WinUsb_GetDescriptor(
+                    usb.0,
+                    1,
+                    0,
+                    0,
+                    descriptor.as_mut_ptr(),
+                    descriptor.len() as u32,
+                    &mut transferred,
+                )
+            },
+            "Read USB device descriptor",
+        )?;
+        if transferred != descriptor.len() as u32 {
+            return Err(invalid("Truncated USB device descriptor"));
+        }
+        validate_device(&descriptor)?;
+
+        let mut setting = 0;
+        win_result(
+            // SAFETY: live USB handle and writable one-byte output.
+            unsafe { WinUsb_GetCurrentAlternateSetting(usb.0, &mut setting) },
+            "Read current USB alternate setting",
+        )?;
+        let mut interface = [0u8; 9];
+        win_result(
+            // SAFETY: USB_INTERFACE_DESCRIPTOR is packed, exactly 9 bytes, alignment 1.
+            unsafe { WinUsb_QueryInterfaceSettings(usb.0, setting, interface.as_mut_ptr()) },
+            "Read scanner USB interface",
+        )?;
+        let count = validate_interface(&interface, setting)?;
+        let mut pipes = Vec::with_capacity(count as usize);
+        for index in 0..count {
+            let mut pipe = PipeInfo::default();
+            win_result(
+                // SAFETY: index is bounded by descriptor endpoint count; pipe ABI matches SDK.
+                unsafe { WinUsb_QueryPipe(usb.0, setting, index, &mut pipe) },
+                "Read scanner endpoint",
+            )?;
+            pipes.push(pipe);
+        }
+        let selected = select_bulk_pipes(&pipes)?;
+        for pipe in [selected.input, selected.output] {
+            let timeout: u32 = 5000;
+            win_result(
+                // SAFETY: discovered pipe; PIPE_TRANSFER_TIMEOUT consumes a live ULONG.
+                unsafe { WinUsb_SetPipePolicy(usb.0, pipe, 3, 4, (&timeout as *const u32).cast()) },
+                "Set USB transfer timeout",
+            )?;
+            let disabled: u8 = 0;
+            // AUTO_CLEAR_STALL and RESET_PIPE_ON_RESUME must not reset hardware.
+            for policy in [2, 9] {
+                win_result(
+                    // SAFETY: both policies consume a BOOLEAN (one byte), not Win32 BOOL.
+                    unsafe {
+                        WinUsb_SetPipePolicy(
+                            usb.0,
+                            pipe,
+                            policy,
+                            1,
+                            (&disabled as *const u8).cast(),
+                        )
+                    },
+                    "Disable automatic USB recovery",
+                )?;
+            }
+        }
+        // Do not discard excess data, accept partial packets, or ignore short packets.
+        let disabled: u8 = 0;
+        for policy in [4, 5, 6] {
+            win_result(
+                // SAFETY: read-pipe policies each consume a live BOOLEAN.
+                unsafe {
+                    WinUsb_SetPipePolicy(
+                        usb.0,
+                        selected.input,
+                        policy,
+                        1,
+                        (&disabled as *const u8).cast(),
+                    )
+                },
+                "Set bounded USB read policy",
+            )?;
+        }
+
+        Ok(Self {
+            usb,
+            file,
+            descriptor,
+            interface,
+            bulk_in: selected.input,
+            bulk_out: selected.output,
+            bulk_in_max_packet: selected.input_max_packet,
+            bulk_out_max_packet: selected.output_max_packet,
+        })
+    }
+
+    /// Write one complete command without retrying a short transfer.
+    pub(crate) fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
+        validate_transfer_buffer(bytes.len())?;
+        let mut transferred = 0;
+        win_result(
+            // SAFETY: the session owns a live WinUSB handle; the input slice remains
+            // valid for the synchronous call and the API writes no more than its length.
+            unsafe {
+                WinUsb_WritePipe(
+                    self.usb.0,
+                    self.bulk_out,
+                    bytes.as_ptr().cast_mut(),
+                    bytes.len() as u32,
+                    &mut transferred,
+                    ptr::null_mut(),
+                )
+            },
+            "Write scanner command",
+        )?;
+        validate_complete_write(transferred, bytes.len())
+    }
+
+    /// Read one bounded bulk-IN transfer. A zero-byte completion is returned to
+    /// the caller so scan-state logic can decide whether it is acceptable.
+    pub(crate) fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        validate_read_buffer(bytes.len(), self.bulk_in_max_packet)?;
+        let mut transferred = 0;
+        win_result(
+            // SAFETY: the session owns a live WinUSB handle; the output slice remains
+            // valid and writable for the synchronous call and its length is bounded.
+            unsafe {
+                WinUsb_ReadPipe(
+                    self.usb.0,
+                    self.bulk_in,
+                    bytes.as_mut_ptr(),
+                    bytes.len() as u32,
+                    &mut transferred,
+                    ptr::null_mut(),
+                )
+            },
+            "Read scanner data",
+        )?;
+        validate_bounded_read(transferred, bytes.len())
+    }
 }
 
 /// Query capabilities once. Requires an already-installed WinUSB binding for
 /// scanner MI_00. Does not scan, install, reset, clear stalls, or retry commands.
 /// The returned bytes still require protocol validation by the caller.
 pub fn inquiry() -> io::Result<Vec<u8>> {
-    let path = scanner_path()?;
-    // GENERIC_READ | GENERIC_WRITE, exclusive sharing, OPEN_EXISTING,
-    // FILE_FLAG_OVERLAPPED (required by WinUSB even for synchronous transfers).
-    // SAFETY: path is owned and terminated; optional pointers are null.
-    let raw_file = unsafe {
-        CreateFileW(
-            path.as_ptr(),
-            0xc000_0000,
-            0,
-            ptr::null(),
-            3,
-            0x4000_0000,
-            ptr::null_mut(),
-        )
-    };
-    if raw_file == INVALID_HANDLE {
-        return Err(io::Error::last_os_error());
-    }
-    let file = DeviceFile(raw_file);
-    let mut raw_usb = ptr::null_mut();
-    win_result(
-        // SAFETY: file is valid and remains alive longer than the resulting handle.
-        unsafe { WinUsb_Initialize(file.0, &mut raw_usb) },
-        "Initialize scanner WinUSB",
-    )?;
-    let usb = UsbHandle(raw_usb);
-    let mut device = [0u8; 18];
-    let mut transferred = 0;
-    win_result(
-        // SAFETY: owned USB handle, valid descriptor selector and 18-byte output.
-        unsafe {
-            WinUsb_GetDescriptor(
-                usb.0,
-                1,
-                0,
-                0,
-                device.as_mut_ptr(),
-                device.len() as u32,
-                &mut transferred,
-            )
-        },
-        "Read USB device descriptor",
-    )?;
-    if transferred != device.len() as u32 {
-        return Err(invalid("Truncated USB device descriptor"));
-    }
-    validate_device(&device)?;
-    let mut setting = 0;
-    win_result(
-        // SAFETY: live USB handle and writable one-byte output.
-        unsafe { WinUsb_GetCurrentAlternateSetting(usb.0, &mut setting) },
-        "Read current USB alternate setting",
-    )?;
-    let mut interface = [0u8; 9];
-    win_result(
-        // SAFETY: USB_INTERFACE_DESCRIPTOR is packed, exactly 9 bytes, alignment 1.
-        unsafe { WinUsb_QueryInterfaceSettings(usb.0, setting, interface.as_mut_ptr()) },
-        "Read scanner USB interface",
-    )?;
-    let count = validate_interface(&interface, setting)?;
-    let mut pipes = Vec::with_capacity(count as usize);
-    for index in 0..count {
-        let mut pipe = PipeInfo::default();
-        win_result(
-            // SAFETY: index is bounded by descriptor endpoint count; pipe ABI matches SDK.
-            unsafe { WinUsb_QueryPipe(usb.0, setting, index, &mut pipe) },
-            "Read scanner endpoint",
-        )?;
-        pipes.push(pipe);
-    }
-    let (input, output) = select_pipes(&pipes)?;
-    for pipe in [input, output] {
-        let timeout: u32 = 5000;
-        win_result(
-            // SAFETY: discovered pipe; PIPE_TRANSFER_TIMEOUT consumes a live ULONG.
-            unsafe { WinUsb_SetPipePolicy(usb.0, pipe, 3, 4, (&timeout as *const u32).cast()) },
-            "Set USB transfer timeout",
-        )?;
-        let disabled: u8 = 0;
-        // AUTO_CLEAR_STALL and RESET_PIPE_ON_RESUME must not reset hardware.
-        for policy in [2, 9] {
-            win_result(
-                // SAFETY: both policies consume a BOOLEAN (one byte), not Win32 BOOL.
-                unsafe {
-                    WinUsb_SetPipePolicy(usb.0, pipe, policy, 1, (&disabled as *const u8).cast())
-                },
-                "Disable automatic USB recovery",
-            )?;
-        }
-    }
-    // Do not discard excess data, accept partial packets, or ignore short packets.
-    let disabled: u8 = 0;
-    for policy in [4, 5, 6] {
-        win_result(
-            // SAFETY: read-pipe policies each consume a live BOOLEAN.
-            unsafe {
-                WinUsb_SetPipePolicy(usb.0, input, policy, 1, (&disabled as *const u8).cast())
-            },
-            "Set bounded USB read policy",
-        )?;
-    }
+    let mut session = UsbSession::open()?;
     // Protocol facts: SANE 1.4.0 xerox_mfp.h CMD_INQUIRY / REQ_CODE_A/B,
     // xerox_mfp.c inquiry command has no payload. Original Rust implementation.
-    let mut command = [0x1b, 0xa8, 0x12, 0];
-    win_result(
-        // SAFETY: buffer and count remain live until synchronous (null OVERLAPPED) completion.
-        unsafe {
-            WinUsb_WritePipe(
-                usb.0,
-                output,
-                command.as_mut_ptr(),
-                4,
-                &mut transferred,
-                ptr::null_mut(),
-            )
-        },
-        "Write scanner INQUIRY",
-    )?;
-    validate_write(transferred)?;
+    let command = [0x1b, 0xa8, 0x12, 0];
+    session.write(&command)?;
     // 1024 is a multiple of the protocol's 512-byte USB block and of any valid
     // bulk maximum packet size. One read only; parser rejects unrelated replies.
     let mut response = vec![0u8; 1024];
-    win_result(
-        // SAFETY: response has 1024 writable bytes; null OVERLAPPED waits with pipe timeout.
-        unsafe {
-            WinUsb_ReadPipe(
-                usb.0,
-                input,
-                response.as_mut_ptr(),
-                response.len() as u32,
-                &mut transferred,
-                ptr::null_mut(),
-            )
-        },
-        "Read scanner INQUIRY",
-    )?;
-    response.truncate(validate_read(transferred, response.len())?);
+    let transferred = session.read(&mut response)?;
+    response.truncate(validate_read(transferred as u32, response.len())?);
     Ok(response)
 }
 
@@ -637,6 +779,34 @@ mod tests {
         assert_eq!(validate_read(512, 512).unwrap(), 512);
         assert!(validate_read(0, 512).is_err());
         assert!(validate_read(513, 512).is_err());
+    }
+
+    #[test]
+    fn session_transfer_boundaries_are_finite_and_variable_without_panics() {
+        for length in [1, 4, 64, 512, MAX_TRANSFER_BYTES] {
+            assert!(validate_transfer_buffer(length).is_ok());
+            assert!(validate_complete_write(length as u32, length).is_ok());
+            assert!(validate_complete_write(length as u32 - 1, length).is_err());
+        }
+        for length in [0, MAX_TRANSFER_BYTES + 1, usize::MAX] {
+            let result = std::panic::catch_unwind(|| validate_transfer_buffer(length));
+            assert!(result.is_ok(), "buffer validation panicked for {length}");
+            assert!(result.unwrap().is_err());
+        }
+    }
+
+    #[test]
+    fn session_read_allows_zero_transfer_but_rejects_bad_buffers() {
+        assert_eq!(validate_bounded_read(0, 512).unwrap(), 0);
+        assert_eq!(validate_bounded_read(511, 512).unwrap(), 511);
+        assert_eq!(validate_bounded_read(512, 512).unwrap(), 512);
+        assert!(validate_bounded_read(513, 512).is_err());
+        assert!(validate_read_buffer(512, 64).is_ok());
+        assert!(validate_read_buffer(1024, 1024).is_ok());
+        for (length, max_packet) in [(0, 64), (1, 64), (513, 64), (512, 1024)] {
+            assert!(validate_read_buffer(length, max_packet).is_err());
+        }
+        assert!(validate_read_buffer(MAX_TRANSFER_BYTES + 1, 64).is_err());
     }
 
     #[test]
