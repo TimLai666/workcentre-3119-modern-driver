@@ -84,7 +84,17 @@ USB API 回傳錯誤可能已消耗未知長度，不能沿用舊的剩餘數量
 
 `wia::scan_bmp` 先驗證設定及預先取消，再沿用 `scan_to` 與 `BmpEncoder` 啟動真實掃描。當次能力與工作來自同一個 USB session，範圍及模式不符時在 RESERVE 前拒絕。輸出須為空白 `Write + Seek` 串流，可使用 `ComOutputStream`。任何錯誤均不交付成功影像，只有工作及清理成功後才完成 BMP 標頭。輸出尺寸保留實際 READ 結果，沒有新增裁切、縮放或明暗處理。
 
-WIA 選取範圍 `XEXTENT/YEXTENT` 與輸出尺寸屬性用途不同。正式屬性模型須維護範圍、位置、解析度與頁面間的關係，不能因 READ 回傳不同就假定應覆寫選取範圍。Microsoft 建議應用程式以影像標頭取得實際尺寸。這個入口尚未實作屬性儲存或同步，也沒有 WIA callback／COM minidriver，實際消費與幾何契約由 05 驗收。[Microsoft XEXTENT](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ips-xextent)、[PIXELS_PER_LINE](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ipa-pixels-per-line)
+WIA 選取範圍 `XEXTENT/YEXTENT` 與輸出尺寸屬性用途不同。正式屬性模型須維護範圍、位置、解析度與頁面間的關係，不能因 READ 回傳不同就假定應覆寫選取範圍。Microsoft 建議應用程式以影像標頭取得實際尺寸。這個入口尚未實作屬性儲存或同步，原生 callback 消費端見下節，COM minidriver 的服務整合與幾何契約由 05 驗收。[Microsoft XEXTENT](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ips-xextent)、[PIXELS_PER_LINE](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ipa-pixels-per-line)
+
+### WIA 原生傳輸回呼
+
+`com_server::transfer_locked_bmp` 驗證設定與預先取消後，借用 IStiUSD 已鎖定的 session。`wia_callback::TransferCallback` 從借用的 IUnknown 查詢 `IWiaMiniDrvTransferCallback`，用真正 BSTR 傳遞項目名稱，透過 `GetNextStream` 取得一個 owned IStream。QI、取得串流、進度及所有 Release 都在同一工作借用期間執行，且不持有狀態 Mutex。既有 `scan_locked_bmp` 也沿用相同借用方法，沒有另一套 USB 掃描流程。
+
+`wia_transfer` 將每個影像塊交給原 BMP 編碼器，再送 `SendMessage(STATUS)`。回報的 bytes 包含標頭、灰階色盤及每列填補，不重複計算完成標頭的覆寫。百分比以選取高度估計並限制至 99，裝置清理與 BMP finish 都成功後才回報 100。最終取消或錯誤即使發生於完整 BMP 後，呼叫端也必須丟棄影像。驅動不手動送 END_OF_STREAM／END_OF_TRANSFER，這兩個通知由 WIA 服務負責。[Microsoft 傳輸常數](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-transfer-constants)
+
+回呼 S_FALSE 只在確認清理成功後回報 `TransferOutcome::Cancelled`。一般 IStream 錯誤保留原始 `StreamError`，回呼錯誤保留 `CallbackError`；掃描期間的輸出錯誤另以 `TransferError::original` 保存，包含清理診斷，不能以 Interrupted 一律當成取消。失同步／清理失敗保持隔離。單張平台的 SKIP 在開始掃描前返回 `Skipped`，沒有進行中的頁面或下一個項目要排空。[GetNextStream](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamindr_lh/nf-wiamindr_lh-iwiaminidrvtransfercallback-getnextstream)、[SendMessage](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamindr_lh/nf-wiamindr_lh-iwiaminidrvtransfercallback-sendmessage)
+
+原生回呼以獨立宣告 ABI 的測試物件供應 Windows HGLOBAL IStream，核心流程測試使用明示的合成影像與清理結果。實機測試則沿用同一鎖定物件跑灰階、彩色取消及重掃，驗收矩陣見 [05](docs/tickets/05-windows-install.md)。這個入口尚非 `IWiaMiniDrv::drvAcquireItemData`，不能用任意指標偽造 WIA 服務的 property context。初始化、item tree、屬性同步、服務提供的串流與 WIA_EVENT_CANCEL_IO 尚待實作。進度回呼目前只在開始、影像塊完成與結束時執行，暖機及 USB 等候期間的服務取消尚未驗證。
 
 ### COM DLL 載入與驗證
 

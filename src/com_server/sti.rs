@@ -280,6 +280,44 @@ impl State {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(io::Error::new(io::ErrorKind::Interrupted, "Scan cancelled"));
         }
+        self.with_scan_session(|usb| {
+            crate::wia::scan_request_bmp_in_session(usb, request, cancel, output)
+        })
+    }
+
+    pub(super) unsafe fn transfer_bmp(
+        &self,
+        settings: crate::wia::FlatbedSettings,
+        cancel: &std::sync::atomic::AtomicBool,
+        callback: *mut c_void,
+        item: &str,
+        full_item: &str,
+    ) -> io::Result<crate::wia_transfer::TransferOutcome> {
+        let request = settings.to_request()?;
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(crate::wia_transfer::TransferOutcome::Cancelled);
+        }
+        self.with_scan_session(|usb| {
+            // SAFETY: caller supplies a live apartment-compatible callback for
+            // the synchronous transfer. The USB lease covers every external call.
+            unsafe {
+                crate::wia_transfer::transfer_in_session(
+                    usb,
+                    request,
+                    settings.y_extent as u32,
+                    cancel,
+                    callback,
+                    item,
+                    full_item,
+                )
+            }
+        })
+    }
+
+    fn with_scan_session<T>(
+        &self,
+        run: impl FnOnce(&mut usb::UsbSession) -> (io::Result<T>, crate::scan::SessionHealth),
+    ) -> io::Result<T> {
         if !self.lock().initialized {
             return Err(io::Error::new(
                 io::ErrorKind::NotConnected,
@@ -289,8 +327,7 @@ impl State {
         let result = self
             .session
             .with_session(|usb| {
-                let (result, health) =
-                    crate::wia::scan_request_bmp_in_session(usb, request, cancel, output);
+                let (result, health) = run(usb);
                 (result, health == crate::scan::SessionHealth::Ready)
             })
             .map_err(|error| match error {

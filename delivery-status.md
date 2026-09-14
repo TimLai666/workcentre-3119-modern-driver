@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-2026-09-14：使用者已恢復開發。同一 COM 物件的灰階掃描、彩色取消及彩色重掃實測通過，RESERVE 前取消造成錯誤隔離的問題已重現並修正。接續 IWiaMiniDrv、屬性模型、傳輸 callback 與服務端身分映射。既有兩次自然逾時、20 次穩定性、文件品質、正式套件及列印仍未完成。
+2026-09-14：原生 WIA 傳輸回呼已接上同一 COM 物件的 USB 連線，透過 Windows 記憶體串流完成灰階、彩色取消及彩色重掃實測。進度、錯誤保留與參考釋放已驗證，IWiaMiniDrv 初始化、屬性模型及服務端身分映射仍待完成，Windows 掃描尚不能使用本驅動。既有兩次自然逾時、20 次穩定性、文件品質、正式套件及列印仍未完成。
 
 ## Stage Objective
 
@@ -24,7 +24,7 @@
 | 01 | 唯讀診斷完整情境 | 開發者 | in_progress | 本機問題碼 28 可重現，硬體異常情境未全部驗證 |
 | 02 | 第一張實機掃描 | 開發者 | in_progress | 空平台灰階／彩色及獨立像素比對成功；文件、色彩及精確幾何待驗收 |
 | 03 | 取消與復原 | 開發者 | in_progress | 連續工作前 4 次成功，第 5 次 RGB600 自然逾時，清理後 Gray75 成功；20 次驗收與失同步復原未完成 |
-| 05 | Windows 掃描與安裝 | 開發者 | in_progress | 本機配對及 BMP 串流像素驗證成功；完整套件、原生 WIA、復原與跨電腦／換孔未驗證 |
+| 05 | Windows 掃描與安裝 | 開發者 | in_progress | 本機配對、BMP 與原生傳輸回呼實掃通過；IWiaMiniDrv、服務整合、完整套件、復原與跨電腦／換孔未驗證 |
 | 06 | 列印 | 開發者 | not_started | 尚無 |
 | 07 | 掃描明暗品質 | 開發者 | blocked | 已有空平台影像，缺少可對照原稿；歷史偏白仍未重現 |
 
@@ -39,7 +39,7 @@
 
 ## Next Verifiable Output
 
-接上原生 IWiaMiniDrv 的初始化、掃描項目／屬性及傳輸流程，沿用已驗證的鎖定物件掃描入口，先以直接 COM 呼叫測試，不登錄系統。`com_server::scan_locked_bmp` 是 Rust 整合入口，尚未實作 WIA COM 影像傳輸。既有兩個 STI 硬體測試本輪已逐一明確執行通過，後續更動其傳輸路徑時才重新列舉裝置、使用新輸出目錄並以 `--ignored --exact` 重跑，不平行操作 USB。
+接上原生 IWiaMiniDrv 的初始化、掃描項目／屬性及 drvAcquireItemData，沿用已驗證的 `com_server::transfer_locked_bmp` 回呼傳輸入口。先驗證 QI 共用身分與生命週期，再建立根項目／平台項目及有效屬性範圍，將服務的設定交給現有掃描路徑。可直接呼叫的 COM／SDK 部分先在程序內驗證，不以假指標替代 WIA 服務管理的 property context。三個 STI 硬體測試本輪已逐一明確執行通過，後續更動其傳輸路徑時才重新列舉裝置、使用新輸出目錄並以 `--ignored --exact` 重跑，不平行操作 USB。
 
 IWiaMiniDrv 的初始化、屬性模型及掃描傳輸先用直接 COM 呼叫驗證，不先登錄系統。COM aggregation 的實際需求、服務管理的並行載入／卸載排程與 runtime 前置條件亦須驗證。數值快照映射已完成，但正式屬性範圍、相依更新及幾何仍待實作／驗證。先前 600×800 選取區回傳 600×801，不可將輸出尺寸任意當成 WIA 選取範圍。WinUSB 共存、服務帳號存取及 Windows 掃描消費 BMP 仍需整合驗證。跨工作隔離依 03 補完，不以介面到達時間戳記當成實體重插證據。準備具體安裝、備份及復原方案後，才提出必要的系統變更授權。平台有文件後補做 02／07 品質對照。
 
@@ -64,6 +64,12 @@ IWiaMiniDrv 的初始化、屬性模型及掃描傳輸先用直接 COM 呼叫驗
 | 建立持續完成完整驅動的目標 | 使用者要求逐步完成實作、驗證與推送，需要使用者介入時提出具體需求，可獨立工作繼續推進 | 2026-09-13 | 01、02、03、05、06、07 |
 
 ## Verified
+
+2026-09-14 原生傳輸回呼版本：153 個 all-targets 測試、一般測試及 2 個 doc-tests、格式、Clippy、全部 release targets 通過；當次 release DLL 的動態載入測試另行通過。callback 轉接、BMP 進度與公開入口均先取得缺少實作的失敗，再實作通過。7 個傳輸流程測試涵蓋原生記憶體串流、合成像素、開始前取消／SKIP、非空串流、錯誤保留、清理失敗及最後進度取消。SDK C11 靜態斷言確認 callback vtable、結構偏移與常數。
+
+新回呼實機測試 42.29 秒完成灰階、彩色取消及重掃，QI／GetNextStream／SendMessage／Release 內重入均維持排他且可查詢。原有兩個硬體測試另逐一通過（0.05／42.11 秒）。Pillow 獨立檢查 BMP 標頭與全部有效樣本，實際檢視新回呼的灰階／彩色影像仍是空平台。測試後 doctor 三個介面正常，INQUIRY 成功，沒有系統變更。完整證據見 [實機紀錄](docs/hardware.md#原生-wia-callback-實機傳輸)。
+
+Diff Inspector：Scope CLEAN，根代理查核全部程式／文件差異與共用掃描的消費端，Luna 完成原生 ABI、參考生命週期、回呼重入及錯誤分類的獨立對抗審查，沒有確認的未處理 P1／P2。依 Microsoft 契約移除草稿中的手動結束通知，僅由服務發送 END_OF_STREAM／END_OF_TRANSFER；沿用既有掃描及 session 借用流程。服務串流定位、暖機／USB 等待期間取消及真實 WIA context 列為後續整合驗證。最終來源與 DLL 雜湊見 [05](docs/tickets/05-windows-install.md#測試)。
 
 2026-09-14 修正版：129 個 all-targets、2 個 doc-tests、格式、Clippy、全部 release targets 通過，當次 release DLL 的動態載入測試另行通過。兩個 STI ignored 硬體測試逐一通過，鎖定／診斷 0.05 秒，同物件灰階／彩色取消／重掃 42.12 秒。Pillow 檢查全部 BMP 有效樣本解碼一致，GDI+ 開啟及實際影像檢視通過，內容為空平台。沒有重插或系統變更，詳見 [實機證據](docs/hardware.md#共用連線實掃與提早取消修正)。
 
@@ -160,10 +166,10 @@ Diff Inspector：本輪範圍符合診斷及可靠性調查，根代理已審查
 | [Cargo.toml](Cargo.toml) | Rust 套件與檢查規則 |
 | [build.rs](build.rs) | MSVC cdylib 的 COM export 定義參數 |
 | [driver/com-exports.def](driver/com-exports.def) | 兩個 runtime COM exports，排除 import library 項目 |
-| [src/com_server.rs](src/com_server.rs) | DLL 入口、factory、IUnknown 參考與 module lock 生命週期 |
-| [src/com_server/sti.rs](src/com_server/sti.rs) | IStiUSD 初始化、指定裝置獨占、能力診斷及錯誤回報 |
+| [src/com_server.rs](src/com_server.rs) | DLL 入口、factory、IUnknown／module lock 生命週期及鎖定物件的原生回呼傳輸入口 |
+| [src/com_server/sti.rs](src/com_server/sti.rs) | IStiUSD 初始化、指定裝置獨占、能力診斷及錯誤回報，共用 BMP／原生回呼的連線借用 |
 | [src/com_server/session.rs](src/com_server/session.rs) | 同一資源借用、回呼期間排他、關閉時序及異常隔離 |
-| [tests/sti.rs](tests/sti.rs) | SDK 契約、helper 參考及明確啟用的實機互斥／釋放驗證 |
+| [tests/sti.rs](tests/sti.rs) | SDK 契約、helper 參考及明確啟用的實機互斥／釋放、原生回呼取消與重掃驗證 |
 | [tests/com_server.rs](tests/com_server.rs) | ABI、失敗、參考釋放及並行 module hold 交接 |
 | [tests/com_server_dll.rs](tests/com_server_dll.rs) | 明確指定 release DLL 的實際動態載入與卸載 |
 | [Cargo.lock](Cargo.lock) | 可重現的套件鎖定檔，目前無第三方依賴 |
@@ -172,11 +178,15 @@ Diff Inspector：本輪範圍符合診斷及可靠性調查，根代理已審查
 | [src/windows.rs](src/windows.rs) | Windows 唯讀裝置與驅動查詢 |
 | [src/usb.rs](src/usb.rs) | WinUSB 裝置核對、精確路徑選擇、端點／讀取上限查詢及單次 INQUIRY |
 | [src/protocol.rs](src/protocol.rs) | 能力回覆框架驗證與欄位解析 |
-| [src/bitmap.rs](src/bitmap.rs) | 逐列 BMP 編碼、格式／尺寸驗證、部分寫入與失敗處理 |
+| [src/bitmap.rs](src/bitmap.rs) | 逐列 BMP 編碼、格式／尺寸驗證、部分寫入與失敗處理，回報完整列數及編碼進度 |
 | [src/com_stream.rs](src/com_stream.rs) | Windows IStream 輸出、原始 HRESULT、單次參考釋放及執行緒限制 |
 | [tests/com_stream.rs](tests/com_stream.rs) | 合成 COM 錯誤邊界與 Windows 真實記憶體串流 BMP 回讀 |
 | [src/wia.rs](src/wia.rs) | WIA 數值設定驗證、精確範圍換算及真實掃描 BMP 入口 |
 | [tests/wia.rs](tests/wia.rs) | 六種解析度、模式／色深、無效設定與預先取消 |
+| [src/wia_callback.rs](src/wia_callback.rs) | 原生 callback QI、BSTR、GetNextStream、進度與 HRESULT／參考管理 |
+| [src/wia_transfer.rs](src/wia_transfer.rs) | 同一連線的回呼掃描、BMP 進度、取消及輸出／清理錯誤保留 |
+| [tests/wia_callback.rs](tests/wia_callback.rs) | 15 個原生回呼契約與 Windows 記憶體串流測試 |
+| [tests/support/wia_callback.rs](tests/support/wia_callback.rs) | 共用的獨立 COM ABI 測試物件及真實 HGLOBAL 串流 |
 | [src/scan.rs](src/scan.rs) | 掃描工作、影像解碼、有限排空、階段／Busy 診斷與效能量測，共用上限預檢與連線健康狀態，RESERVE 前取消保留可用連線 |
 | [examples/capture_scan.rs](examples/capture_scan.rs) | 私人實機證據擷取、定時／塊後取消、BMP 串流與完成標記 |
 | [examples/scan_stability.rs](examples/scan_stability.rs) | 同程序連續掃描、獨立像素核對、成功／失敗 profile 及有限範圍的 READ 間隔／緩衝區參數，任一失敗即停止 |

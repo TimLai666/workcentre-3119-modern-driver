@@ -19,6 +19,7 @@
 - 原生 API 的 `unsafe` 必須限縮在封裝內，註明指標、長度、生命週期及資源釋放的依據。
 - `src/com_stream.rs` 封裝原生 IStream 輸出及參考釋放，供 BMP 編碼使用。更動後執行 `cargo test --offline --test com_stream` 與 doc-tests，驗證 Windows 真實記憶體串流、錯誤及執行緒限制；這些測試不登錄 WIA 或操作 USB。
 - `src/wia.rs` 驗證 WIA 純數值設定並轉成掃描要求，`scan_bmp` 會啟動真實 USB 掃描及輸出 BMP。`cargo test --offline --test wia` 只驗證設定與預先取消，不操作硬體。WIA 屬性同步與 minidriver COM 尚由 05 接續實作。
+- `src/wia_callback.rs` 封裝原生 WIA callback，`src/wia_transfer.rs` 接上同一 session 的 BMP、進度、取消與原始錯誤。更動後跑 `cargo test --offline --test wia_callback` 與 `cargo test --offline --lib wia_transfer::tests`。`tests/sti.rs` 的 `actual_callback_transfer_scans_cancels_and_rescans` 需當下 `WC3119_TEST_STI_PATH` 與不存在的 `WC3119_TEST_OUTPUT_DIR`，必須單獨指定 `--ignored --exact` 執行。它使用合成 callback 與真正 Windows IStream、實機 USB，不代表 WIA 服務或 Windows 掃描驗收。END_OF_STREAM／END_OF_TRANSFER 由 WIA 服務發送，驅動不可手動發送。
 - `src/com_server.rs` 提供 DLL 載入入口、class factory 與 COM 物件生命週期。更動後執行 `cargo test --offline --test com_server`，再依 `ENG.md` 的 DLL 驗證指令載入當次 release 建置。該動態載入測試預設 ignored，交付前必須另行執行，不能把預設測試通過當成 DLL 已驗證。這些測試不登錄 WIA 或操作 USB。
 - 新核心功能採 TDD，先驗證測試會失敗，再實作。模擬封包須明示為合成資料，實機資料須記錄取得方式。
 - `src/com_server/sti.rs` 提供 IStiUSD，`session.rs` 管理連線借用與異常隔離。更動後跑 `cargo test --offline --test sti`。硬體測試預設 ignored，必須個別指定名稱及 `--ignored --exact`，不可平行執行。`actual_sti_device_lock_presence_and_release` 使用重新列舉的 `WC3119_TEST_STI_PATH`，只做鎖定／INQUIRY。`actual_locked_object_scans_cancels_and_rescans_with_reentrant_output` 另須不存在的 `WC3119_TEST_OUTPUT_DIR`，會啟動灰階、彩色取消及彩色重掃。兩者皆不修改登錄，也不代表 WIA 服務的 port name、存取權或 COM 影像傳輸已驗證。

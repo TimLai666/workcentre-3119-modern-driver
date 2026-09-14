@@ -8,6 +8,10 @@ use std::{
 };
 use workcentre_3119::com_server::{DRIVER_CLASS_ID, DllGetClassObject, Guid};
 
+#[allow(dead_code)]
+#[path = "support/wia_callback.rs"]
+mod transfer_fixture;
+
 const UNKNOWN: Guid = Guid {
     data1: 0,
     data2: 0,
@@ -338,6 +342,76 @@ fn locked_scan_rejects_unlocked_and_precancel_before_touching_output() {
 }
 
 #[test]
+fn callback_transfer_checks_settings_and_lock_before_querying_callback() {
+    use std::{io, sync::atomic::AtomicBool};
+    use workcentre_3119::{com_server::transfer_locked_bmp, wia_transfer::TransferOutcome};
+    let device = object();
+    let mut helper = Helper::new();
+    let mut settings = scan_settings();
+    settings.x_extent = 0;
+    // SAFETY: live owned driver; null callback must not be accessed by preflight.
+    unsafe {
+        assert_eq!(
+            transfer_locked_bmp(
+                device.0,
+                settings,
+                &AtomicBool::new(false),
+                ptr::null_mut(),
+                "Flatbed",
+                "Root\\Flatbed"
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert!(matches!(
+            transfer_locked_bmp(
+                device.0,
+                scan_settings(),
+                &AtomicBool::new(true),
+                ptr::null_mut(),
+                "Flatbed",
+                "Root\\Flatbed"
+            )
+            .unwrap(),
+            TransferOutcome::Cancelled
+        ));
+        assert_eq!(
+            transfer_locked_bmp(
+                device.0,
+                scan_settings(),
+                &AtomicBool::new(false),
+                ptr::null_mut(),
+                "Flatbed",
+                "Root\\Flatbed"
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::NotConnected
+        );
+        assert_eq!(
+            (methods(&device).initialize)(device.0, helper.raw(), VERSION, ptr::dangling_mut()),
+            0
+        );
+        assert_eq!(
+            transfer_locked_bmp(
+                device.0,
+                scan_settings(),
+                &AtomicBool::new(false),
+                ptr::null_mut(),
+                "Flatbed",
+                "Root\\Flatbed"
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::NotConnected
+        );
+    }
+    drop(device);
+    assert_eq!(helper.refs.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn invalid_status_size_does_not_overwrite_output() {
     let mut helper = Helper::new();
     let device = object();
@@ -659,6 +733,130 @@ fn actual_locked_object_scans_cancels_and_rescans_with_reentrant_output() {
                 (m.diagnostic)(device.0, ptr::from_mut(&mut diagnostic).cast()),
                 0,
                 "same session must remain usable after cleanup"
+            );
+        }
+        assert_eq!((m.unlock)(device.0), 0);
+    }
+    drop(device);
+    assert_eq!(helper.refs.load(Ordering::SeqCst), 1);
+    std::fs::File::create_new(directory.join("complete.txt"))
+        .unwrap()
+        .sync_all()
+        .unwrap();
+}
+
+#[test]
+#[ignore = "Hardware scan: fresh WC3119_TEST_STI_PATH and new WC3119_TEST_OUTPUT_DIR required; native callback gray/RGB cancel/rescan"]
+fn actual_callback_transfer_scans_cancels_and_rescans() {
+    use std::{
+        io::{Cursor, Write},
+        os::windows::ffi::OsStrExt,
+        sync::atomic::AtomicBool,
+    };
+    use transfer_fixture::{ComApartment, FakeTransferCallback, SendMessagePlan};
+    use workcentre_3119::{
+        com_server::{scan_locked_bmp, transfer_locked_bmp},
+        wia_transfer::TransferOutcome,
+    };
+    let _com = ComApartment::new();
+    let directory = std::path::PathBuf::from(
+        std::env::var_os("WC3119_TEST_OUTPUT_DIR").expect("set WC3119_TEST_OUTPUT_DIR"),
+    );
+    std::fs::create_dir(&directory).expect("output directory must be new");
+    let path = std::env::var_os("WC3119_TEST_STI_PATH").expect("set WC3119_TEST_STI_PATH");
+    let mut helper = Helper::new();
+    helper.port = path.encode_wide().chain([0]).collect();
+    let device = object();
+    // SAFETY: owned driver/helper and initialized apartment outlive all callbacks.
+    unsafe {
+        let m = methods(&device);
+        assert_eq!(
+            (m.initialize)(device.0, helper.raw(), VERSION, ptr::dangling_mut()),
+            0
+        );
+        assert_eq!((m.lock)(device.0), 0);
+        for (name, color, cancelled) in [
+            ("gray75.bmp", false, false),
+            ("cancelled-rgb75.partial", true, true),
+            ("rgb75-rescan.bmp", true, false),
+        ] {
+            let mut fake = FakeTransferCallback::new();
+            if cancelled {
+                fake.set_send_plan(SendMessagePlan::CancelAt(2));
+            }
+            let raw_device = device.0;
+            fake.set_hook(Box::new(move || {
+                let table = &**raw_device.cast::<*const StiTable>();
+                let mut last = 0;
+                assert_eq!((table.last_error)(raw_device, &mut last), 0);
+                assert!(
+                    (table.unlock)(raw_device) < 0,
+                    "callback must retain exclusive operation"
+                );
+                let mut nested = Cursor::new(Vec::new());
+                let error = scan_locked_bmp(
+                    raw_device,
+                    scan_settings(),
+                    &AtomicBool::new(false),
+                    &mut nested,
+                )
+                .unwrap_err();
+                assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+                assert!(nested.get_ref().is_empty());
+            }));
+            let settings = if color {
+                workcentre_3119::wia::FlatbedSettings {
+                    data_type: 3,
+                    depth: 24,
+                    ..scan_settings()
+                }
+            } else {
+                scan_settings()
+            };
+            let result = transfer_locked_bmp(
+                device.0,
+                settings,
+                &AtomicBool::new(false),
+                fake.as_raw(),
+                "Flatbed",
+                "Root\\Flatbed",
+            );
+            let bytes = fake.stream_bytes().expect("callback must create stream");
+            let mut file = std::fs::File::create_new(directory.join(name)).unwrap();
+            file.write_all(&bytes).unwrap();
+            file.sync_all().unwrap();
+            let mut log = std::fs::File::create_new(directory.join(format!("{name}.txt"))).unwrap();
+            writeln!(log, "{result:?}\n{:?}", fake.messages()).unwrap();
+            log.sync_all().unwrap();
+            assert_eq!(fake.reference_count(), 1);
+            assert_eq!(fake.release_calls(), 1);
+            assert_eq!(fake.stream_reference_count(), 1);
+            assert!(
+                fake.messages()
+                    .iter()
+                    .all(|m| m.message == 1 && m.flags == 0)
+            );
+            if cancelled {
+                assert!(matches!(result.unwrap(), TransferOutcome::Cancelled));
+                assert!(!bytes.starts_with(b"BM"));
+                assert!(fake.messages().iter().all(|m| m.percent < 100));
+            } else {
+                let TransferOutcome::Completed(summary) = result.unwrap() else {
+                    panic!("expected complete image")
+                };
+                assert!(bytes.starts_with(b"BM"));
+                assert_eq!(
+                    u32::from_le_bytes(bytes[2..6].try_into().unwrap()) as usize,
+                    bytes.len()
+                );
+                assert_eq!(fake.messages().last().unwrap().percent, 100);
+                assert_eq!(fake.messages().last().unwrap().bytes, bytes.len() as u64);
+                println!("{name}: {summary:?}, file_bytes={}", bytes.len());
+            }
+            let mut diagnostic = presence_request();
+            assert_eq!(
+                (m.diagnostic)(device.0, ptr::from_mut(&mut diagnostic).cast()),
+                0
             );
         }
         assert_eq!((m.unlock)(device.0), 0);

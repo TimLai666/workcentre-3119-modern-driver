@@ -323,6 +323,18 @@ impl<'a, W: Write + Seek> BmpEncoder<'a, W> {
         write_bounded(self.writer, bytes)
     }
 
+    /// Rows and encoded file bytes after the last successful band. Includes
+    /// headers, palette and row padding, but not repeated header writes.
+    /// Read only after successful construction/push, never after an error.
+    pub fn progress(&self) -> (u32, u64) {
+        let bytes = if self.height == 0 {
+            0
+        } else {
+            self.pixel_offset + self.height as u64 * self.row_stride as u64
+        };
+        (self.height, bytes)
+    }
+
     /// Finalizes the BMP only when the supplied scan summary exactly matches
     /// all successfully delivered bands. The final signature write is last.
     /// Call this only after the scanner job, including cleanup, succeeds.
@@ -391,6 +403,25 @@ mod tests {
             height,
             bands,
             bytes,
+        }
+    }
+
+    #[test]
+    fn progress_counts_encoded_rows_padding_and_palette() {
+        for (mode, pixels, header) in [
+            (ColorMode::Gray, vec![9, 8, 7], 1078),
+            (ColorMode::Rgb, vec![9, 8, 7, 6, 5, 4, 3, 2, 1], 54),
+        ] {
+            let mut output = Cursor::new(Vec::new());
+            let mut encoder = BmpEncoder::new(&mut output, 75, mode).unwrap();
+            assert_eq!(encoder.progress(), (0, 0));
+            encoder.push(&band(3, 1, mode, &pixels)).unwrap();
+            let stride = if mode == ColorMode::Gray { 4 } else { 12 };
+            assert_eq!(encoder.progress(), (1, header + stride));
+            encoder.push(&band(3, 1, mode, &pixels)).unwrap();
+            assert_eq!(encoder.progress(), (2, header + 2 * stride));
+            encoder.finish(&summary(3, 2, 2, 2 * pixels.len())).unwrap();
+            assert_eq!(output.get_ref().len() as u64, header + 2 * stride);
         }
     }
 

@@ -54,6 +54,49 @@ pub unsafe fn scan_locked_bmp<W: std::io::Write + std::io::Seek>(
 }
 const CLASS_E_CLASSNOTAVAILABLE: i32 = 0x8004_0111u32 as i32;
 
+/// Transfer one flatbed BMP into a native WIA transfer callback's IStream.
+///
+/// Uses the already initialized and locked object's USB session. Callback
+/// QueryInterface, GetNextStream, progress and Release all run inside its
+/// exclusive operation lease, outside the state mutex. No WIA registration or
+/// IWiaMiniDrv property/context implementation is provided by this Rust entry.
+/// Discard the destination unless the result is `TransferOutcome::Completed`.
+///
+/// # Safety
+/// `device` must be a live IUnknown/IStiUSD returned by this module's factory,
+/// with an owned reference held throughout the call and synchronous callbacks.
+/// `callback`, if non-null, must be a live IUnknown-compatible COM interface
+/// callable in the current apartment until this function returns. The caller
+/// must keep that apartment initialized. Null pointers are rejected safely.
+pub unsafe fn transfer_locked_bmp(
+    device: *mut c_void,
+    settings: crate::wia::FlatbedSettings,
+    cancel: &std::sync::atomic::AtomicBool,
+    callback: *mut c_void,
+    item: &str,
+    full_item: &str,
+) -> std::io::Result<crate::wia_transfer::TransferOutcome> {
+    if device.is_null() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Driver object is null",
+        ));
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: both COM references and the apartment are kept alive by caller.
+        unsafe {
+            (*device.cast::<Instance>())
+                .state
+                .transfer_bmp(settings, cancel, callback, item, full_item)
+        }
+    }))
+    .unwrap_or_else(|_| {
+        Err(std::io::Error::other(
+            "WIA transfer panicked; discard destination",
+        ))
+    })
+}
+
 /// ABI-compatible Windows GUID storage.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

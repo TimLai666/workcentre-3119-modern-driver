@@ -19,13 +19,28 @@ WIA 2.0 的 IStream 傳輸路徑不呼叫 `drvWriteItemProperties`，硬體設�
 
 Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 callback，部分寫入、錯誤、取消及工作釋放已有離線測試與部分實機證據。WIA 2.0 裝置的預設傳輸格式須為 BMP，但完成 BMP 編碼不等於完成 WIA 傳輸。[Microsoft WIA 格式屬性](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ipa-format)
 
-原生 [IStream 輸出轉接](../../src/com_stream.rs) 及 [WIA 數值設定入口](../../src/wia.rs) 已連到實際掃描。Cargo 現已產生 COM DLL，[載入元件](../../src/com_server.rs) 提供 class factory、IUnknown 與 IStiUSD 生命週期，實際 DLL 動態測試已通過。[IStiUSD](../../src/com_server/sti.rs) 已支援初始化、指定裝置鎖定及 INQUIRY 診斷，`IWiaMiniDrv` 尚未實作，DLL 目前不能接收掃描要求。下一段完成 WIA 初始化、屬性模型及傳輸 callback，重用 IStiUSD 持有的 USB session，不能再次開啟同一個獨占裝置。WIA2 串流只保證 `Write`、`Seek`、`SetSize`，不得依賴呼叫端提供完整檔案功能。BMP 的 `finish` 成功後位置為 byte 2，WIA 轉接須驗證呼叫端需要的定位及影像消費行為。[Microsoft WIA 介面](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-minidriver-interfaces)、[COM 識別契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-a-com-interface)、[IStream 契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/istream-data-transfer-driver-changes)
+原生 [IStream 輸出轉接](../../src/com_stream.rs) 及 [WIA 數值設定入口](../../src/wia.rs) 已連到實際掃描。Cargo 現已產生 COM DLL，[載入元件](../../src/com_server.rs) 提供 class factory、IUnknown 與 IStiUSD 生命週期，實際 DLL 動態測試已通過。[IStiUSD](../../src/com_server/sti.rs) 已支援初始化、指定裝置鎖定及 INQUIRY 診斷。`transfer_locked_bmp` 已接上原生傳輸回呼並重用 IStiUSD 的 USB session，`IWiaMiniDrv` 尚未實作，DLL 目前不能接收 WIA 服務的掃描要求。下一段完成 WIA 初始化、屬性模型及原生 dispatch。WIA2 串流只保證 `Write`、`Seek`、`SetSize`，不得依賴呼叫端提供完整檔案功能。BMP 的 `finish` 成功後位置為 byte 2，WIA 服務端的定位及影像消費行為仍待驗證。[Microsoft WIA 介面](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-minidriver-interfaces)、[COM 識別契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-a-com-interface)、[IStream 契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/istream-data-transfer-driver-changes)
 
 目前 `FlatbedSettings` 僅驗證數值快照，支援六種對稱解析度、8-bit 灰階／24-bit 彩色、中性亮度／對比及無壓縮 BMP。位置按協定精確步進，範圍另由當次 INQUIRY 限制，詳見 [設定契約](../../ENG.md#wia-設定與掃描入口)。WIA 必備屬性、有效值範圍與相依更新尚未建立。正式屬性轉接還須明確設定每像素 3 個通道、每通道 8 bits 與逐像素排列，不能只由 datatype/depth 假定呼叫端的完整色彩契約。[Microsoft DATATYPE](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ipa-datatype) 實機指定 600×800 像素後回傳 600×801，必須釐清裝置幾何及 WIA 選取範圍的處理，不能把 BMP 成功當成範圍驗收。
 
 本機 `sc.exe qc stisvc` 確認 WIA 服務帳號為 `NT Authority\LocalService`。一般使用者的 Rust 掃描成功不證明該服務帳號也能開啟 WinUSB。第一階段開發不登錄 COM、不修改服務或 USB 權限，也不把離線契約測試當成 Windows 掃描驗收。
 
-原生 IStream 測試使用 Windows OLE 物件，尚未取得 WIA 的 `GetNextStream`。服務端目的串流的 `Seek(0, END)`、完成後定位及影像消費仍要實測。`GetNextStream`／`SendMessage` 以 S_FALSE 表示取消，`GetNextStream` 另有 WIA_STATUS_SKIP_ITEM；未來工作流程須分別處理，不能把一般 IStream 的非 S_OK 回覆或所有 `io::ErrorKind::Interrupted` 一律轉成 WIA 取消成功。[GetNextStream](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamindr_lh/nf-wiamindr_lh-iwiaminidrvtransfercallback-getnextstream)、[SendMessage](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamindr_lh/nf-wiamindr_lh-iwiaminidrvtransfercallback-sendmessage)
+原生 `GetNextStream` 已透過測試 callback 取得 Windows OLE 串流，尚未取得 WIA 服務提供的串流。服務端目的串流的 `Seek(0, END)`、完成後定位及影像消費仍要實測。`GetNextStream`／`SendMessage` 的 S_FALSE 與 WIA_STATUS_SKIP_ITEM 已分別處理，一般 IStream 的非 S_OK 回覆及 Interrupted 保留為錯誤。[GetNextStream](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamindr_lh/nf-wiamindr_lh-iwiaminidrvtransfercallback-getnextstream)、[SendMessage](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamindr_lh/nf-wiamindr_lh-iwiaminidrvtransfercallback-sendmessage)
+
+### 原生回呼驗收矩陣
+
+| 情境 | 行為與證據 |
+| --- | --- |
+| 空指標、QI 失敗、S_OK 卻無串流、無效設定、未鎖定 | 回報錯誤，不啟動掃描，callback 與 STI 前置檢查測試通過 |
+| 開始前取消、SKIP、非空目的串流 | 不啟動掃描，保留既有內容，流程離線測試通過 |
+| 正常影像及完成進度 | 逐塊 BMP，bytes 含色盤／填補，清理及 finish 成功後才 100，合成像素與實機驗證通過 |
+| SendMessage 取消或錯誤 | 停止交付並清理，只有 Ready 可回取消；原始 HRESULT 與清理診斷保留，取消另有實機重掃證據 |
+| 清理失敗、最終進度取消 | 不回報 Completed，清理失敗保持隔離，離線測試通過 |
+| QI／GetNextStream／SendMessage／Release 重入 | 查詢可返回，掃描／解鎖回忙碌，實機測試通過 |
+| 原生參考釋放 | callback QI 與 stream owned ref 各自釋放，HGLOBAL 原生計數回到測試保留的一個參考 |
+| WIA 服務與等待期間取消 | 尚未驗證，須接上 IWiaMiniDrv、真實 property context 及 WIA_EVENT_CANCEL_IO |
+
+單張平台的 skip 發生於 RESERVE 前，沒有開始的頁面需要排空。驅動僅發 STATUS，END_OF_STREAM／END_OF_TRANSFER 由服務發送。[Microsoft 傳輸常數](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-transfer-constants)
 
 ## 驗收
 
@@ -44,6 +59,12 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 - 在安全設定維持啟用的 Windows 11 x64 驗證簽署套件。簽署、付費與對外送審先取得明確授權。
 
 ## 測試
+
+2026-09-14 原生傳輸回呼版本：153 個 all-targets 測試、一般測試及 2 個 doc-tests、格式、Clippy、全部 release targets、另行執行的當次 DLL 載入測試均通過。新回呼契約 15 個、傳輸流程 7 個，另增加 BMP 進度及 STI 入口前置檢查。原生轉接、進度及公開入口先取得缺少實作的失敗再實作，其他邊界補測未宣稱取得 RED。根代理及 Luna 對抗審查沒有確認的未處理 P1／P2。Windows SDK 10.0.26100.0 C11 靜態斷言核對 x64 callback 的 5-slot vtable、GetNextStream／SendMessage 偏移、24-byte WiaTransferParams 欄位偏移與 STATUS／SKIP 常數。
+
+三個實機測試各自明確指定 `--ignored --exact`、序列執行，皆通過。新回呼路徑使用測試 COM callback 及真實 Windows HGLOBAL IStream／USB，同一鎖定物件完成灰階、彩色取消與彩色重掃；舊掃描路徑亦通過回歸。Pillow 全樣本解碼與新回呼影像實際檢視通過，仍為空平台，詳見 [硬體紀錄](../hardware.md#原生-wia-callback-實機傳輸)。沒有操作登錄、WIA 服務或 Windows 掃描，等待期間的服務取消尚未驗證。
+
+最終 callback 原始碼 SHA256：`B9E9B280F84ABDEBD7FCDA03202E5F41BA5DCB04AB21DC9C37CA257A4CF7A4ED`；傳輸原始碼：`31B3C1AA3D7CA10B8D29C131E387FB2BE610FF32F33202203F80928C0AA15224`；當次另行載入的 release DLL：`2A3DAD4E77E36ABA133DDEA894F9AFFDBF42C6AA84BEB3C2CEC118EFA321FD4E`。實機後僅追加流程單元測試及格式整理，硬體測試執行檔識別保留在硬體紀錄，不將重新建置當成重跑實機。
 
 2026-09-14：已補完上次連線借用版本的核心獨立複核及實機驗證。Luna 發現 RESERVE 前取消會錯誤隔離，根代理以回歸測試重現再修正，修正版複核沒有新增確認問題。129 個 all-targets、2 個 doc-tests、格式、Clippy、全部 release targets 與另行載入當次 DLL 的測試通過。兩個 STI 硬體測試逐一執行通過，含同一物件的 Gray75、RGB75 取消、RGB75 重掃、輸出 callback 重入及每次清理後診斷。BMP 經 Pillow 全部有效樣本解碼比對、GDI+ 開啟及實際檢視，為空平台。沒有 WIA 服務或 Windows 掃描驗收，實機與建置識別見 [硬體紀錄](../hardware.md#共用連線實掃與提早取消修正)。
 

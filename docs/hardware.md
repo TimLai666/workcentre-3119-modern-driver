@@ -2,6 +2,18 @@
 
 觀測日期：2026-09-13、2026-09-14。此檔省略 USB 序號與完整實例路徑。
 
+## 原生 WIA callback 實機傳輸
+
+2026-09-14，重新偵測父裝置、MI_00、MI_01 均問題碼 0、started=true，再列舉唯一啟用的專案介面。`actual_callback_transfer_scans_cancels_and_rescans` 明確以 `--ignored --exact` 執行通過（42.29 秒）。同一物件只鎖定一次，透過原生 QI／GetNextStream 取得 Windows HGLOBAL 串流，依序完成 Gray75、RGB75 第一塊後由 SendMessage 回 S_FALSE 取消、RGB75 重掃。callback 是測試物件，USB 與 IStream 是真實資源，沒有登錄 WIA。
+
+選取區 600×800、75 dpi、零偏移、中性明暗。灰階輸出 600×801／1 塊／481678 BMP bytes；取消留下 919854 bytes 且沒有 BM 完成簽名；彩色重掃 600×801／2 塊／1441854 BMP bytes。灰階進度為 0→99→100，彩色重掃為 0→63→99→100，回報 bytes 與串流長度一致，取消沒有回報 100。所有訊息均為 flags=0 的 STATUS，沒有自行發送結束通知。
+
+QI、GetNextStream、SendMessage 與 Release 內重入 GetLastError 均返回，再次掃描或解鎖回報忙碌，巢狀輸出保持空白。每次清理後同一 session 的 INQUIRY 診斷成功。callback 參考與 HGLOBAL 的實際原生參考計數都回到測試保留的一個參考。最後解鎖並釋放 helper，沒有重插、USB reset 或系統變更。
+
+Pillow 逐樣本核對 BMP 標頭、色盤、行序、DPI 及解碼數值，實際查看灰階與彩色無損 PNG，仍是白色空平台與少量細點。沒有 USB 原文對照或文件品質驗收，選取高度多一列的既有差異保留。原有鎖定／診斷與 Rust 寫入介面的灰階／彩色取消／重掃測試另逐一通過，分別為 0.05／42.11 秒，沒有平行操作 USB。
+
+私人證據位於 `artifacts/wia-callback-20260914-a/`，新回呼影像在 `scan/`，原有路徑回歸在 `legacy-scan/`，各有 complete.txt 與獨立 verification JSON。新回呼灰階 BMP SHA256：`a5f1b9b01135896e38dc0a7b6011ee9cbc92ed1aec10129c2c75510ef7b5309e`，彩色 BMP：`5c17790abbf5074ab5f2de358eb49a7e375c67fa419c53432bf5562c44d9e89b`。硬體測試執行檔 SHA256：`52C3C40F887EC52D4AEA5D181D265CABFCC93818FA5F922A030A8E43954B3776`。callback 原始碼 SHA256：`B9E9B280F84ABDEBD7FCDA03202E5F41BA5DCB04AB21DC9C37CA257A4CF7A4ED`。
+
 ## 共用連線實掃與提早取消修正
 
 2026-09-14，重新列舉唯一啟用的 MI_00 WinUSB 介面，以當下路徑執行 `tests/sti.rs` 兩個 ignored 硬體測試，逐一指定 `--ignored --exact`，沒有平行操作 USB。版本 `705f0d6` 的鎖定／診斷測試通過（0.05 秒），同一物件的灰階／彩色取消／重掃測試通過（42.15 秒）。核心獨立複核另發現 RESERVE 前取消會錯誤隔離，此精確時機用合成回覆先重現再修正。修正版重新建置後，兩個實機測試再次通過，依序為 0.05 與 42.12 秒。
