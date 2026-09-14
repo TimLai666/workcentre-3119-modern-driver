@@ -429,7 +429,7 @@ static VTABLE: Vtable = Vtable {
     release,
     initialize,
     acquire: acquire::entry,
-    init_properties: unsupported_item,
+    init_properties: properties::init_entry,
     validate_properties: unsupported_properties,
     write_properties: unsupported_transfer,
     read_properties: unsupported_properties,
@@ -690,10 +690,12 @@ mod tests {
                 assert!(matches!(*interface.state(), Lifecycle::Connected(_)));
                 for result in [WIA_ERROR_BUSY, 0x80070005u32 as i32, 1, 0] {
                     helper.lock_result.set(result);
-                    helper.unlock_result.set(result);
+                    // Unlock failures quarantine the connection and are covered
+                    // by locking's dedicated failure/lifetime tests.
+                    helper.unlock_result.set(0);
                     let expected = if result > 0 { E_UNEXPECTED } else { result };
                     assert_eq!(locking::dispatch(interface, true), expected);
-                    assert_eq!(locking::dispatch(interface, false), expected);
+                    assert_eq!(locking::dispatch(interface, false), 0);
                     assert!(matches!(*interface.state(), Lifecycle::Connected(_)));
                     assert_eq!(helper.refs.get(), 2);
                 }
@@ -725,7 +727,8 @@ mod tests {
                 .unwrap();
             assert_eq!(locking::dispatch(interface, true), E_UNEXPECTED);
             assert_eq!(locking::dispatch(interface, false), E_UNEXPECTED);
-            assert_eq!(interface.disconnect_client(), 0);
+            assert!(matches!(*interface.state(), Lifecycle::Failed));
+            assert_eq!(interface.disconnect_client(), E_UNEXPECTED);
             assert_eq!(
                 (*owner(mini).cast::<Instance>())
                     .refs

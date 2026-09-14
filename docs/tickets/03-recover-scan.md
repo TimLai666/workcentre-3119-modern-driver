@@ -43,6 +43,10 @@ Microsoft 說明非零 `PIPE_TRANSFER_TIMEOUT` 會在期限到達時取消請求
 
 ## 測試
 
+2026-09-14 控制回覆補查：取消發生於首塊影像之前的 READ metadata Busy，SET_WINDOW、START、ABORT、RELEASE 都回 status=0、message=0。取消 730 ms 返回 S_FALSE，立即重掃仍在 RESERVE Busy 120.029 秒後失敗。保持同一 USB session 的對照也失敗（取消 700 ms，重掃 RESERVE Busy 120.069 秒），因此關閉／重開連線不是必要條件。暫時測試變更已移除，原始證據與建置識別見 [硬體紀錄](../hardware.md#wia-取消事件與提早取消後重掃)。下一步以首塊前／後取消作可重複對照，查明影像尚未交付時的裝置取消時序，再決定復原策略。現有證據不足以在未取得保留權時再送 ABORT 或重設 USB。
+
+SET_WINDOW Busy 不能直接等同設定被拒絕：[SANE 1.4.0 啟動流程](https://gitlab.com/sane-project/backends/-/blob/1.4.0/backend/xerox_mfp.c#L1416-1422) 明確允許該狀態並接續等待 OBJECT_POSITION。曾以「遇 Busy 必須停止」為前提建立合成測試與草稿修正，查證後已撤回，不將該測試當成協定證據。正式核心保留既有行為。
+
 2026-09-14 WIA 取消事件補驗：原生通知已能更新目前工作旗標，合成取消起因／清理測試通過。實機在 Gray75 結束後約 500 ms 取消下一張 RGB，兩次發生於 RESERVE Busy，未取得保留權而回一般錯誤並隔離。由閒置裝置開始 RGB 後約 500 ms 取消，720 ms 返回 S_FALSE 且沒有影像；緊接的 RGB 重掃卻在約 120 秒失敗。補上原始診斷後再現，取消約 600 ms 返回 S_FALSE，重掃在 RESERVE 收到 800 次 Busy（0x08），120.049 秒到期。這是新發現的提早取消復原缺口，不能宣稱暖機與等待期間取消已驗收。既有回呼取消流程在兩次閒置測試之間完整回歸通過 42.99 秒，沒有重插。下一步記錄成功取消時的階段及 ABORT／RELEASE 回覆，查明確認清理後為何保留權仍長期 Busy；不得先加入固定延遲、延長工作期限或盲送 ABORT。詳細資料見 [硬體紀錄](../hardware.md#wia-取消事件與提早取消後重掃)。
 
 2026-09-14：同一 IStiUSD 物件只鎖定一次，完成 Gray75、第一個影像寫入 callback 觸發 RGB75 取消、RGB75 重掃，每個工作後均可透過原連線診斷。修正版實機測試 42.12 秒通過，沒有重插。另以合成測試先重現有效 INQUIRY 後、尚未送 RESERVE 就取消會錯誤隔離的問題，再修正為保留連線；已送 RESERVE 且回報 Busy 後取消則維持隔離，不送 ABORT／RELEASE 接管未確認的保留權。這個精確取消時機由合成回覆控制，沒有宣稱實機重現相同競態。詳細證據見 [共用連線實掃](../hardware.md#共用連線實掃與提早取消修正)。

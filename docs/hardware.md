@@ -2,7 +2,19 @@
 
 觀測日期：2026-09-13、2026-09-14。此檔省略 USB 序號與完整實例路徑。
 
+## WIA 屬性初始化的能力查詢
+
+2026-09-14，重新列舉唯一啟用的 MI_00 後，個別執行 `actual_wia_lock_queries_live_capabilities_without_scan --ignored --exact`，0.02 秒通過。測試使用原生 Windows 項目樹、合成 IStiDevice 服務轉送及真實 IStiUSD／WinUSB／INQUIRY，驗證一次鎖定、查詢、解鎖、解除連線與參考釋放。沒有掃描、影像或服務 property context，不代表 WIA 服務已接受初始化。
+
+當次測試執行檔 SHA256：`812BE3AC87961283984CF41D77D407EC8381C5E5EF1DCC79868586A804F127CA`；鎖定來源：`2C0D389945342ADC5C462CD1D61C56F0808EE3FE8EC7FD63D59FC74B675FCD26`；STI 來源：`785D5E74AF7054EDFC566C6D65B9415CE38B8E8FFFDBC60A36F05013B262A359`。後續格式與離線測試修改另由一般驗證涵蓋，不把重建當成重新掃描。測試前後 doctor 顯示父裝置、MI_00、MI_01 均問題碼 0、started=true。沒有改綁定、系統登錄或權限。
+
 ## WIA 取消事件與提早取消後重掃
+
+2026-09-14 補查取消階段：僅在測試建置暫加已驗證控制回覆的 status／message 與清理前錯誤紀錄，重新列舉 MI_00 後執行同一個 ignored 提早取消測試。SET_WINDOW（0x24）及 START（0x31）都回 status=0、message=0。取消發生在 READ metadata，elapsed=630 ms、3 次 Busy、零影像塊，控制串流仍同步。ABORT（0x06）與 RELEASE（0x17）同樣回 status=0、message=0，沒有 scanner-state 訊息可解讀。730 ms 返回 S_FALSE，下一次 RGB 重掃在 RESERVE 收到 800 次 Busy，120029 ms 到期，整體 120.86 秒失敗。這證明已發出並收到成功的清理回覆，尚未證明裝置內部狀態或再次保留的時序正確。
+
+私人日誌在 `artifacts/wia-cancel-trace-log-20260914-a/output.txt`，中斷輸出在 `artifacts/wia-cancel-trace-20260914-a/`，沒有 complete.txt。診斷版核心 SHA256 `8EECE958027E0D825A87F3AB4C66F44992B47A6ABF11F85006C560C2A25F0928`，測試執行檔 `9E8917AA9DA83E5B52FBB8A10B111280F6F7C3932012B7A4841A750F654CEFDC`。暫時紀錄已移除，沒有改動正式等待或取消流程。測試後三個 PnP 介面均問題碼 0、started=true。
+
+同一 USB session 對照：暫改測試為三輪共用一次服務鎖，取消後不關閉／重新開啟 USB，正式掃描核心與 `85f628f` 相同。取消 700 ms 回 S_FALSE，重掃仍在 RESERVE 收到 800 次 Busy、120069 ms 到期，整體 120.86 秒失敗。關閉／重開 USB 不是重現此故障的必要條件。測試變更已撤回。私人證據在 `artifacts/wia-cancel-same-session-log-20260914-a/` 及 `artifacts/wia-cancel-same-session-20260914-a/`，沒有 complete.txt。執行檔 SHA256 `75D887C34F676F833AF7D8DC4B7474BEE0103F9531DC8CD83903295E342EB5A5`，測試來源 `7E45AA988F3901B76AAA8BF7D3B3F7A0C98CED712ABB25D7CFC62E0877360517`。前述兩次失敗之間，已撤回的 SET_WINDOW Busy 拒絕草稿跑過一般回呼取消流程，42.08 秒完成三輪傳輸，影像未另做品質驗收，證據在 `artifacts/wia-window-busy-regression-20260914-a/`。該草稿及合成測試因上游容許此 Busy 狀態而撤回，不作為正式修復證據。
 
 2026-09-14，重新偵測三個介面均問題碼 0、started=true，每次硬體測試重新列舉唯一啟用的 MI_00 路徑，全部序列執行。新增 `actual_wia_dispatch_cancels_from_parallel_thread_and_rescans` 使用原生 Windows 項目、真實 USB／HGLOBAL IStream 與合成服務 helper／屬性／回呼。另一執行緒只通知純 Rust 取消狀態，不跨執行緒呼叫未 marshal 的 COM。服務派送 WIA_EVENT_CANCEL_IO 本身仍未實測。
 

@@ -260,6 +260,19 @@ fn release_dll_exports_real_factory_and_keeps_objects_alive() {
         let methods = &**mini.raw.cast::<*const MiniTable>();
         assert_eq!(std::mem::size_of::<MiniTable>(), 160);
         assert_eq!(std::mem::offset_of!(MiniTable, notify), 144);
+        assert_eq!(std::mem::offset_of!(MiniTable, init_properties), 40);
+        let mut property_error = 123;
+        // A real COM object with absent service context must fail before USB
+        // or WIA property helpers. Never fabricate a service-owned context.
+        assert_eq!(
+            (methods.init_properties)(mini.raw, ptr::null_mut(), 0, &mut property_error),
+            0x80070057u32 as i32
+        );
+        assert_eq!(property_error, 0x80070057u32 as i32);
+        assert_eq!(
+            (methods.init_properties)(mini.raw, ptr::null_mut(), 0, ptr::null_mut()),
+            0x80004003u32 as i32
+        );
         let device_name: Vec<u16> = "synthetic-device".encode_utf16().collect();
         let device = Bstr(SysAllocStringLen(
             device_name.as_ptr(),

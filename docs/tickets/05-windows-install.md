@@ -19,9 +19,9 @@ WIA 2.0 的 IStream 傳輸路徑不呼叫 `drvWriteItemProperties`，硬體設�
 
 Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 callback，部分寫入、錯誤、取消及工作釋放已有離線測試與部分實機證據。WIA 2.0 裝置的預設傳輸格式須為 BMP，但完成 BMP 編碼不等於完成 WIA 傳輸。[Microsoft WIA 格式屬性](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ipa-format)
 
-原生 [IStream 輸出轉接](../../src/com_stream.rs) 及 [WIA 數值設定入口](../../src/wia.rs) 已連到實際掃描。Cargo 產生的 COM DLL 提供 class factory、IUnknown、IStiUSD 與 IWiaMiniDrv 共用生命週期，已通過動態載入測試。[IStiUSD](../../src/com_server/sti.rs) 已支援初始化、指定裝置鎖定及 INQUIRY 診斷。IWiaMiniDrv 項目樹、服務 IStiDevice 鎖定、服務屬性讀取與 drvAcquireItemData 已接上同一 USB session 的回呼傳輸。屬性初始化／相依驗證及服務整合未完成，尚不能提供 Windows 掃描。WIA2 串流只保證 `Write`、`Seek`、`SetSize`，不得依賴呼叫端提供完整檔案功能。BMP 的 `finish` 成功後位置為 byte 2，WIA 服務端的定位及影像消費行為仍待驗證。[Microsoft WIA 介面](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-minidriver-interfaces)、[COM 識別契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-a-com-interface)、[IStream 契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/istream-data-transfer-driver-changes)
+原生 [IStream 輸出轉接](../../src/com_stream.rs) 及 [WIA 數值設定入口](../../src/wia.rs) 已連到實際掃描。Cargo 產生的 COM DLL 提供 class factory、IUnknown、IStiUSD 與 IWiaMiniDrv 共用生命週期，已通過動態載入測試。[IStiUSD](../../src/com_server/sti.rs) 已支援初始化、指定裝置鎖定及 INQUIRY 診斷。IWiaMiniDrv 項目樹、服務 IStiDevice 鎖定、服務屬性讀取與 drvAcquireItemData 已接上同一 USB session 的回呼傳輸。屬性初始化已接上當次能力查詢。相依更新、狀態及服務整合未完成，尚不能提供 Windows 掃描。WIA2 串流只保證 `Write`、`Seek`、`SetSize`，不得依賴呼叫端提供完整檔案功能。BMP 的 `finish` 成功後位置為 byte 2，WIA 服務端的定位及影像消費行為仍待驗證。[Microsoft WIA 介面](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-minidriver-interfaces)、[COM 識別契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-a-com-interface)、[IStream 契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/istream-data-transfer-driver-changes)
 
-目前 `FlatbedSettings` 僅驗證數值快照，支援六種對稱解析度、8-bit 灰階／24-bit 彩色、中性亮度／對比及無壓縮 BMP。位置按協定精確步進，範圍另由當次 INQUIRY 限制，詳見 [設定契約](../../ENG.md#wia-設定與掃描入口)。WIA 必備屬性、有效值範圍與相依更新尚未建立。正式屬性轉接還須明確設定每像素 3 個通道、每通道 8 bits 與逐像素排列，不能只由 datatype/depth 假定呼叫端的完整色彩契約。[Microsoft DATATYPE](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ipa-datatype) 實機指定 600×800 像素後回傳 600×801，必須釐清裝置幾何及 WIA 選取範圍的處理，不能把 BMP 成功當成範圍驗收。
+目前 `FlatbedSettings` 驗證數值快照，支援六種對稱解析度、8-bit 灰階／24-bit 彩色、中性亮度／對比及無壓縮 BMP。位置按協定精確步進，範圍另由當次 INQUIRY 限制，詳見 [設定契約](../../ENG.md#wia-設定與掃描入口)。WIA 屬性初始化已建立初始有效值範圍、色深、通道及逐像素排列，相依更新仍未實作，不能宣稱已能切換 WIA 掃描設定。[Microsoft DATATYPE](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ipa-datatype) 實機指定 600×800 像素後回傳 600×801，必須釐清裝置幾何及 WIA 選取範圍的處理，不能把 BMP 成功當成範圍驗收。
 
 本機 `sc.exe qc stisvc` 確認 WIA 服務帳號為 `NT Authority\LocalService`。一般使用者的 Rust 掃描成功不證明該服務帳號也能開啟 WinUSB。第一階段開發不登錄 COM、不修改服務或 USB 權限，也不把離線契約測試當成 Windows 掃描驗收。
 
@@ -60,6 +60,22 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 
 ## 測試
 
+### 屬性初始化與即時能力
+
+2026-09-14：207 個 all-targets 測試、一般測試及 2 個 doc-tests、fmt、Clippy、全部 release targets 通過。當次 DLL 動態載入另以 ignored 模式通過，確認 slot 40 的初始化入口拒絕缺少服務 context 並正確填入錯誤，沒有以假 context 呼叫 SDK。SDK C11 編譯斷言與 Rust 測試核對 PROPSPEC、PROPVARIANT、WIA_PROPERTY_INFO 大小及 union／方法偏移。新實機鎖定／INQUIRY 測試另通過 0.02 秒，詳見 [硬體紀錄](../hardware.md#wia-屬性初始化的能力查詢)。私人 SDK 與測試輸出在 `artifacts/wia-properties-validation-20260914-a/`。
+
+`drvInitItemProperties` 已接上根／平台初始屬性。服務鎖定、當次 INQUIRY、解鎖及屬性發佈共用一次 Connection 借用，發佈時仍阻擋重入。解鎖失敗先在 Mutex 外釋放連線，再保持 Failed，不重試也不繼續發佈；查詢及解鎖都失敗時保留查詢錯誤。未改動掃描命令、取消流程或 USB 復原行為。
+
+初始模式優先灰階、解析度採實機與核心共同支援的最低值，範圍取實機平台上限。色深、通道、Y 解析度及可移動位置對應目前設定，明暗維持中性範圍，BMP 大小含標頭、灰階色盤與列填補。根項目宣告讀取權限與平台能力，狀態暫為 0，未把 INQUIRY 當成馬達已就緒。光學 600×2400 dpi 是 Xerox 本型號的資訊欄位，可選掃描設定仍限制為實機回報與已實作的對稱解析度。[Xerox 型號規格](https://www.office.xerox.com/latest/W31BR-01.PDF)、[Microsoft 屬性要求](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/required-flatbed-item-properties)
+
+依 Windows 規定，原生發佈順序為名稱、數值、有效值描述。只接受 S_OK，任何失敗立即停止，BSTR／GUID 與列表的暫存持續存活至同步呼叫返回。保留服務建立的實際項目名稱，不覆寫服務從 INF 取得的 ICM 色彩設定。合成測試操作同一發佈流程，但不偽造服務 context。[Microsoft 發佈順序](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/adding-wia-properties-to-a-wia-item)、[服務維護的共通屬性](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/wia/-wia-wiaitempropcommonitem)
+
+TDD：COM 入口先取得 E_NOTIMPL 而非 E_INVALIDARG 的失敗；初始尺寸、相依列表、讀取權限、光學資訊、中性 Range、根項目分類與 ICM 所有權的測試先失敗再修正。解鎖失敗的四個回歸情境亦先失敗再加入隔離。這些結果不代表服務能初始化／切換設定，`drvValidateItemProperties`、裝置狀態、WIA 服務實測與正式安裝仍待完成。選取高度與實際影像多一列的既有差異持續列入幾何驗收。
+
+Diff Inspector：Scope CLEAN。根代理查核相對 `85f628f` 的核心、原生消費端、測試與文件，Luna 分別完成屬性 catalog／SDK、原生發佈／所有權及解鎖生命週期的對抗審查。初稿中的解鎖失敗仍回 Connected 已修正，沒有確認的未處理 P1／P2。成功發佈測試逐筆讀取實際 native payload 與 backing pointers，另驗證各階段失敗即停止。待服務驗收確認：最小掃描尺寸屬性的實際需求、`wiasReadPropStr` 失敗時非空 BSTR 的所有權，以及服務管理的名稱、狀態與屬性消費；未把缺少 SDK 明文當成已確認缺陷。
+
+最終 SHA256：DLL `D79F95A8DC208A166890E4DA28E33992F7B0479BE6EF294E633DC23CE6F7AD66`；catalog `40EDC8E2C62ECC52AB5F31C12F77A06334A94F3E79D39284BE5647CC3755CC7E`；native `ACEF5B1EAAF0B7DEA3741CC031A8EE11E2ECDE8AE4A51EFE3F76D9DD7322D325`；locking `8EFA9192C437FFDFCC612D8640C0DE57D22F4532CE5C165C711672EA409C4A9E`。複查後的變更僅有格式及合成測試的資料順序／註解整理。
+
 ### 取消事件與格式列舉
 
 離線驗證：178 個 all-targets 測試、一般測試及 2 個 doc-tests、fmt、Clippy、全部 release targets 通過。補正文內說明後再建置，當次 release DLL 動態載入明確以 ignored 模式執行通過，包含真 BSTR 的取消方法呼叫，DLL SHA256：`27050B253D8C9DBA302DB5E947EEEC13B98488D5DF9544099ACE0BD639AFBE92`。另以 SDK 10.0.26100.0 C11 編譯斷言核對格式結構及方法偏移。capture_scan 範例測試／建置及 STI 一般測試通過；硬體結果獨立列於下文，不能用離線通過抵銷提早取消後重掃失敗。
@@ -91,13 +107,13 @@ Diff Inspector：Scope CLEAN，根代理檢查相對 `8d2913d` 的完整核心�
 | 實機 dispatch | 合成屬性快照與 callback、真正原生項目／USB／IStream，灰階、彩色取消及彩色重掃 42.21 秒通過，詳見 [硬體紀錄](../hardware.md#wia-鎖定與-dispatch-實機驗證) |
 | 真正服務 context | 尚未執行，測試不以假指標呼叫 wiasReadProp 系列，不能當作屬性儲存或 Windows 掃描驗收 |
 
-由硬體能力限制的屬性初始值／有效範圍及相依驗證尚待建立。格式列舉與 WIA_EVENT_CANCEL_IO 的後續成果見本文件「取消事件與格式列舉」。測試編碼與實機掃描沒有改動 COM／WIA 登錄或系統權限。
+由硬體能力限制的屬性初始值／有效範圍後續已建立，見本文件「屬性初始化與即時能力」；相依驗證與真正服務 context 的發佈／消費仍待驗收。格式列舉與 WIA_EVENT_CANCEL_IO 的後續成果見「取消事件與格式列舉」。測試編碼與實機掃描沒有改動 COM／WIA 登錄或系統權限。
 
 Diff Inspector：Scope CLEAN。根代理追蹤 native acquire → 屬性快照 → STI session → 原生 callback／BMP 消費端，Luna 獨立審查 ABI、持有參考、重入與錯誤分類，沒有確認的未處理 P1／P2。平台未宣告 Folder／多項傳輸，拒絕 ACQUIRE_CHILDREN 與目前範圍一致。null STI helper 可建立項目樹但無法鎖定硬體，正式服務模式與 capability 宣告仍須驗證。
 
 複核提出 transfer context 的四個大小欄位可能需額外填寫。根代理查核 [Microsoft ProdScan 的 ScanJobs.cpp](https://github.com/microsoft/Windows-driver-samples/blob/main/wia/ProdScan/ScanJobs.cpp)：WIA2 acquire／Download 使用 callback 與 format，沒有寫入上述四欄或呼叫 wiasGetImageInformation；[結構文件](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamindr_lh/ns-wiamindr_lh-_minidrv_transfer_context) 的前提是舊式 memory-callback／file transfer。因此尚不能確認這是本串流路徑的缺陷，保留為真實服務驗收項目，不重複計算 BMP 尺寸或加入未證實必要的舊式 helper。既有最終 Release／unlink 故障與服務排程的追蹤事項繼續保留。
 
-屬性初始化依 [Microsoft 順序](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/adding-wia-properties-to-a-wia-item) 建立名稱、初始值、再設定有效範圍。必備項目分別核對 [root](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/required-root-item-properties-for-wia-scanners) 與 [flatbed](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/required-flatbed-item-properties)。初始化／讀取／驗證不能假定服務已鎖定 USB；取得初始硬體能力的方式須另做契約與實機驗證，不能直接新增第二個獨占 handle。
+屬性初始化依 [Microsoft 順序](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/adding-wia-properties-to-a-wia-item) 建立名稱、初始值、再設定有效範圍。必備項目分別核對 [root](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/required-root-item-properties-for-wia-scanners) 與 [flatbed](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/required-flatbed-item-properties)。初始化／讀取／驗證不能假定服務已鎖定 USB。初始能力後續已透過保留的 IStiDevice 鎖定，在同一 STI session 查詢並解鎖，合成測試及獨立 INQUIRY 硬體測試通過；真正 WIA 服務仍待驗證，沒有另開第二個獨占 handle。
 
 ### 原生項目樹與介面身分
 
@@ -116,7 +132,7 @@ Diff Inspector：Scope CLEAN。根代理追蹤 native acquire → 屬性快照 �
 
 測試初稿誤將 `GetFirstChildItem` 的借用結果當成 owned 參考，造成測試程序 heap corruption／清理失敗。獨立 native probe 確認本機 `wiaservc.dll` 10.0.26100.8875 的 getter 不增加參考，測試改為先 AddRef 後 RAII，重複建立／清理通過。AddItemToFolder 則確實增加子項目參考；原生建立不增加 minidriver 參考。這是本機 Windows runtime 證據，不是跨版本或 WIA 服務驗收。私人 probe 位於 `artifacts/wia-tree-probe-20260914-b/`，SDK 編譯驗證位於 `artifacts/minidrv-validation-20260914-a/`，皆不提交。
 
-本輪沒有 USB 或系統設定操作；沿用前版掃描核心，沒有把歷史實掃當成本版 WIA 服務測試。DLL 新增 `wiaservc.dll` 匯入，仍依賴 VCRUNTIME140.dll，runtime exports 恰為兩個 COM 入口。下一次以實際服務管理的 context 接上屬性儲存／相依驗證、drvAcquireItemData、WIA 鎖定與取消，準備具體可復原的登錄方案後再取得系統變更授權。
+此項目樹版本沒有 USB 或系統設定操作；沿用前版掃描核心，沒有把歷史實掃當成本版 WIA 服務測試。DLL 新增 `wiaservc.dll` 匯入，仍依賴 VCRUNTIME140.dll，runtime exports 恰為兩個 COM 入口。後續已接上 acquire、鎖定、取消及屬性初始化，詳見前述驗收段落；仍須補上相依驗證，並以實際服務 context 驗收。準備具體可復原的登錄方案後再取得系統變更授權。
 
 Diff Inspector：Scope CLEAN。根代理查核全部差異及 STI／共用掃描消費端，Luna 完成身分、ABI、原生項目參考及重入的獨立對抗審查，沒有確認的未處理 P1／P2。仍需查證：服務是否保證最終 Release 前先 Uninitialize；尚未解除的物件直接析構時，helper Release 重入沒有測試；destructor 忽略 unlink 的 HRESULT，沒有原生故障注入證據確認其影響。這些事項列為服務生命週期整合的驗收條件，不能由正常程序內清理成功推論已完成。
 

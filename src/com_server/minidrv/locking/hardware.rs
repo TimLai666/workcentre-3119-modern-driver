@@ -121,6 +121,89 @@ static DEVICE: DevicePrefix = DevicePrefix {
 };
 
 #[test]
+#[ignore = "Hardware: set freshly enumerated WC3119_TEST_STI_PATH; WIA lock/capability query only, no scan or registry writes."]
+fn actual_wia_lock_queries_live_capabilities_without_scan() {
+    let path = std::env::var_os("WC3119_TEST_STI_PATH").expect("set fresh WC3119_TEST_STI_PATH");
+    let mut control = Control {
+        table: &CONTROL,
+        refs: Cell::new(1),
+        port: path.encode_wide().chain([0]).collect(),
+    };
+    let mut factory = ptr::null_mut();
+    let mut mini = ptr::null_mut();
+    // SAFETY: caller keeps all fixture storage and the COM apartment alive.
+    // This explicitly ignored test opens only the caller-selected scanner.
+    unsafe {
+        assert_eq!(CoInitializeEx(ptr::null_mut(), 0), 0);
+        assert_eq!(
+            com_server::DllGetClassObject(
+                &com_server::DRIVER_CLASS_ID,
+                &com_server::IID_ICLASSFACTORY,
+                &mut factory,
+            ),
+            0
+        );
+        let f = &**factory.cast::<*const com_server::ClassFactoryVtable>();
+        assert_eq!(
+            (f.create_instance)(
+                factory,
+                ptr::null_mut(),
+                &com_server::IID_IWIAMINIDRV,
+                &mut mini,
+            ),
+            0
+        );
+        (f.release)(factory);
+        let owner = minidrv::owner(mini);
+        assert_eq!(
+            (sti::VTABLE.initialize)(
+                owner,
+                ptr::from_mut(&mut control).cast(),
+                sti::STI_VERSION,
+                ptr::null_mut(),
+            ),
+            0
+        );
+        let interface = &*mini.cast::<Interface>();
+        let mut device = Device {
+            table: &DEVICE,
+            refs: Cell::new(1),
+            owner,
+            mini: interface,
+            lock_calls: Cell::new(0),
+            unlock_calls: Cell::new(0),
+        };
+        interface
+            .initialize_tree(
+                mini,
+                vec![65],
+                "synthetic\\Root".encode_utf16().collect(),
+                ptr::from_mut(&mut device).cast(),
+            )
+            .unwrap();
+        let result = with_live_capabilities(interface, |capabilities| {
+            assert!(!capabilities.identity.is_empty());
+            assert_ne!(capabilities.resolution_mask, 0);
+            assert_ne!(capabilities.mode_mask, 0);
+            Ok(())
+        });
+        let lock_calls = device.lock_calls.get();
+        let unlock_calls = device.unlock_calls.get();
+        let disconnected = interface.disconnect_client();
+        let released = minidrv::release(mini);
+        let control_refs = control.refs.get();
+        CoUninitialize();
+        assert!(result.is_ok(), "live capability query failed: {result:?}");
+        assert_eq!(lock_calls, 1);
+        assert_eq!(unlock_calls, 1);
+        assert_eq!(disconnected, 0);
+        assert_eq!(device.refs.get(), 1);
+        assert_eq!(released, 0);
+        assert_eq!(control_refs, 1);
+    }
+}
+
+#[test]
 #[ignore = "Hardware: set freshly enumerated WC3119_TEST_STI_PATH; locks USB and sends INQUIRY. No scans or registry writes."]
 fn actual_wia_lock_routes_through_sti_and_releases() {
     exercise(false);

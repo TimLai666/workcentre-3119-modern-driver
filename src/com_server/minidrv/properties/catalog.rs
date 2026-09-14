@@ -1,0 +1,861 @@
+//! Pure WIA property catalog derived from a validated protocol capability frame.
+//!
+//! The catalog owns only driver-side values.  The WIA service context remains
+//! opaque and is handled by `native.rs` when the catalog is published.
+
+use crate::{com_server::Guid, protocol::Capabilities, wia::BMP_FORMAT};
+
+const E_INVALIDARG: i32 = 0x8007_0057u32 as i32;
+
+const VT_I4: u16 = 3;
+const VT_BSTR: u16 = 8;
+const VT_CLSID: u16 = 72;
+
+const WIA_PROP_READ: u32 = 0x01;
+const WIA_PROP_WRITE: u32 = 0x02;
+const WIA_PROP_RW: u32 = WIA_PROP_READ | WIA_PROP_WRITE;
+const WIA_PROP_NONE: u32 = 0x08;
+const WIA_PROP_RANGE: u32 = 0x10;
+const WIA_PROP_LIST: u32 = 0x20;
+const WIA_PROP_FLAG: u32 = 0x40;
+const WIA_PROP_CACHEABLE: u32 = 0x1_0000;
+
+const WIA_ITEM_READ: i32 = 0x01;
+
+const WIA_DPS_DOCUMENT_HANDLING_CAPABILITIES: u32 = 3086;
+const WIA_DPS_DOCUMENT_HANDLING_STATUS: u32 = 3087;
+const WIA_IPA_ITEM_NAME: u32 = 4098;
+const WIA_IPA_FULL_ITEM_NAME: u32 = 4099;
+const WIA_IPA_ACCESS_RIGHTS: u32 = 4102;
+const WIA_IPA_DATATYPE: u32 = 4103;
+const WIA_IPA_DEPTH: u32 = 4104;
+const WIA_IPA_PREFERRED_FORMAT: u32 = 4105;
+const WIA_IPA_FORMAT: u32 = 4106;
+const WIA_IPA_COMPRESSION: u32 = 4107;
+const WIA_IPA_TYMED: u32 = 4108;
+const WIA_IPA_CHANNELS_PER_PIXEL: u32 = 4109;
+const WIA_IPA_BITS_PER_CHANNEL: u32 = 4110;
+const WIA_IPA_PLANAR: u32 = 4111;
+const WIA_IPA_PIXELS_PER_LINE: u32 = 4112;
+const WIA_IPA_NUMBER_OF_LINES: u32 = 4114;
+const WIA_IPA_ITEM_SIZE: u32 = 4116;
+const WIA_IPA_COLOR_PROFILE: u32 = 4117;
+const WIA_IPA_BUFFER_SIZE: u32 = 4118;
+const WIA_IPA_PROP_STREAM_COMPAT_ID: u32 = 4122;
+const WIA_IPA_ITEM_CATEGORY: u32 = 4125;
+const WIA_IPS_CUR_INTENT: u32 = 6146;
+const WIA_IPS_XRES: u32 = 6147;
+const WIA_IPS_YRES: u32 = 6148;
+const WIA_IPS_XPOS: u32 = 6149;
+const WIA_IPS_YPOS: u32 = 6150;
+const WIA_IPS_XEXTENT: u32 = 6151;
+const WIA_IPS_YEXTENT: u32 = 6152;
+const WIA_IPS_BRIGHTNESS: u32 = 6154;
+const WIA_IPS_CONTRAST: u32 = 6155;
+const WIA_IPS_MAX_HORIZONTAL_SIZE: u32 = 6165;
+const WIA_IPS_MAX_VERTICAL_SIZE: u32 = 6166;
+const WIA_IPS_MIN_HORIZONTAL_SIZE: u32 = 6167;
+const WIA_IPS_MIN_VERTICAL_SIZE: u32 = 6168;
+const WIA_IPS_OPTICAL_XRES: u32 = 3090;
+const WIA_IPS_OPTICAL_YRES: u32 = 3091;
+const WIA_IPS_PREVIEW: u32 = 3100;
+
+const WIA_DATA_GRAYSCALE: i32 = 2;
+const WIA_DATA_COLOR: i32 = 3;
+const WIA_COMPRESSION_NONE: i32 = 0;
+const TYMED_FILE: i32 = 2;
+const WIA_PACKED_PIXEL: i32 = 0;
+const WIA_FINAL_SCAN: i32 = 0;
+const WIA_CATEGORY_ROOT: Guid = Guid {
+    data1: 0xf193_526f,
+    data2: 0x59b8,
+    data3: 0x4a26,
+    data4: [0x98, 0x88, 0xe1, 0x6e, 0x4f, 0x97, 0xce, 0x10],
+};
+const WIA_CATEGORY_FLATBED: Guid = Guid {
+    data1: 0xfb60_7b1f,
+    data2: 0x43f3,
+    data3: 0x488b,
+    data4: [0x85, 0x5b, 0xfb, 0x70, 0x3e, 0xc3, 0x42, 0xa6],
+};
+
+/// A scalar initial value written by `wiasWriteMultiple`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum PropertyValue {
+    Long(i32),
+    Guid(Guid),
+    String(String),
+}
+
+/// The effective WIA validity description for one property.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum PropertyAttribute {
+    None {
+        access: u32,
+        vt: u16,
+    },
+    RangeLong {
+        access: u32,
+        min: i32,
+        nominal: i32,
+        max: i32,
+        step: i32,
+    },
+    ListLong {
+        access: u32,
+        values: Vec<i32>,
+        nominal: i32,
+    },
+    ListGuid {
+        access: u32,
+        values: Vec<Guid>,
+        nominal: Guid,
+    },
+    FlagLong {
+        access: u32,
+        nominal: i32,
+        valid_bits: i32,
+    },
+}
+
+impl PropertyAttribute {
+    #[cfg(test)]
+    pub(super) fn access(&self) -> u32 {
+        match self {
+            Self::None { access, .. }
+            | Self::RangeLong { access, .. }
+            | Self::ListLong { access, .. }
+            | Self::ListGuid { access, .. }
+            | Self::FlagLong { access, .. } => *access,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ItemKind {
+    Root,
+    Flatbed,
+}
+
+/// A complete, aligned name/value/attribute set for one WIA item.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PropertyCatalog {
+    kind: ItemKind,
+    ids: Vec<u32>,
+    names: Vec<String>,
+    initial_values: Vec<PropertyValue>,
+    attributes: Vec<PropertyAttribute>,
+    resolutions: Vec<i32>,
+    data_types: Vec<i32>,
+    default_resolution: i32,
+    width_units: u32,
+    height_units: u32,
+}
+
+impl PropertyCatalog {
+    /// Build root category, access rights and document handling properties.
+    ///
+    /// `status` must come from the caller's current device-status policy.  The
+    /// protocol INQUIRY frame has no WIA cover/status field, so this builder
+    /// does not invent one.
+    pub(super) fn root(caps: &Capabilities, status: i32) -> Result<Self, i32> {
+        validate_capabilities(caps)?;
+        let mut catalog = Self {
+            kind: ItemKind::Root,
+            ids: Vec::new(),
+            names: Vec::new(),
+            initial_values: Vec::new(),
+            attributes: Vec::new(),
+            resolutions: Vec::new(),
+            data_types: Vec::new(),
+            default_resolution: 0,
+            width_units: 0,
+            height_units: 0,
+        };
+        catalog.push(
+            WIA_IPA_ITEM_CATEGORY,
+            "Item Category",
+            PropertyValue::Guid(WIA_CATEGORY_ROOT),
+            PropertyAttribute::None {
+                access: WIA_PROP_READ | WIA_PROP_NONE | WIA_PROP_CACHEABLE,
+                vt: VT_CLSID,
+            },
+        );
+        catalog.push(
+            WIA_IPA_ACCESS_RIGHTS,
+            "Access Rights",
+            PropertyValue::Long(WIA_ITEM_READ),
+            PropertyAttribute::FlagLong {
+                access: WIA_PROP_READ | WIA_PROP_FLAG,
+                nominal: WIA_ITEM_READ,
+                valid_bits: WIA_ITEM_READ,
+            },
+        );
+        catalog.push(
+            WIA_DPS_DOCUMENT_HANDLING_CAPABILITIES,
+            "Document Handling Capabilities",
+            PropertyValue::Long(0x02), // FLAT
+            PropertyAttribute::None {
+                access: WIA_PROP_READ | WIA_PROP_NONE | WIA_PROP_CACHEABLE,
+                vt: VT_I4,
+            },
+        );
+        catalog.push(
+            WIA_DPS_DOCUMENT_HANDLING_STATUS,
+            "Document Handling Status",
+            PropertyValue::Long(status),
+            PropertyAttribute::None {
+                access: WIA_PROP_READ | WIA_PROP_NONE,
+                vt: VT_I4,
+            },
+        );
+        Ok(catalog)
+    }
+
+    /// Build the required flatbed item properties and their initial effective
+    /// ranges.  Every resolution and geometry limit is derived from `caps`.
+    pub(super) fn flatbed(
+        caps: &Capabilities,
+        item_name: &str,
+        full_item_name: &str,
+    ) -> Result<Self, i32> {
+        validate_capabilities(caps)?;
+        validate_name(item_name)?;
+        validate_name(full_item_name)?;
+
+        let resolutions: Vec<i32> = caps
+            .resolutions()
+            .into_iter()
+            .filter(|dpi| matches!(*dpi, 75 | 100 | 150 | 200 | 300 | 600))
+            .map(|dpi| dpi as i32)
+            .collect();
+        if resolutions.is_empty() {
+            return Err(E_INVALIDARG);
+        }
+
+        // The scan core currently accepts only the two mode command codes
+        // below.  The bit positions are protocol capability bits, not WIA
+        // datatype values.
+        let mut data_types = Vec::new();
+        if caps.mode_mask & (1 << 3) != 0 {
+            data_types.push(WIA_DATA_GRAYSCALE);
+        }
+        if caps.mode_mask & (1 << 5) != 0 && caps.line_order <= 1 {
+            data_types.push(WIA_DATA_COLOR);
+        }
+        if data_types.is_empty() || caps.compression_mask & 1 == 0 {
+            return Err(E_INVALIDARG);
+        }
+
+        let default_resolution = resolutions[0];
+        let default_data_type = data_types[0];
+        let default_depth = depth_for(default_data_type);
+        let default_channels = channels_for(default_data_type);
+        let max_horizontal_size = size_thousandths(caps.width_units)?;
+        let max_vertical_units = caps.flatbed_length_units.min(caps.length_units);
+        let max_vertical_size = size_thousandths(max_vertical_units)?;
+        let min_size = min_size_thousandths(default_resolution)?;
+        let mut catalog = Self {
+            kind: ItemKind::Flatbed,
+            ids: Vec::new(),
+            names: Vec::new(),
+            initial_values: Vec::new(),
+            attributes: Vec::new(),
+            resolutions,
+            data_types,
+            default_resolution,
+            width_units: caps.width_units,
+            height_units: max_vertical_units,
+        };
+        let (max_width, max_height) = catalog.max_extent(catalog.default_resolution);
+        if max_width <= 0 || max_height <= 0 {
+            return Err(E_INVALIDARG);
+        }
+        let initial_size = bmp_size(max_width, max_height, default_depth)?;
+
+        let rw_list = |values: Vec<i32>, nominal| PropertyAttribute::ListLong {
+            access: WIA_PROP_RW | WIA_PROP_LIST,
+            values,
+            nominal,
+        };
+        let ro_none = |vt| PropertyAttribute::None {
+            // Read-only values can still change with the selected resolution
+            // and datatype. Do not let the service cache them across changes.
+            access: WIA_PROP_READ | WIA_PROP_NONE,
+            vt,
+        };
+        let rw_range = |min, nominal, max| PropertyAttribute::RangeLong {
+            access: WIA_PROP_RW | WIA_PROP_RANGE,
+            min,
+            nominal,
+            max,
+            step: 1,
+        };
+        let add_long = |catalog: &mut Self, id, name, value, attribute: PropertyAttribute| {
+            catalog.push(id, name, PropertyValue::Long(value), attribute);
+        };
+
+        add_long(
+            &mut catalog,
+            WIA_IPA_ACCESS_RIGHTS,
+            "Access Rights",
+            WIA_ITEM_READ,
+            PropertyAttribute::FlagLong {
+                access: WIA_PROP_READ | WIA_PROP_FLAG,
+                nominal: WIA_ITEM_READ,
+                valid_bits: WIA_ITEM_READ,
+            },
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPA_BITS_PER_CHANNEL,
+            "Bits Per Channel",
+            8,
+            ro_none(VT_I4),
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPA_BUFFER_SIZE,
+            "Buffer Size",
+            64 * 1024,
+            ro_none(VT_I4),
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPA_CHANNELS_PER_PIXEL,
+            "Channels Per Pixel",
+            default_channels,
+            ro_none(VT_I4),
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPA_COLOR_PROFILE,
+            "Color Profiles",
+            0,
+            ro_none(VT_I4),
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPA_COMPRESSION,
+            "Compression",
+            WIA_COMPRESSION_NONE,
+            rw_list(vec![WIA_COMPRESSION_NONE], WIA_COMPRESSION_NONE),
+        );
+        let data_type_values = catalog.data_types.clone();
+        // Depth and Y resolution describe the current datatype and X
+        // resolution. drvValidateItemProperties must update these lists when
+        // their controlling properties change.
+        let depth_values = vec![default_depth];
+        add_long(
+            &mut catalog,
+            WIA_IPA_DATATYPE,
+            "Data Type",
+            default_data_type,
+            rw_list(data_type_values, default_data_type),
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPA_DEPTH,
+            "Bits Per Pixel",
+            default_depth,
+            rw_list(depth_values, default_depth),
+        );
+        catalog.push(
+            WIA_IPA_FORMAT,
+            "Format",
+            PropertyValue::Guid(guid_from_bytes(BMP_FORMAT)),
+            PropertyAttribute::ListGuid {
+                access: WIA_PROP_RW | WIA_PROP_LIST,
+                values: vec![guid_from_bytes(BMP_FORMAT)],
+                nominal: guid_from_bytes(BMP_FORMAT),
+            },
+        );
+        catalog.push(
+            WIA_IPA_FULL_ITEM_NAME,
+            "Full Item Name",
+            PropertyValue::String(full_item_name.to_owned()),
+            ro_none(VT_BSTR),
+        );
+        // WIA_IPA_ICM_PROFILE_NAME is owned by the WIA service from the INF
+        // ICMProfiles entry. Never overwrite its installed value with a
+        // fabricated profile or an empty string.
+        catalog.push(
+            WIA_IPA_ITEM_CATEGORY,
+            "Item Category",
+            PropertyValue::Guid(WIA_CATEGORY_FLATBED),
+            ro_none(VT_CLSID),
+        );
+        catalog.push(
+            WIA_IPA_ITEM_NAME,
+            "Item Name",
+            PropertyValue::String(item_name.to_owned()),
+            ro_none(VT_BSTR),
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPA_ITEM_SIZE,
+            "Item Size",
+            initial_size,
+            ro_none(VT_I4),
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPS_MAX_HORIZONTAL_SIZE,
+            "Maximum Horizontal Scan Size",
+            max_horizontal_size,
+            ro_none(VT_I4),
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPS_MAX_VERTICAL_SIZE,
+            "Maximum Vertical Scan Size",
+            max_vertical_size,
+            ro_none(VT_I4),
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPS_MIN_HORIZONTAL_SIZE,
+            "Minimum Horizontal Scan Size",
+            min_size,
+            ro_none(VT_I4),
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPS_MIN_VERTICAL_SIZE,
+            "Minimum Vertical Scan Size",
+            min_size,
+            ro_none(VT_I4),
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPA_NUMBER_OF_LINES,
+            "Number of Lines",
+            max_height,
+            ro_none(VT_I4),
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPA_PIXELS_PER_LINE,
+            "Pixels Per Line",
+            max_width,
+            ro_none(VT_I4),
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPA_PLANAR,
+            "Planar",
+            WIA_PACKED_PIXEL,
+            rw_list(vec![WIA_PACKED_PIXEL], WIA_PACKED_PIXEL),
+        );
+        catalog.push(
+            WIA_IPA_PREFERRED_FORMAT,
+            "Preferred Format",
+            PropertyValue::Guid(guid_from_bytes(BMP_FORMAT)),
+            ro_none(VT_CLSID),
+        );
+        catalog.push(
+            WIA_IPA_PROP_STREAM_COMPAT_ID,
+            "Stream Compatibility ID",
+            PropertyValue::Guid(guid_from_bytes(BMP_FORMAT)),
+            PropertyAttribute::ListGuid {
+                access: WIA_PROP_READ | WIA_PROP_LIST | WIA_PROP_CACHEABLE,
+                values: vec![guid_from_bytes(BMP_FORMAT)],
+                nominal: guid_from_bytes(BMP_FORMAT),
+            },
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPA_TYMED,
+            "Media Type",
+            TYMED_FILE,
+            rw_list(vec![TYMED_FILE], TYMED_FILE),
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPS_BRIGHTNESS,
+            "Brightness",
+            0,
+            rw_range(0, 0, 0),
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPS_CONTRAST,
+            "Contrast",
+            0,
+            rw_range(0, 0, 0),
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPS_CUR_INTENT,
+            "Current Intent",
+            0,
+            PropertyAttribute::FlagLong {
+                access: WIA_PROP_RW | WIA_PROP_FLAG,
+                nominal: 0,
+                valid_bits: 0,
+            },
+        );
+        // WorkCentre 3119 model optics, from Xerox W31BR-01.PDF. These are
+        // informational physical specs, not selectable resolutions. Actual
+        // X/Y scan settings remain the intersection of INQUIRY and the core.
+        // https://www.office.xerox.com/latest/W31BR-01.PDF
+        add_long(
+            &mut catalog,
+            WIA_IPS_OPTICAL_XRES,
+            "Horizontal Optical Resolution",
+            600,
+            ro_none(VT_I4),
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPS_OPTICAL_YRES,
+            "Vertical Optical Resolution",
+            2400,
+            ro_none(VT_I4),
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPS_PREVIEW,
+            "Preview",
+            WIA_FINAL_SCAN,
+            rw_list(vec![WIA_FINAL_SCAN], WIA_FINAL_SCAN),
+        );
+        let position = PropertyAttribute::RangeLong {
+            access: WIA_PROP_RW | WIA_PROP_RANGE,
+            min: 0,
+            nominal: 0,
+            // The initial selection covers the entire available image.
+            max: 0,
+            step: offset_step(default_resolution),
+        };
+        add_long(
+            &mut catalog,
+            WIA_IPS_XEXTENT,
+            "Horizontal Extent",
+            max_width,
+            rw_range(1, max_width, max_width),
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPS_XPOS,
+            "Horizontal Start Position",
+            0,
+            position.clone(),
+        );
+        let x_resolutions = catalog.resolutions.clone();
+        let y_resolutions = vec![default_resolution];
+        add_long(
+            &mut catalog,
+            WIA_IPS_XRES,
+            "Horizontal Resolution",
+            default_resolution,
+            rw_list(x_resolutions, default_resolution),
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPS_YEXTENT,
+            "Vertical Extent",
+            max_height,
+            rw_range(1, max_height, max_height),
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPS_YPOS,
+            "Vertical Start Position",
+            0,
+            position,
+        );
+        add_long(
+            &mut catalog,
+            WIA_IPS_YRES,
+            "Vertical Resolution",
+            default_resolution,
+            rw_list(y_resolutions, default_resolution),
+        );
+        catalog.assert_aligned()?;
+        Ok(catalog)
+    }
+
+    fn push(&mut self, id: u32, name: &str, value: PropertyValue, attribute: PropertyAttribute) {
+        self.ids.push(id);
+        self.names.push(name.to_owned());
+        self.initial_values.push(value);
+        self.attributes.push(attribute);
+    }
+
+    fn assert_aligned(&self) -> Result<(), i32> {
+        if self.ids.len() == self.names.len()
+            && self.ids.len() == self.initial_values.len()
+            && self.ids.len() == self.attributes.len()
+        {
+            Ok(())
+        } else {
+            Err(E_UNEXPECTED)
+        }
+    }
+
+    pub(super) fn property_ids(&self) -> &[u32] {
+        &self.ids
+    }
+
+    pub(super) fn names(&self) -> &[String] {
+        &self.names
+    }
+
+    pub(super) fn initial_values(&self) -> &[PropertyValue] {
+        &self.initial_values
+    }
+
+    pub(super) fn attributes(&self) -> &[PropertyAttribute] {
+        &self.attributes
+    }
+
+    #[cfg(test)]
+    pub(super) fn resolutions(&self) -> &[i32] {
+        &self.resolutions
+    }
+
+    #[cfg(test)]
+    pub(super) fn data_types(&self) -> &[i32] {
+        &self.data_types
+    }
+
+    #[cfg(test)]
+    pub(super) fn default_resolution(&self) -> i32 {
+        self.default_resolution
+    }
+
+    pub(super) fn max_extent(&self, dpi: i32) -> (i32, i32) {
+        if self.kind != ItemKind::Flatbed || !self.resolutions.contains(&dpi) {
+            return (0, 0);
+        }
+        (
+            pixels_from_units(self.width_units, dpi).unwrap_or(0),
+            pixels_from_units(self.height_units, dpi).unwrap_or(0),
+        )
+    }
+}
+
+fn validate_capabilities(caps: &Capabilities) -> Result<(), i32> {
+    if caps.identity.is_empty()
+        || caps.width_units == 0
+        || caps.length_units == 0
+        || caps.flatbed_length_units == 0
+        || caps.resolution_mask == 0
+        || caps.mode_mask == 0
+    {
+        Err(E_INVALIDARG)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_name(value: &str) -> Result<(), i32> {
+    if value.is_empty() || value.encode_utf16().any(|unit| unit == 0) || value.len() > 16 * 1024 {
+        Err(E_INVALIDARG)
+    } else {
+        Ok(())
+    }
+}
+
+fn pixels_from_units(units: u32, dpi: i32) -> Result<i32, i32> {
+    let dpi = u64::try_from(dpi).map_err(|_| E_INVALIDARG)?;
+    let pixels = u64::from(units).checked_mul(dpi).ok_or(E_INVALIDARG)? / 1200;
+    i32::try_from(pixels).map_err(|_| E_INVALIDARG)
+}
+
+fn size_thousandths(units: u32) -> Result<i32, i32> {
+    let value = u64::from(units).checked_mul(1000).ok_or(E_INVALIDARG)? / 1200;
+    i32::try_from(value).map_err(|_| E_INVALIDARG)
+}
+
+fn min_size_thousandths(max_dpi: i32) -> Result<i32, i32> {
+    let dpi = u64::try_from(max_dpi).map_err(|_| E_INVALIDARG)?;
+    let value = 1000u64.checked_add(dpi - 1).ok_or(E_INVALIDARG)? / dpi;
+    i32::try_from(value).map_err(|_| E_INVALIDARG)
+}
+
+fn offset_step(dpi: i32) -> i32 {
+    // One offset unit is 1/100 inch; find the smallest pixel increment that
+    // is an exact multiple of it. All selectable DPI values divide 1200.
+    let mut a = dpi;
+    let mut b = 100;
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    dpi / a
+}
+
+fn bmp_size(width: i32, height: i32, depth: i32) -> Result<i32, i32> {
+    let row_bits = u64::try_from(width)
+        .map_err(|_| E_INVALIDARG)?
+        .checked_mul(depth as u64)
+        .ok_or(E_INVALIDARG)?;
+    let stride = row_bits.div_ceil(32).checked_mul(4).ok_or(E_INVALIDARG)?;
+    let palette = if depth == 8 { 1024 } else { 0 };
+    let size = stride
+        .checked_mul(height as u64)
+        .and_then(|value| value.checked_add(14 + 40 + palette))
+        .ok_or(E_INVALIDARG)?;
+    i32::try_from(size).map_err(|_| E_INVALIDARG)
+}
+
+fn depth_for(data_type: i32) -> i32 {
+    match data_type {
+        WIA_DATA_GRAYSCALE => 8,
+        WIA_DATA_COLOR => 24,
+        _ => 0,
+    }
+}
+
+fn channels_for(data_type: i32) -> i32 {
+    match data_type {
+        WIA_DATA_GRAYSCALE => 1,
+        WIA_DATA_COLOR => 3,
+        _ => 0,
+    }
+}
+
+fn guid_from_bytes(bytes: [u8; 16]) -> Guid {
+    Guid {
+        data1: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+        data2: u16::from_le_bytes(bytes[4..6].try_into().unwrap()),
+        data3: u16::from_le_bytes(bytes[6..8].try_into().unwrap()),
+        data4: bytes[8..16].try_into().unwrap(),
+    }
+}
+
+const E_UNEXPECTED: i32 = 0x8000_ffffu32 as i32;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn caps() -> Capabilities {
+        Capabilities {
+            identity: "synthetic".into(),
+            resolution_mask: (1 << 0) | (1 << 5) | (1 << 8),
+            mode_mask: (1 << 3) | (1 << 5),
+            width_units: 10_200,
+            length_units: 14_040,
+            flatbed_length_units: 14_040,
+            line_order: 0,
+            compression_mask: 1,
+        }
+    }
+
+    fn property(catalog: &PropertyCatalog, id: u32) -> (&PropertyValue, &PropertyAttribute) {
+        let index = catalog.ids.iter().position(|value| *value == id).unwrap();
+        (&catalog.initial_values[index], &catalog.attributes[index])
+    }
+
+    #[test]
+    fn initial_geometry_and_mode_attributes_match_the_scan_contract() {
+        let catalog = PropertyCatalog::flatbed(&caps(), "Flatbed", "Root\\Flatbed").unwrap();
+        for id in [WIA_IPS_XPOS, WIA_IPS_YPOS] {
+            assert!(matches!(
+                property(&catalog, id).1,
+                PropertyAttribute::RangeLong {
+                    min: 0,
+                    nominal: 0,
+                    max: 0,
+                    step: 3,
+                    ..
+                }
+            ));
+        }
+        assert_eq!(
+            property(&catalog, WIA_IPS_MIN_HORIZONTAL_SIZE).0,
+            &PropertyValue::Long(14)
+        );
+        assert!(matches!(property(&catalog, WIA_IPA_DEPTH).1,
+            PropertyAttribute::ListLong { values, nominal: 8, .. } if values == &[8]));
+        assert!(matches!(property(&catalog, WIA_IPS_YRES).1,
+            PropertyAttribute::ListLong { values, nominal: 75, .. } if values == &[75]));
+    }
+
+    #[test]
+    fn initial_bmp_size_includes_padding_header_and_palette_and_is_not_cached() {
+        let catalog = PropertyCatalog::flatbed(&caps(), "Flatbed", "Root\\Flatbed").unwrap();
+        assert_eq!(
+            property(&catalog, WIA_IPA_ITEM_SIZE).0,
+            &PropertyValue::Long(562_358)
+        );
+        for id in [
+            WIA_IPA_ITEM_SIZE,
+            WIA_IPA_NUMBER_OF_LINES,
+            WIA_IPA_PIXELS_PER_LINE,
+            WIA_IPA_CHANNELS_PER_PIXEL,
+            WIA_IPS_MIN_HORIZONTAL_SIZE,
+            WIA_IPS_MIN_VERTICAL_SIZE,
+        ] {
+            assert_eq!(
+                property(&catalog, id).1.access() & WIA_PROP_CACHEABLE,
+                0,
+                "dynamic property {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn flatbed_does_not_advertise_upload_or_mutable_access_rights() {
+        let catalog = PropertyCatalog::flatbed(&caps(), "Flatbed", "Root\\Flatbed").unwrap();
+        let (value, attribute) = property(&catalog, WIA_IPA_ACCESS_RIGHTS);
+        assert_eq!(value, &PropertyValue::Long(WIA_ITEM_READ));
+        assert_eq!(attribute.access() & WIA_PROP_WRITE, 0);
+    }
+
+    #[test]
+    fn tone_ranges_advertise_only_the_neutral_values_the_core_accepts() {
+        let catalog = PropertyCatalog::flatbed(&caps(), "Flatbed", "Root\\Flatbed").unwrap();
+        for id in [WIA_IPS_BRIGHTNESS, WIA_IPS_CONTRAST] {
+            assert!(matches!(
+                property(&catalog, id).1,
+                PropertyAttribute::RangeLong {
+                    min: 0,
+                    nominal: 0,
+                    max: 0,
+                    step: 1,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn root_has_its_category_and_read_access_without_claiming_ready() {
+        let catalog = PropertyCatalog::root(&caps(), 0).unwrap();
+        assert!(matches!(
+            property(&catalog, WIA_IPA_ITEM_CATEGORY).0,
+            PropertyValue::Guid(_)
+        ));
+        assert_eq!(
+            property(&catalog, WIA_IPA_ACCESS_RIGHTS).0,
+            &PropertyValue::Long(WIA_ITEM_READ)
+        );
+        assert_eq!(
+            property(&catalog, WIA_DPS_DOCUMENT_HANDLING_STATUS).0,
+            &PropertyValue::Long(0)
+        );
+    }
+
+    #[test]
+    fn initialization_preserves_the_profile_owned_by_the_wia_service() {
+        let catalog = PropertyCatalog::flatbed(&caps(), "Flatbed", "Root\\Flatbed").unwrap();
+        assert!(!catalog.property_ids().contains(&4120));
+    }
+
+    #[test]
+    fn optical_dimensions_are_model_specs_not_selectable_resolution_maxima() {
+        let catalog = PropertyCatalog::flatbed(&caps(), "Flatbed", "Root\\Flatbed").unwrap();
+        assert_eq!(
+            property(&catalog, WIA_IPS_OPTICAL_XRES).0,
+            &PropertyValue::Long(600)
+        );
+        assert_eq!(
+            property(&catalog, WIA_IPS_OPTICAL_YRES).0,
+            &PropertyValue::Long(2400)
+        );
+        assert_eq!(catalog.max_extent(300), (2550, 3510));
+    }
+}

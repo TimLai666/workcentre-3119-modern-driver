@@ -314,6 +314,32 @@ impl State {
         })
     }
 
+    pub(super) fn live_capabilities(&self) -> Result<protocol::Capabilities, (HRESULT, String)> {
+        let result = self.presence_capabilities();
+        match &result {
+            Ok(_) => self.clear_last_error(),
+            Err((code, text)) => self.set_last_error(*code, text),
+        }
+        result
+    }
+
+    fn presence_capabilities(&self) -> Result<protocol::Capabilities, (HRESULT, String)> {
+        if !self.lock().initialized {
+            return Err((
+                STIERR_NOT_INITIALIZED,
+                "IStiUSD is not initialized".to_owned(),
+            ));
+        }
+        self.session
+            .with_session(|session| {
+                let result = perform_presence_check(session);
+                let reusable = result.is_ok();
+                (result, reusable)
+            })
+            .map_err(access_error)
+            .and_then(|result| result)
+    }
+
     fn with_scan_session<T>(
         &self,
         run: impl FnOnce(&mut usb::UsbSession) -> (io::Result<T>, crate::scan::SessionHealth),
@@ -693,7 +719,9 @@ fn diagnostic_failure(state: &State, buffer: *mut StiDiag, code: HRESULT, text: 
     code
 }
 
-fn perform_presence_check(session: &mut usb::UsbSession) -> Result<(), (HRESULT, String)> {
+fn perform_presence_check(
+    session: &mut usb::UsbSession,
+) -> Result<protocol::Capabilities, (HRESULT, String)> {
     session.write(&INQUIRY_COMMAND).map_err(|error| {
         (
             io_error_hresult(&error),
@@ -713,14 +741,12 @@ fn perform_presence_check(session: &mut usb::UsbSession) -> Result<(), (HRESULT,
             "INQUIRY returned more data than its bounded buffer".to_owned(),
         ));
     }
-    protocol::Capabilities::parse(&response[..transferred])
-        .map(|_| ())
-        .map_err(|error| {
-            (
-                STIERR_GENERIC,
-                format!("INQUIRY capability response was invalid: {error}"),
-            )
-        })
+    protocol::Capabilities::parse(&response[..transferred]).map_err(|error| {
+        (
+            STIERR_GENERIC,
+            format!("INQUIRY capability response was invalid: {error}"),
+        )
+    })
 }
 
 unsafe fn diagnostic_impl(this: *mut c_void, buffer: *mut StiDiag) -> HRESULT {
@@ -754,24 +780,9 @@ unsafe fn diagnostic_impl(this: *mut c_void, buffer: *mut StiDiag) -> HRESULT {
         );
     }
 
-    let result = if !state.lock().initialized {
-        Err((
-            STIERR_NOT_INITIALIZED,
-            "IStiUSD is not initialized".to_owned(),
-        ))
-    } else {
-        state
-            .session
-            .with_session(|session| {
-                let result = perform_presence_check(session);
-                let reusable = result.is_ok();
-                (result, reusable)
-            })
-            .map_err(access_error)
-            .and_then(|result| result)
-    };
+    let result = state.live_capabilities();
     match result {
-        Ok(()) => {
+        Ok(_) => {
             state.clear_last_error();
             // SAFETY: the exact SDK structure size was validated above.
             unsafe { write_diagnostic_success(buffer, basic, vendor) };
@@ -1079,4 +1090,16 @@ unsafe fn get_last_error_info_impl(this: *mut c_void, error_info: *mut StiErrorI
     // incoming dwSize is not read or trusted.
     unsafe { *error_info = info };
     S_OK
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_capabilities_rejects_uninitialized_state_before_session_access() {
+        let state = State::new();
+        let error = state.live_capabilities().unwrap_err();
+        assert_eq!(error.0, STIERR_NOT_INITIALIZED);
+    }
 }

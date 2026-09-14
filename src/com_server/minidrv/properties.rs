@@ -1,16 +1,23 @@
 use crate::{com_server::Guid, wia::FlatbedSettings};
-use std::{mem::MaybeUninit, ptr, slice};
+use std::{ffi::c_void, mem::MaybeUninit, ptr, slice};
 
 use super::{E_INVALIDARG, E_POINTER};
 
+mod catalog;
+mod native;
+
 const S_OK: i32 = 0;
+const E_UNEXPECTED: i32 = 0x8000_ffffu32 as i32;
 const BOOL_TRUE: i32 = 1;
 const MAX_BSTR_CODE_UNITS: usize = 16 * 1024;
 
 // SDK 10.0.26100.0 wiadef.h item type constants.
 const WIA_ITEM_TYPE_IMAGE: i32 = 0x0000_0001;
+const WIA_ITEM_TYPE_FILE: i32 = 0x0000_0002;
+const WIA_ITEM_TYPE_PROGRAMMABLE: i32 = 0x0008_0000;
 const WIA_ITEM_TYPE_ROOT: i32 = 0x0000_0008;
 const WIA_ITEM_TYPE_TRANSFER: i32 = 0x0000_2000;
+const ROOT_STATUS_UNKNOWN: i32 = 0;
 
 // SDK 10.0.26100.0 wiadef.h property identifiers.
 const WIA_IPA_ITEM_NAME: u32 = 4098;
@@ -32,6 +39,121 @@ pub(super) struct Snapshot {
     pub(super) settings: FlatbedSettings,
     pub(super) item: String,
     pub(super) full_item: String,
+}
+
+/// Initialize the property set for one real WIA service item.
+///
+/// The live capability query and the service-library writes share the one
+/// lifecycle borrow created by `locking::with_live_capabilities`.  The WIA
+/// context is only passed to SDK helpers; no service object is fabricated by
+/// this module.  The root status is intentionally initialized to zero because
+/// the current STI layer exposes no cover/paper status field.  A later status
+/// implementation must publish the corresponding WIA flags.
+///
+/// # Safety
+/// `this` is this module's live `IWiaMiniDrv` interface, `context` is a live
+/// WIA service item context for this synchronous callback, and `error` points
+/// to writable SDK `LONG` storage.
+pub(super) unsafe extern "system" fn init_entry(
+    this: *mut c_void,
+    context: *mut u8,
+    flags: i32,
+    error: *mut i32,
+) -> i32 {
+    if error.is_null() {
+        return E_POINTER;
+    }
+    // SAFETY: the caller supplied writable error storage and it remains live
+    // until all synchronous WIA helper calls return.
+    unsafe { *error = 0 };
+    let result = super::super::catch_hresult(|| {
+        if this.is_null() || context.is_null() || flags != 0 {
+            return E_INVALIDARG;
+        }
+        // SAFETY: `this` is the embedded interface supplied by the COM caller;
+        // the locking helper retains the connection and blocks reentrancy for
+        // the entire capability/publish closure.
+        let interface = unsafe { &*this.cast::<super::Interface>() };
+        // SAFETY: the interface is the live COM object above; the helper owns
+        // the connection borrow and keeps all SDK calls synchronous within the
+        // closure, including the final publication.
+        unsafe {
+            super::locking::with_live_capabilities(interface, |capabilities| {
+                let mut item_type = MaybeUninit::<i32>::uninit();
+                // SAFETY: WIA supplied the live opaque context; this local LONG is
+                // writable storage matching the SDK declaration.
+                let hr = wiasGetItemType(context, item_type.as_mut_ptr());
+                if hr != S_OK {
+                    return Err(helper_failure(hr));
+                }
+                // SAFETY: S_OK from wiasGetItemType initializes this output.
+                let item_type = item_type.assume_init();
+                let catalog = if item_type & WIA_ITEM_TYPE_ROOT != 0 {
+                    if item_type & (WIA_ITEM_TYPE_IMAGE | WIA_ITEM_TYPE_TRANSFER) != 0 {
+                        return Err(E_INVALIDARG);
+                    }
+                    catalog::PropertyCatalog::root(&capabilities, ROOT_STATUS_UNKNOWN)
+                } else if item_type
+                    & (WIA_ITEM_TYPE_IMAGE
+                        | WIA_ITEM_TYPE_FILE
+                        | WIA_ITEM_TYPE_TRANSFER
+                        | WIA_ITEM_TYPE_PROGRAMMABLE)
+                    == (WIA_ITEM_TYPE_IMAGE
+                        | WIA_ITEM_TYPE_FILE
+                        | WIA_ITEM_TYPE_TRANSFER
+                        | WIA_ITEM_TYPE_PROGRAMMABLE)
+                {
+                    // The service creates and owns these standard item-name
+                    // properties. Preserve their actual values instead of
+                    // replacing them with a guessed tree path.
+                    let (item_name, full_item_name) = read_item_names(context)?;
+                    catalog::PropertyCatalog::flatbed(&capabilities, &item_name, &full_item_name)
+                } else {
+                    Err(E_INVALIDARG)
+                }?;
+                // SAFETY: the service context is live for this synchronous SDK
+                // publication; `catalog` owns all temporary pointers until return.
+                native::publish(context, &catalog)
+            })
+        }
+        .map_or_else(|error| error, |_| S_OK)
+    });
+    // SAFETY: `error` was checked non-null above and remains writable.
+    unsafe { super::report(error, result) }
+}
+
+fn helper_failure(hr: i32) -> i32 {
+    if hr < 0 { hr } else { E_UNEXPECTED }
+}
+
+fn read_item_names(context: *mut u8) -> Result<(String, String), i32> {
+    let item = read_service_string(context, WIA_IPA_ITEM_NAME)?;
+    if !valid_item_name(&item) {
+        return Err(E_INVALIDARG);
+    }
+    let full_item = read_service_string(context, WIA_IPA_FULL_ITEM_NAME)?;
+    if !valid_item_name(&full_item) {
+        return Err(E_INVALIDARG);
+    }
+    Ok((item, full_item))
+}
+
+fn read_service_string(context: *mut u8, propid: u32) -> Result<String, i32> {
+    let mut raw = ptr::null_mut();
+    // SAFETY: `init_entry` received this live service context from WIA and the
+    // returned BSTR is released on every path below.
+    let hr = unsafe { wiasReadPropStr(context, propid, &mut raw, ptr::null_mut(), BOOL_TRUE) };
+    if hr != S_OK {
+        if !raw.is_null() {
+            // SAFETY: failed helper output is still an owned BSTR slot.
+            unsafe { SysFreeString(raw) };
+        }
+        return Err(helper_failure(hr));
+    }
+    // SAFETY: S_OK transfers ownership of the returned BSTR to this wrapper.
+    let value = unsafe { BString::from_raw(raw)? };
+    // SAFETY: BString owns a valid BSTR and releases it after conversion.
+    unsafe { value.into_string() }
 }
 
 trait PropertyReader {
@@ -260,6 +382,67 @@ unsafe extern "system" {
 mod tests {
     use super::*;
     use crate::wia::BMP_FORMAT;
+
+    #[test]
+    fn capability_catalog_derives_supported_modes_resolutions_and_geometry() {
+        let capabilities = crate::protocol::Capabilities {
+            identity: "synthetic".to_owned(),
+            resolution_mask: (1 << 0) | (1 << 5) | (1 << 8),
+            mode_mask: (1 << 3) | (1 << 5),
+            width_units: 10_200,
+            length_units: 14_040,
+            flatbed_length_units: 14_040,
+            line_order: 0,
+            compression_mask: 1,
+        };
+
+        let catalog = catalog::PropertyCatalog::flatbed(&capabilities, "Flatbed", "Root\\Flatbed")
+            .expect("synthetic capabilities produce a catalog");
+        assert_eq!(catalog.resolutions(), &[75, 300, 600]);
+        assert_eq!(catalog.data_types(), &[2, 3]);
+        assert_eq!(catalog.default_resolution(), 75);
+        assert_eq!(catalog.max_extent(75), (637, 877));
+        assert_eq!(catalog.property_ids().len(), catalog.initial_values().len());
+        assert_eq!(catalog.property_ids().len(), catalog.attributes().len());
+    }
+
+    #[test]
+    fn capability_catalog_rejects_untransferable_reported_capabilities() {
+        let capabilities = crate::protocol::Capabilities {
+            identity: "synthetic".to_owned(),
+            resolution_mask: 1 << 19,
+            mode_mask: 1 << 1,
+            width_units: 10_200,
+            length_units: 14_040,
+            flatbed_length_units: 14_040,
+            line_order: 0,
+            compression_mask: 1,
+        };
+
+        assert_eq!(
+            catalog::PropertyCatalog::flatbed(&capabilities, "Flatbed", "Root\\Flatbed")
+                .unwrap_err(),
+            E_INVALIDARG
+        );
+    }
+
+    #[test]
+    fn native_plan_validates_catalog_shape_without_context() {
+        let capabilities = crate::protocol::Capabilities {
+            identity: "synthetic".to_owned(),
+            resolution_mask: 1 << 5,
+            mode_mask: 1 << 3,
+            width_units: 10_200,
+            length_units: 14_040,
+            flatbed_length_units: 14_040,
+            line_order: 0,
+            compression_mask: 1,
+        };
+        let catalog =
+            catalog::PropertyCatalog::flatbed(&capabilities, "Flatbed", "Root\\Flatbed").unwrap();
+        let plan = native::WritePlan::from_catalog(&catalog).unwrap();
+        assert_eq!(plan.property_count(), catalog.property_ids().len());
+    }
 
     const E_INVALIDARG: i32 = 0x8007_0057u32 as i32;
     const S_FALSE: i32 = 1;
