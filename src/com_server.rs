@@ -1,8 +1,8 @@
 //! Windows COM server identity and lifetime for the scanner integration.
 //!
 //! The instance shares `IUnknown`, `IStiUSD` and `IWiaMiniDrv` identity. Native
-//! driver items are implemented; WIA properties, acquisition and registration
-//! are still under development.
+//! driver items, locking and stream acquisition are implemented. Property
+//! initialization, validation, cancellation events and service integration remain.
 
 mod minidrv;
 mod session;

@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-2026-09-14：IWiaMiniDrv 共用介面身分、原生根／平台項目樹與多用戶端生命週期已實作並通過原生 Windows 物件測試。前版傳輸回呼已有同物件 USB 灰階、彩色取消及重掃證據；正式屬性模型、掃描入口與服務整合仍待完成，Windows 掃描尚不能使用本驅動。既有兩次自然逾時、20 次穩定性、文件品質、正式套件及列印仍未完成。
+2026-09-14：IWiaMiniDrv 已接上 IStiDevice 鎖定、服務屬性讀取及 drvAcquireItemData 串流入口。共用項目樹／USB 的 dispatch 經合成屬性與 callback 完成實機灰階、彩色取消及重掃；正式屬性初始化／相依驗證、取消事件與服務整合仍待完成，Windows 掃描尚不能使用本驅動。既有兩次自然逾時、20 次穩定性、文件品質、正式套件及列印仍未完成。
 
 ## Stage Objective
 
@@ -24,7 +24,7 @@
 | 01 | 唯讀診斷完整情境 | 開發者 | in_progress | 本機問題碼 28 可重現，硬體異常情境未全部驗證 |
 | 02 | 第一張實機掃描 | 開發者 | in_progress | 空平台灰階／彩色及獨立像素比對成功；文件、色彩及精確幾何待驗收 |
 | 03 | 取消與復原 | 開發者 | in_progress | 連續工作前 4 次成功，第 5 次 RGB600 自然逾時，清理後 Gray75 成功；20 次驗收與失同步復原未完成 |
-| 05 | Windows 掃描與安裝 | 開發者 | in_progress | 本機配對、BMP 與原生回呼實掃通過，IWiaMiniDrv 身分／原生項目樹測試通過；屬性、正式掃描入口、服務與可攜套件未完成 |
+| 05 | Windows 掃描與安裝 | 開發者 | in_progress | 原生項目樹、WIA 鎖定與串流 dispatch 已有測試及合成屬性實掃；屬性初始化／驗證、取消事件、服務與可攜套件未完成 |
 | 06 | 列印 | 開發者 | not_started | 尚無 |
 | 07 | 掃描明暗品質 | 開發者 | blocked | 已有空平台影像，缺少可對照原稿；歷史偏白仍未重現 |
 
@@ -39,9 +39,9 @@
 
 ## Next Verifiable Output
 
-接上 IWiaMiniDrv 屬性模型及 drvAcquireItemData，沿用已驗證的 `com_server::transfer_locked_bmp` 回呼傳輸入口。QI 共用身分、原生根／平台項目與多用戶端生命週期已有測試，不重做。下一步建立有效屬性範圍、相依更新及服務設定到掃描的映射；原生服務 context 必須由 Windows 提供，不可用假指標替代。三個 STI 硬體測試於前版已逐一通過，本輪沒有 USB 存取改動或重跑實掃；後續更動傳輸路徑時，重新列舉裝置、使用新輸出目錄並以 `--ignored --exact` 序列執行。
+下一步實作 IWiaMiniDrv 屬性初始化、有效範圍與相依更新，再接上格式列舉及服務取消事件。服務設定讀取及 drvAcquireItemData 已接上同一 STI USB session，不重做傳輸核心。硬體能力須來自實際裝置；原生服務 context 必須由 Windows 提供，不可用假指標替代。本輪新 dispatch 硬體測試已完成灰階、彩色取消及重掃；後續更動傳輸路徑時，重新列舉裝置、使用新輸出目錄並以 `--ignored --exact` 序列執行。
 
-IWiaMiniDrv 目前只有項目樹與介面身分完成原生驗證，屬性、acquire、WIA 鎖定、格式及事件方法仍回不支援，STI 尚不宣告 WIA capability。COM aggregation 的實際需求、服務管理的並行載入／卸載排程、項目參考所有權與 runtime 前置條件仍須驗證。先前 600×800 選取區回傳 600×801，不可將輸出尺寸任意當成 WIA 選取範圍。WinUSB 共存、服務帳號存取及 Windows 掃描消費 BMP 仍需整合驗證。跨工作隔離依 03 補完，不以介面到達時間戳記當成實體重插證據。準備具體安裝、備份及復原方案後，才提出必要的系統變更授權。平台有文件後補做 02／07 品質對照。
+IWiaMiniDrv 的屬性初始化／驗證、格式及事件方法仍回不支援，STI 尚不宣告 WIA capability。COM aggregation 的實際需求、服務管理的並行載入／卸載排程、項目參考所有權與 runtime 前置條件仍須驗證。600×800 選取區仍回傳 600×801，不可將輸出尺寸任意當成 WIA 選取範圍。WinUSB 共存、服務帳號存取及 Windows 掃描消費 BMP 仍需整合驗證。跨工作隔離依 03 補完，不以介面到達時間戳記當成實體重插證據。準備具體安裝、備份及復原方案後，才提出必要的系統變更授權。平台有文件後補做 02／07 品質對照。
 
 ## Next Ticket
 
@@ -64,6 +64,8 @@ IWiaMiniDrv 目前只有項目樹與介面身分完成原生驗證，屬性、ac
 | 建立持續完成完整驅動的目標 | 使用者要求逐步完成實作、驗證與推送，需要使用者介入時提出具體需求，可獨立工作繼續推進 | 2026-09-13 | 01、02、03、05、06、07 |
 
 ## Verified
+
+2026-09-14 原生鎖定／acquire 版本：168 個 all-targets 測試、一般測試與 2 個 doc-tests、格式、Clippy、全部 release targets 及明確啟用的當次 DLL 動態載入通過。合成屬性 dispatch 的灰階、彩色取消與重掃實機測試 42.21 秒通過，鎖定／INQUIRY 修後另通過 0.07 秒。Pillow 全樣本比對及實際影像檢視通過，仍是空平台，沒有服務 context 或 Windows 掃描驗收。證據與剩餘差異見 [05](docs/tickets/05-windows-install.md#原生鎖定與掃描-dispatch) 及 [實機紀錄](docs/hardware.md#wia-鎖定與-dispatch-實機驗證)。
 
 2026-09-14 原生項目樹版本：156 個 all-targets 測試、一般測試與 2 個 doc-tests、格式、Clippy、全部 release targets 及另行執行的當次 DLL 動態載入通過。Windows 原生根／平台項目重複建立、雙用戶端共用、名稱拒絕、helper 參考與重入清理通過。SDK C11 與 Rust 斷言核對介面大小／偏移。這些測試沒有 WIA 服務 context、USB 或系統設定操作，完整證據及下一步見 [05](docs/tickets/05-windows-install.md#原生項目樹與介面身分)。
 
@@ -171,6 +173,10 @@ Diff Inspector：本輪範圍符合診斷及可靠性調查，根代理已審查
 | [src/com_server.rs](src/com_server.rs) | DLL 入口、factory、IUnknown／module lock 生命週期及鎖定物件的原生回呼傳輸入口 |
 | [src/com_server/minidrv.rs](src/com_server/minidrv.rs) | IWiaMiniDrv 共用身分、原生初始化與多用戶端生命週期 |
 | [src/com_server/minidrv/tree.rs](src/com_server/minidrv/tree.rs) | Windows 根／平台項目、BSTR、連結及釋放 |
+| [src/com_server/minidrv/locking.rs](src/com_server/minidrv/locking.rs) | 經服務 IStiDevice 鎖定／解鎖、項目連線借用 |
+| [src/com_server/minidrv/properties.rs](src/com_server/minidrv/properties.rs) | 真實服務屬性快照、原生 GUID／BSTR 讀取 |
+| [src/com_server/minidrv/acquire.rs](src/com_server/minidrv/acquire.rs) | 原生 DOWNLOAD 入口、共用掃描與 HRESULT 映射 |
+| [src/com_server/minidrv/locking/hardware.rs](src/com_server/minidrv/locking/hardware.rs) | 明確啟用的 WIA 鎖定、合成屬性 dispatch 真實 USB 測試 |
 | [src/com_server/sti.rs](src/com_server/sti.rs) | IStiUSD 初始化、指定裝置獨占、能力診斷及錯誤回報，共用 BMP／原生回呼的連線借用 |
 | [src/com_server/session.rs](src/com_server/session.rs) | 同一資源借用、回呼期間排他、關閉時序及異常隔離 |
 | [tests/sti.rs](tests/sti.rs) | SDK 契約、helper 參考及明確啟用的實機互斥／釋放、原生回呼取消與重掃驗證 |

@@ -4,7 +4,7 @@
 
 **Rust 核心已取得實機灰階／彩色影像，目前仍不是完整可安裝的驅動。** 已驗證空平台掃描、取消後重掃及跨行程互斥；文字、色彩、精確幾何與偏白問題尚未驗收。Windows 掃描整合、正式安裝套件、跨電腦／換孔及列印仍未完成。
 
-Windows 整合已具備 BMP 編碼、原生 COM 影像串流轉接及 WIA 數值設定映射。原生 DLL 已通過載入、建立物件及卸載測試，IStiUSD 已驗證初始化、實機獨占鎖定、能力查詢與釋放。原生 WIA callback 消費端已透過測試回呼取得 Windows 記憶體串流，完成同一鎖定物件的灰階掃描、彩色取消及彩色重掃。回呼期間再次掃描或解鎖會回報忙碌，完成進度只在影像及清理成功後發送。IWiaMiniDrv 的介面身分與根／平台項目樹已實作，原生項目的多用戶端共用與清理測試通過；屬性、正式掃描入口及服務整合仍未完成，Windows 掃描目前不能使用本核心，詳見 [整合進度](docs/tickets/05-windows-install.md)。
+Windows 整合已具備 BMP、原生 COM 串流、WIA 設定映射及根／平台項目樹。IWiaMiniDrv 已接上裝置鎖定、服務屬性讀取與串流掃描入口，傳輸重用 IStiUSD 持有的 USB 連線。以合成屬性與回呼進行的實機灰階、彩色取消及彩色重掃通過，回呼重入不能解除項目樹或搶走連線。正式屬性初始化、相依驗證、服務取消事件及安裝整合仍未完成，Windows 掃描目前不能使用本核心，詳見 [整合進度](docs/tickets/05-windows-install.md)。
 
 `MI_00` 表示複合式 USB 裝置的第 0 個功能介面，數字取自裝置描述，與電腦上的 USB 接孔編號無關。3119 的 MI_00 已回覆掃描能力，MI_01 使用列印傳輸服務。正式套件會依型號與功能介面辨識，不以開發機的孔位或完整實例路徑限定使用。[Microsoft USB 識別碼定義](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/standard-usb-identifiers)
 

@@ -1,5 +1,5 @@
 //! Single-image native WIA callback transfer using the existing scan session.
-//! Service property contexts and IWiaMiniDrv dispatch are separate, unfinished work.
+//! IWiaMiniDrv dispatch is in com_server::minidrv; service integration is unfinished.
 
 use crate::{
     bitmap::BmpEncoder,
@@ -170,7 +170,7 @@ fn transfer(
 #[cfg(test)]
 #[allow(dead_code)]
 #[path = "../tests/support/wia_callback.rs"]
-mod fixture;
+pub(crate) mod fixture;
 
 #[cfg(test)]
 mod tests {

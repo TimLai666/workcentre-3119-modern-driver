@@ -66,6 +66,10 @@ struct MiniPrefix {
         *mut *mut c_void,
         *mut i32,
     ) -> i32,
+    acquire: unsafe extern "system" fn(*mut c_void, *mut u8, i32, *mut c_void, *mut i32) -> i32,
+    unused: [usize; 4],
+    lock: unsafe extern "system" fn(*mut c_void, *mut u8, i32, *mut i32) -> i32,
+    unlock: unsafe extern "system" fn(*mut c_void, *mut u8, i32, *mut i32) -> i32,
 }
 
 fn factory() -> *mut c_void {
@@ -276,6 +280,9 @@ fn minidriver_rejects_absent_service_context_and_clears_outputs() {
         );
         (table(class).release)(class);
         let methods = &**mini.cast::<*const MiniPrefix>();
+        assert_eq!(std::mem::offset_of!(MiniPrefix, acquire), 32);
+        assert_eq!(std::mem::offset_of!(MiniPrefix, lock), 72);
+        assert_eq!(std::mem::offset_of!(MiniPrefix, unlock), 80);
         let mut root = ptr::dangling_mut();
         let mut inner = ptr::dangling_mut();
         let mut error = 123;
@@ -297,6 +304,21 @@ fn minidriver_rejects_absent_service_context_and_clears_outputs() {
         );
         assert!(root.is_null() && inner.is_null());
         assert_eq!(error, invalid);
+        assert_eq!(
+            (methods.acquire)(mini, ptr::null_mut(), 2, ptr::null_mut(), &mut error),
+            invalid
+        );
+        assert_eq!(error, invalid);
+        assert_eq!(
+            (methods.acquire)(mini, ptr::null_mut(), 2, ptr::null_mut(), ptr::null_mut()),
+            E_POINTER
+        );
+        for method in [methods.lock, methods.unlock] {
+            error = 123;
+            assert_eq!(method(mini, ptr::null_mut(), 0, &mut error), invalid);
+            assert_eq!(error, invalid);
+            assert_eq!(method(mini, ptr::null_mut(), 0, ptr::null_mut()), E_POINTER);
+        }
         assert_eq!(
             (methods.initialize)(
                 mini,

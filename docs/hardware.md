@@ -2,6 +2,18 @@
 
 觀測日期：2026-09-13、2026-09-14。此檔省略 USB 序號與完整實例路徑。
 
+## WIA 鎖定與 dispatch 實機驗證
+
+2026-09-14，重新偵測三個介面均問題碼 0、started=true，列舉唯一啟用的 MI_00 專案介面。新 `actual_wia_dispatch_scans_cancels_and_rescans` 以 `--ignored --exact` 序列執行，42.21 秒通過。使用真正 Windows 根／平台項目，透過合成 IStiDevice helper 轉送到 IStiUSD 鎖定；acquire dispatch 接受合成屬性快照，回呼提供真正 Windows HGLOBAL IStream，USB 為實機。沒有偽造 WIA property context，也沒有登錄服務。
+
+三輪各自鎖定、查詢、傳輸及解鎖，依序為 Gray75、RGB75 第一塊後取消、RGB75 重掃。選取 600×800、75 dpi、中性明暗；灰階與彩色完成影像皆 600×801，BMP 分別 481678／1441854 bytes；取消留下 919854 bytes，沒有 BM 完成簽名或 100% 回報。各次原生回呼重入解除初始化、解鎖及巢狀 acquire 均回 Busy，清理後 INQUIRY 成功。callback／IStream 參考回到測試保留的一份，完成後釋放項目及 USB。
+
+Pillow 獨立解析標頭、色盤、DPI、行序與全部有效樣本，與 BMP 位元組逐樣本一致。實際查看灰階／彩色無損 PNG，仍為白色空平台與少量細點，不是偏白或文件品質驗收。高度多一列的既有差異仍未修正。
+
+私人影像與完成標記位於 `artifacts/wia-lock-validation-20260914-a/dispatch-scan/`。灰階 SHA256：`8ba4f4eef56ce98ba0f0df7fe124b91f6dc7031745568529b357488172597dc9`；彩色：`567e689f683f0cbe0abe9552229818a8a7c8d8b29d1711848ead45fe580bf8ec`。當次掃描測試執行檔 SHA256：`64F6BEA0A1EF9B65A04A1D78F606BA610725F524397421F021B45D3FFB14CD86`。後續只調整格式、測試及鎖定非預期正 HRESULT 的錯誤分類，另重跑鎖定／INQUIRY 測試通過（0.07 秒），未把重建執行檔當成重跑影像掃描。
+
+最後 doctor 三個介面正常，INQUIRY 回覆六種 75–600 dpi，10200×14040 裝置單位、行序 1，與先前一致。沒有重插、USB reset、驅動配對、COM／WIA 登錄或權限變更。真正服務鎖、屬性 context、串流消費及等待期間的 WIA_EVENT_CANCEL_IO 仍待驗證。
+
 ## 原生 WIA callback 實機傳輸
 
 2026-09-14，重新偵測父裝置、MI_00、MI_01 均問題碼 0、started=true，再列舉唯一啟用的專案介面。`actual_callback_transfer_scans_cancels_and_rescans` 明確以 `--ignored --exact` 執行通過（42.29 秒）。同一物件只鎖定一次，透過原生 QI／GetNextStream 取得 Windows HGLOBAL 串流，依序完成 Gray75、RGB75 第一塊後由 SendMessage 回 S_FALSE 取消、RGB75 重掃。callback 是測試物件，USB 與 IStream 是真實資源，沒有登錄 WIA。

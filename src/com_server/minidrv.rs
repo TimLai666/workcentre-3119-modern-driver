@@ -7,6 +7,9 @@ use std::{
     ptr,
     sync::{Mutex, MutexGuard},
 };
+mod acquire;
+mod locking;
+mod properties;
 mod tree;
 
 const E_NOTIMPL: i32 = 0x80004001u32 as i32;
@@ -121,7 +124,7 @@ impl Interface {
         let result = unsafe { tree::Tree::create(this, &name) };
         match result {
             Ok(tree) => {
-                // SAFETY: optional STI interface is a live borrowed IUnknown;
+                // SAFETY: optional STI interface is a live borrowed IStiDevice;
                 // take one retained reference for the connection's lifetime.
                 let helper = unsafe { Helper::retain(sti) };
                 let root = tree.raw();
@@ -429,13 +432,13 @@ static VTABLE: Vtable = Vtable {
     add_ref,
     release,
     initialize,
-    acquire: unsupported_transfer,
+    acquire: acquire::entry,
     init_properties: unsupported_item,
     validate_properties: unsupported_properties,
     write_properties: unsupported_transfer,
     read_properties: unsupported_properties,
-    lock: unsupported_item,
-    unlock: unsupported_item,
+    lock: locking::lock,
+    unlock: locking::unlock,
     analyze: unsupported_item,
     error_string,
     command,
@@ -456,10 +459,14 @@ mod tests {
     // lifecycle coordinator, never fabricates a WIA application context.
     #[repr(C)]
     struct ReentrantHelper {
-        vtable: *const UnknownVtable,
+        vtable: *const TestDeviceTable,
         interface: *const Interface,
         refs: Cell<u32>,
         entries: Cell<u32>,
+        lock_result: Cell<i32>,
+        unlock_result: Cell<i32>,
+        lock_calls: Cell<u32>,
+        unlock_calls: Cell<u32>,
     }
     unsafe extern "system" fn helper_query(
         _: *mut c_void,
@@ -496,10 +503,43 @@ mod tests {
             helper.refs.get()
         }
     }
-    static HELPER_VTABLE: UnknownVtable = UnknownVtable {
-        query: helper_query,
-        add_ref: helper_add,
-        release: helper_release,
+    #[repr(C)]
+    struct TestDeviceTable {
+        unknown: UnknownVtable,
+        unused: [usize; 7],
+        lock: unsafe extern "system" fn(*mut c_void, u32) -> i32,
+        unlock: unsafe extern "system" fn(*mut c_void) -> i32,
+    }
+    unsafe extern "system" fn helper_lock(raw: *mut c_void, timeout: u32) -> i32 {
+        // SAFETY: fixture storage and driver are held throughout synchronous calls.
+        unsafe {
+            let helper = &*raw.cast::<ReentrantHelper>();
+            assert!(timeout > 0 && timeout <= 5000);
+            assert_eq!((*helper.interface).disconnect_client(), WIA_ERROR_BUSY);
+            assert_eq!(locking::dispatch(&*helper.interface, true), WIA_ERROR_BUSY);
+            helper.lock_calls.set(helper.lock_calls.get() + 1);
+            helper.lock_result.get()
+        }
+    }
+    unsafe extern "system" fn helper_unlock(raw: *mut c_void) -> i32 {
+        // SAFETY: fixture is live, including synchronous driver reentry.
+        unsafe {
+            let helper = &*raw.cast::<ReentrantHelper>();
+            assert_eq!((*helper.interface).disconnect_client(), WIA_ERROR_BUSY);
+            assert_eq!(locking::dispatch(&*helper.interface, false), WIA_ERROR_BUSY);
+            helper.unlock_calls.set(helper.unlock_calls.get() + 1);
+            helper.unlock_result.get()
+        }
+    }
+    static HELPER_VTABLE: TestDeviceTable = TestDeviceTable {
+        unknown: UnknownVtable {
+            query: helper_query,
+            add_ref: helper_add,
+            release: helper_release,
+        },
+        unused: [0; 7],
+        lock: helper_lock,
+        unlock: helper_unlock,
     };
     #[test]
     fn native_flatbed_tree_names_flags_and_cleanup() {
@@ -554,6 +594,10 @@ mod tests {
                 interface,
                 refs: Cell::new(1),
                 entries: Cell::new(0),
+                lock_result: Cell::new(0),
+                unlock_result: Cell::new(0),
+                lock_calls: Cell::new(0),
+                unlock_calls: Cell::new(0),
             };
             let helper_raw = ptr::from_mut(&mut helper).cast();
             // Internal initialization seam takes actual names and mini interface,
@@ -579,6 +623,61 @@ mod tests {
                     .unwrap();
                 assert_eq!(root, shared);
                 assert_eq!(helper.refs.get(), 2);
+                // Synthetic property/result producers exercise native lifecycle
+                // ordering without fabricating a service property context.
+                assert_eq!(
+                    acquire::dispatch(
+                        interface,
+                        || Err(E_INVALIDARG),
+                        |_| { panic!("failed properties must not start a transfer") }
+                    ),
+                    E_INVALIDARG
+                );
+                assert_eq!(
+                    acquire::dispatch(
+                        interface,
+                        || {
+                            assert_eq!(interface.disconnect_client(), WIA_ERROR_BUSY);
+                            assert_eq!(locking::dispatch(interface, false), WIA_ERROR_BUSY);
+                            Ok(properties::Snapshot {
+                                settings: crate::wia::FlatbedSettings {
+                                    x_resolution: 75,
+                                    y_resolution: 75,
+                                    x_position: 0,
+                                    y_position: 0,
+                                    x_extent: 600,
+                                    y_extent: 800,
+                                    data_type: 2,
+                                    depth: 8,
+                                    brightness: 0,
+                                    contrast: 0,
+                                    compression: 0,
+                                    format: crate::wia::BMP_FORMAT,
+                                },
+                                item: "Flatbed".into(),
+                                full_item: "synthetic\\Root\\Flatbed".into(),
+                            })
+                        },
+                        |snapshot| {
+                            assert_eq!(snapshot.settings.x_resolution, 75);
+                            assert_eq!(snapshot.item, "Flatbed");
+                            assert_eq!(interface.disconnect_client(), WIA_ERROR_BUSY);
+                            assert_eq!(locking::dispatch(interface, true), WIA_ERROR_BUSY);
+                            Ok(crate::wia_transfer::TransferOutcome::Cancelled)
+                        }
+                    ),
+                    1
+                );
+                assert!(matches!(*interface.state(), Lifecycle::Connected(_)));
+                for result in [WIA_ERROR_BUSY, 0x80070005u32 as i32, 1, 0] {
+                    helper.lock_result.set(result);
+                    helper.unlock_result.set(result);
+                    let expected = if result > 0 { E_UNEXPECTED } else { result };
+                    assert_eq!(locking::dispatch(interface, true), expected);
+                    assert_eq!(locking::dispatch(interface, false), expected);
+                    assert!(matches!(*interface.state(), Lifecycle::Connected(_)));
+                    assert_eq!(helper.refs.get(), 2);
+                }
                 assert_eq!(
                     interface
                         .initialize_tree(mini, vec![88], name.clone(), ptr::null_mut())
@@ -599,6 +698,15 @@ mod tests {
                 assert_eq!(interface.disconnect_client(), E_UNEXPECTED);
             }
             assert_eq!(helper.entries.get(), 6);
+            assert_eq!(helper.lock_calls.get(), 12);
+            assert_eq!(helper.unlock_calls.get(), 12);
+            assert_eq!(locking::dispatch(interface, true), E_UNEXPECTED);
+            interface
+                .initialize_tree(mini, device, name, ptr::null_mut())
+                .unwrap();
+            assert_eq!(locking::dispatch(interface, true), E_UNEXPECTED);
+            assert_eq!(locking::dispatch(interface, false), E_UNEXPECTED);
+            assert_eq!(interface.disconnect_client(), 0);
             assert_eq!(
                 (*owner(mini).cast::<Instance>())
                     .refs
