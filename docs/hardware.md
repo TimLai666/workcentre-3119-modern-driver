@@ -1,6 +1,28 @@
 # 本機硬體觀測
 
-觀測日期：2026-09-13。此檔省略 USB 序號與完整實例路徑。
+觀測日期：2026-09-13、2026-09-14。此檔省略 USB 序號與完整實例路徑。
+
+## 共用連線實掃與提早取消修正
+
+2026-09-14，重新列舉唯一啟用的 MI_00 WinUSB 介面，以當下路徑執行 `tests/sti.rs` 兩個 ignored 硬體測試，逐一指定 `--ignored --exact`，沒有平行操作 USB。版本 `705f0d6` 的鎖定／診斷測試通過（0.05 秒），同一物件的灰階／彩色取消／重掃測試通過（42.15 秒）。核心獨立複核另發現 RESERVE 前取消會錯誤隔離，此精確時機用合成回覆先重現再修正。修正版重新建置後，兩個實機測試再次通過，依序為 0.05 與 42.12 秒。
+
+掃描測試只初始化與鎖定物件一次，依序執行 Gray75、RGB75 第一個影像寫入 callback 取消、RGB75 重掃。每個工作後都由仍持有的同一 session 完成 INQUIRY 診斷。輸出 callback 內的 GetLastError 正常返回，解鎖及巢狀掃描即時回報忙碌，巢狀掃描沒有觸碰輸出。取消回傳 Interrupted，輸出沒有完成的 BM 簽名。最後解鎖、釋放物件，helper 參考回到原始值。
+
+修正版實際輸出如下。設定為零偏移、75 dpi、600×800 像素選取區、亮度／對比 0、無壓縮。
+
+| 輸出 | 實際尺寸 | 塊數 | 像素 bytes | 檔案 bytes |
+| --- | --- | --- | --- | --- |
+| Gray75 BMP | 600×801 | 1 | 480600 | 481678 |
+| RGB75 取消資料 | 未完成 | 未作成功計數 | 未作成功計數 | 919854 |
+| RGB75 重掃 BMP | 600×801 | 2 | 1441800 | 1441854 |
+
+Pillow 獨立檢查標頭、負高度、75 dpi、色盤、長度與全部 BMP 有效樣本解碼一致。Windows GDI+ 能開啟兩張 BMP，尺寸及中央樣本相符。實際檢視無損 PNG，影像為白色空平台與少量細點。比選取高度多 1 列的既有差異保留，沒有裁切、縮放或明暗轉換。測試沒有保存 USB 原文，不能宣稱本次又完成 wire 全樣本對照，也沒有驗收文件品質或 600 dpi 穩定性。
+
+修正版測試執行檔 SHA256：`BEB38E96A655C3B7512C50AC8A2CCB57D15899814EE4B502772013EB85E598F6`，核心 `src/scan.rs`：`DB43C54B89CC4FC1A8343FA3F8378CCCCCE22843A5430611B5017566DBA784B1`。同批 DLL：`0C1C5D7117DEB79FF69692F7A5AB578122D5149E2399BA525746A17D03498042`，DLL 載入測試另行通過；掃描透過 Rust 函式庫及測試 helper，未經 WIA 服務。
+
+修正版灰階 BMP SHA256：`9ab5abfcc1404673ef8f6437c08e00c0e954c35fdf5c9f0b04708d92c1bbdd16`，彩色 BMP：`3945c0ef0a0dde560d0bd2ece135dd967be35f5c369d0726a6dcd3540d9d6baf`。私人檔案為 `artifacts/shared-session-final-20260914-a/`，包含 `complete.txt`。測試紀錄與獨立驗證程式／結果在 `artifacts/shared-session-proof-20260914-a/`。修正前影像為 `artifacts/shared-session-20260914-a/`，與修正版分開保存。
+
+測試後 release `inquiry` 成功，機器回報 SAMSUNG ORION 與原能力值。`doctor` 的父裝置、MI_00、MI_01 問題碼均為 0、started=true。沒有重插、USB reset、重新配對、COM／WIA 登錄或安全設定變更。WIA 服務端身分映射、LocalService 存取、Windows 掃描及失同步後跨物件隔離仍待完成。
 
 ## IStiUSD 實機鎖定與能力診斷
 

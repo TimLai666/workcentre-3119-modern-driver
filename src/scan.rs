@@ -724,9 +724,33 @@ fn ready(
     deadline: Instant,
     diagnostics: &mut ScanDiagnostics,
 ) -> io::Result<Vec<u8>> {
+    ready_with_attempt(
+        usb,
+        opcode,
+        synchronized,
+        cancel,
+        deadline,
+        diagnostics,
+        &mut false,
+    )
+}
+
+fn ready_with_attempt(
+    usb: &mut impl Transport,
+    opcode: u8,
+    synchronized: &mut bool,
+    cancel: &AtomicBool,
+    deadline: Instant,
+    diagnostics: &mut ScanDiagnostics,
+    attempted: &mut bool,
+) -> io::Result<Vec<u8>> {
+    *attempted = false;
     diagnostics.set_opcode(opcode);
     loop {
         checkpoint(cancel, deadline)?;
+        // Set before write: even a failed USB call may have reached the device.
+        // Keep true across Busy replies and later cancellation checkpoints.
+        *attempted = true;
         let b = exchange(usb, &[0x1b, 0xa8, opcode, 0], synchronized)?;
         match response_status(&b, opcode == 0x28)? {
             ReplyStatus::Good => return Ok(b),
@@ -1046,23 +1070,34 @@ fn run_prepared_job_observed_with_health(
         }
     };
     diagnostics.set_stage(ScanStage::Reserve);
-    let reservation =
-        ready(usb, 0x16, &mut synchronized, cancel, deadline, diagnostics).map_err(|error| {
-            if synchronized {
-                error
-            } else {
-                io::Error::new(
-                    error.kind(),
-                    format!(
-                        "{error}; reservation unconfirmed; reconnect scanner before another job"
-                    ),
-                )
-            }
-        });
+    let mut reservation_attempted = false;
+    let reservation = ready_with_attempt(
+        usb,
+        0x16,
+        &mut synchronized,
+        cancel,
+        deadline,
+        diagnostics,
+        &mut reservation_attempted,
+    )
+    .map_err(|error| {
+        if synchronized {
+            error
+        } else {
+            io::Error::new(
+                error.kind(),
+                format!("{error}; reservation unconfirmed; reconnect scanner before another job"),
+            )
+        }
+    });
     if let Err(error) = reservation {
         return (
             Err(diagnostics.error(error, "RESERVE")),
-            SessionHealth::NeedsReconnect,
+            if reservation_attempted {
+                SessionHealth::NeedsReconnect
+            } else {
+                SessionHealth::Ready
+            },
         );
     }
     // Ownership is confirmed only after RESERVE succeeds. Never release another owner's busy device.
@@ -1534,6 +1569,32 @@ mod tests {
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
         assert_eq!(health, SessionHealth::Ready);
         assert!(usb.writes.is_empty());
+    }
+
+    #[test]
+    fn cancellation_around_reserve_preserves_only_an_unattempted_session() {
+        // Synthetic cancellation at the INQUIRY/RESERVE boundary. Once RESERVE
+        // has been sent, a Busy reply cannot prove that we own the device.
+        for (cancel_on_read, expected_health, expected_writes) in [
+            (1, SessionHealth::Ready, vec![0x12]),
+            (2, SessionHealth::NeedsReconnect, vec![0x12, 0x16]),
+        ] {
+            let cancel = AtomicBool::new(false);
+            let mut inner = synthetic();
+            inner.replies[1][1] = 0x08;
+            let mut usb = BusyThenCancel {
+                inner,
+                cancel: &cancel,
+                read_calls: 0,
+                cancel_on_read,
+            };
+            let (result, health) = run_job_with_health(&mut usb, request(), &cancel, &mut |_| {
+                panic!("cancelled reservation must not deliver pixels")
+            });
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
+            assert_eq!(health, expected_health);
+            assert_eq!(usb.inner.writes, expected_writes);
+        }
     }
 
     #[test]

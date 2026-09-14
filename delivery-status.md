@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-2026-09-13：依使用者要求先收尾，等待下次繼續。已實作同一 COM 物件的連線借用、掃描健康狀態及 Rust BMP 入口，離線驗證通過，新的實機灰階／彩色／取消重掃測試尚未執行。接續此實測，再完成 IWiaMiniDrv、屬性模型、傳輸 callback 與服務端身分映射。既有兩次自然逾時、20 次穩定性、文件品質、正式套件及列印仍未完成。
+2026-09-14：使用者已恢復開發。同一 COM 物件的灰階掃描、彩色取消及彩色重掃實測通過，RESERVE 前取消造成錯誤隔離的問題已重現並修正。接續 IWiaMiniDrv、屬性模型、傳輸 callback 與服務端身分映射。既有兩次自然逾時、20 次穩定性、文件品質、正式套件及列印仍未完成。
 
 ## Stage Objective
 
@@ -39,7 +39,7 @@
 
 ## Next Verifiable Output
 
-下次先執行 `tests/sti.rs` 的 `actual_locked_object_scans_cancels_and_rescans_with_reentrant_output`，使用當下重新列舉的 `WC3119_TEST_STI_PATH` 及不存在的新 `WC3119_TEST_OUTPUT_DIR`，以 `--ignored --exact` 明確指定。它會啟動灰階、彩色取消及彩色重掃，透過同一鎖定物件，不能與其他硬體測試平行執行。本輪使用者要求快速收尾，故尚未操作硬體。之後接上 IWiaMiniDrv；目前新增的 `com_server::scan_locked_bmp` 是 Rust 整合入口，沒有實作 WIA COM 影像傳輸。
+接上原生 IWiaMiniDrv 的初始化、掃描項目／屬性及傳輸流程，沿用已驗證的鎖定物件掃描入口，先以直接 COM 呼叫測試，不登錄系統。`com_server::scan_locked_bmp` 是 Rust 整合入口，尚未實作 WIA COM 影像傳輸。既有兩個 STI 硬體測試本輪已逐一明確執行通過，後續更動其傳輸路徑時才重新列舉裝置、使用新輸出目錄並以 `--ignored --exact` 重跑，不平行操作 USB。
 
 IWiaMiniDrv 的初始化、屬性模型及掃描傳輸先用直接 COM 呼叫驗證，不先登錄系統。COM aggregation 的實際需求、服務管理的並行載入／卸載排程與 runtime 前置條件亦須驗證。數值快照映射已完成，但正式屬性範圍、相依更新及幾何仍待實作／驗證。先前 600×800 選取區回傳 600×801，不可將輸出尺寸任意當成 WIA 選取範圍。WinUSB 共存、服務帳號存取及 Windows 掃描消費 BMP 仍需整合驗證。跨工作隔離依 03 補完，不以介面到達時間戳記當成實體重插證據。準備具體安裝、備份及復原方案後，才提出必要的系統變更授權。平台有文件後補做 02／07 品質對照。
 
@@ -65,9 +65,13 @@ IWiaMiniDrv 的初始化、屬性模型及掃描傳輸先用直接 COM 呼叫驗
 
 ## Verified
 
-連線借用版本：128 個 all-targets 測試、2 個 doc-tests、格式、Clippy 及全部 release targets 通過；另行載入當次 DLL 的 1 個測試通過。新增 5 個資源生命週期／重入／並行測試、8 個核心健康狀態測試及 1 個 COM 物件的未鎖定／預先取消測試。借用器與公開入口先取得缺少實作的失敗，關閉完成前可被重開的競態先重現再修正。兩個 STI 硬體測試本輪皆未執行，不能沿用前版實機證據宣稱這次修改已實測。
+2026-09-14 修正版：129 個 all-targets、2 個 doc-tests、格式、Clippy、全部 release targets 通過，當次 release DLL 的動態載入測試另行通過。兩個 STI ignored 硬體測試逐一通過，鎖定／診斷 0.05 秒，同物件灰階／彩色取消／重掃 42.12 秒。Pillow 檢查全部 BMP 有效樣本解碼一致，GDI+ 開啟及實際影像檢視通過，內容為空平台。沒有重插或系統變更，詳見 [實機證據](docs/hardware.md#共用連線實掃與提早取消修正)。
 
-本版根代理已檢查全部核心差異與呼叫關係，補回共用 WinUSB 讀取上限預檢。Luna 完成借用器、STI、BMP 與 COM 邊界對抗審查，未確認未處理 P1／P2；它沒有完成核心凍結版的獨立複核，下次實機測試前保留此檢查。核心 SHA256 `D8B0E05E46AC4BCE1446902432D2A668E5645A3C95205C398E3A342AF3125A43`，借用器為 `2EF501E2717ACF1B3AB1D99E95C333DF0298F7F6FED9283582E9D67314ACA2C4`。
+Diff Inspector：根代理與 Luna 補完 `6fbc383..705f0d6` 的核心及消費端複核，發現有效 INQUIRY 後、未嘗試 RESERVE 就取消會錯誤隔離的 P2。新增回歸測試先取得 `NeedsReconnect != Ready` 失敗，再修正為以實際命令嘗試旗標分類；已送 RESERVE 的 Busy 後取消維持隔離。根代理審查本輪全部差異，Luna 另複核修正版，沒有新增確認問題。最終核心 SHA256：`DB43C54B89CC4FC1A8343FA3F8378CCCCCE22843A5430611B5017566DBA784B1`。這個精確取消時機僅以合成回覆控制，實機驗證的是影像 callback 取消及其後重掃。
+
+2026-09-13 連線借用版本：128 個 all-targets 測試、2 個 doc-tests、格式、Clippy 及全部 release targets 通過；另行載入當次 DLL 的 1 個測試通過。新增 5 個資源生命週期／重入／並行測試、8 個核心健康狀態測試及 1 個 COM 物件的未鎖定／預先取消測試。借用器與公開入口先取得缺少實作的失敗，關閉完成前可被重開的競態先重現再修正。當時依使用者要求收尾，兩個 STI 硬體測試沒有執行，已於上述 2026-09-14 補驗。
+
+該前版由根代理檢查全部核心差異與呼叫關係，補回共用 WinUSB 讀取上限預檢。當時 Luna 完成借用器、STI、BMP 與 COM 邊界審查，核心凍結版的獨立複核留待下輪，結果已記於上述 2026-09-14 修正。前版核心 SHA256 `D8B0E05E46AC4BCE1446902432D2A668E5645A3C95205C398E3A342AF3125A43`，借用器為 `2EF501E2717ACF1B3AB1D99E95C333DF0298F7F6FED9283582E9D67314ACA2C4`。
 
 IStiUSD 版本：114 個 all-targets 測試、2 個 doc-tests、格式、Clippy、全部 release targets 通過。兩個預設 ignored 測試分別明確執行並通過：release DLL 的 IStiUSD 身分／生命週期，以及真實 MI_00 的指定路徑、互斥、能力診斷和最終釋放。初始 IStiUSD 與 DLL QI 測試曾對舊版失敗，USB 未指定目標的多候選回歸亦先取得失敗再修正。鎖定死鎖及狀態結構大小由審查發現並修正，補測首次執行即通過，沒有宣稱它們取得 RED。SDK C11 靜態斷言核對 19-slot vtable、helper port slot、結構大小／偏移及版本／錯誤常數。詳見 [05](docs/tickets/05-windows-install.md#測試) 與 [實機紀錄](docs/hardware.md#istiusd-實機鎖定與能力診斷)。
 
@@ -173,7 +177,7 @@ Diff Inspector：本輪範圍符合診斷及可靠性調查，根代理已審查
 | [tests/com_stream.rs](tests/com_stream.rs) | 合成 COM 錯誤邊界與 Windows 真實記憶體串流 BMP 回讀 |
 | [src/wia.rs](src/wia.rs) | WIA 數值設定驗證、精確範圍換算及真實掃描 BMP 入口 |
 | [tests/wia.rs](tests/wia.rs) | 六種解析度、模式／色深、無效設定與預先取消 |
-| [src/scan.rs](src/scan.rs) | 掃描工作、影像解碼、有限排空、階段／Busy 診斷與效能量測，開發用 READ 間隔及緩衝區實驗，共用上限預檢 |
+| [src/scan.rs](src/scan.rs) | 掃描工作、影像解碼、有限排空、階段／Busy 診斷與效能量測，共用上限預檢與連線健康狀態，RESERVE 前取消保留可用連線 |
 | [examples/capture_scan.rs](examples/capture_scan.rs) | 私人實機證據擷取、定時／塊後取消、BMP 串流與完成標記 |
 | [examples/scan_stability.rs](examples/scan_stability.rs) | 同程序連續掃描、獨立像素核對、成功／失敗 profile 及有限範圍的 READ 間隔／緩衝區參數，任一失敗即停止 |
 | [src/main.rs](src/main.rs) | 繁體中文 doctor 與 inquiry 指令 |
@@ -197,7 +201,7 @@ Diff Inspector：本輪範圍符合診斷及可靠性調查，根代理已審查
 
 ## Actions
 
-本輪只做程式、離線／DLL 測試及建置，依使用者要求把實機操作留待下次。保存目前修改與接手狀態，不開始新功能；本輪沒有 USB 掃描、安裝或登錄變更。
+2026-09-14 執行真實 USB 鎖定／診斷、灰階掃描、彩色取消與重掃，修正前後分開保存影像及匿名化驗證結果。所有私人影像只存於 Git 排除的 `artifacts/`，完成後釋放資源並確認能力查詢及三個介面狀態正常。另執行離線／DLL 測試及建置，沒有重新配對、COM／WIA 登錄或安全設定變更。Spark 當次回報用量上限後改用 Luna 最高思考強度。前版 `705f0d6` 已推送 origin/main，本輪必要提交與推送依既有授權執行，版本識別以 Git 紀錄為準。
 
 IStiUSD 版本執行測試程序內 DLL 載入／卸載、真實 USB 獨占與 INQUIRY，完成後釋放句柄及 helper 參考。未新增系統登錄、安裝、安全設定或掃描影像。上一版本 `d75777a2c0156a93b55a1c51a10fadc5cab8daeb` 已推送 origin/main，當輪 Spark 兩次啟動後遇到用量限制，才由 Luna 接續實作／審查；後續仍依使用者要求優先 Spark。必要提交與推送依既有授權，版本識別以 Git 紀錄為準。
 

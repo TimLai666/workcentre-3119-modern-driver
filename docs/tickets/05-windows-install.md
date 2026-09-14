@@ -45,6 +45,8 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 
 ## 測試
 
+2026-09-14：已補完上次連線借用版本的核心獨立複核及實機驗證。Luna 發現 RESERVE 前取消會錯誤隔離，根代理以回歸測試重現再修正，修正版複核沒有新增確認問題。129 個 all-targets、2 個 doc-tests、格式、Clippy、全部 release targets 與另行載入當次 DLL 的測試通過。兩個 STI 硬體測試逐一執行通過，含同一物件的 Gray75、RGB75 取消、RGB75 重掃、輸出 callback 重入及每次清理後診斷。BMP 經 Pillow 全部有效樣本解碼比對、GDI+ 開啟及實際檢視，為空平台。沒有 WIA 服務或 Windows 掃描驗收，實機與建置識別見 [硬體紀錄](../hardware.md#共用連線實掃與提早取消修正)。
+
 2026-09-13 連線借用版本：128 個 all-targets、2 個 doc-tests、格式、Clippy、全部 release targets 與另行執行的 DLL 測試通過。`com_server::scan_locked_bmp` 已接到既有掃描及 BMP 實作，借用的是 IStiUSD 鎖定的 session；同步影像回呼不持有狀態 Mutex。核心以型別回報可歸還／需重連，未知消耗量及清理失敗不再由此物件重開。借用器的並行、重入、panic 與先關閉再開啟已有合成測試。使用者要求收尾，本版的兩個 ignored STI 硬體測試尚未執行。下次先執行有新輸出目錄的灰階／彩色取消／重掃測試並檢查 BMP，之後接上原生 IWiaMiniDrv。此 Rust 入口不能視為 Windows 掃描已可用。
 
 2026-09-13，IStiUSD 版本完成 114 個 all-targets 測試、2 個 doc-tests、格式、Clippy 及全部 release targets。6 個離線 STI 測試驗證初始化、helper 參考、失敗重試、未初始化鎖定不死鎖、結構大小與錯誤資訊。明確啟用的實機測試另外通過指定裝置、排他鎖定、INQUIRY 及 Release 後重開；未啟動掃描或登錄 WIA。release DLL 的動態 QI／生命週期測試另行通過。SDK C11 靜態斷言核對 STI 結構與 19-slot ABI，私人證據在 `artifacts/sti-sdk-20260913-j/`。DLL 仍依賴 VCRUNTIME140.dll，新增 SETUPAPI／WINUSB 系統匯入，exports 仍只有兩個 COM 入口。雜湊與實機驗證界線見 [硬體紀錄](../hardware.md#istiusd-實機鎖定與能力診斷)。
