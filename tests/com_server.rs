@@ -32,9 +32,23 @@ const STI: Guid = Guid {
 };
 const E_POINTER: i32 = 0x80004003u32 as i32;
 const E_NOINTERFACE: i32 = 0x80004002u32 as i32;
+const E_NOTIMPL: i32 = 0x80004001u32 as i32;
+const E_INVALIDARG: i32 = 0x80070057u32 as i32;
 const CLASS_E_CLASSNOTAVAILABLE: i32 = 0x80040111u32 as i32;
 const CLASS_E_NOAGGREGATION: i32 = 0x80040110u32 as i32;
+const WIA_EVENT_CANCEL_IO: Guid = Guid {
+    data1: 0xc860_f7b8,
+    data2: 0x9ccd,
+    data3: 0x41ea,
+    data4: [0xbb, 0xbf, 0x4d, 0xd0, 0x9c, 0x5b, 0x17, 0x95],
+};
 static SERIAL: Mutex<()> = Mutex::new(());
+
+#[link(name = "OleAut32")]
+unsafe extern "system" {
+    fn SysAllocStringLen(value: *const u16, length: u32) -> *mut u16;
+    fn SysFreeString(value: *mut u16);
+}
 
 // Independent declarations follow SDK unknwnbase.h rather than implementation structs.
 #[repr(C)]
@@ -70,6 +84,10 @@ struct MiniPrefix {
     unused: [usize; 4],
     lock: unsafe extern "system" fn(*mut c_void, *mut u8, i32, *mut i32) -> i32,
     unlock: unsafe extern "system" fn(*mut c_void, *mut u8, i32, *mut i32) -> i32,
+    // SDK 10.0.26100.0 wiamindr_lh.h slots 11-17 precede drvNotifyPnpEvent.
+    unused_after_unlock: [usize; 7],
+    notify: unsafe extern "system" fn(*mut c_void, *const Guid, *mut u16, u32) -> i32,
+    uninitialize: unsafe extern "system" fn(*mut c_void, *mut u8) -> i32,
 }
 
 fn factory() -> *mut c_void {
@@ -334,6 +352,52 @@ fn minidriver_rejects_absent_service_context_and_clears_outputs() {
             ),
             E_POINTER
         );
+        assert_eq!((table(mini).release)(mini), 0);
+    }
+    assert_eq!(DllCanUnloadNow(), 0);
+}
+
+#[test]
+fn notify_slot_uses_sdk_layout_and_real_bstr_for_idle_cancel() {
+    let _serial = SERIAL.lock().unwrap();
+    let class = factory();
+    // SAFETY: the factory and minidriver are live COM objects. The BSTR is
+    // allocated by OleAut32 for this synchronous notify call and freed once.
+    unsafe {
+        let mut mini = ptr::null_mut();
+        assert_eq!(
+            (factory_table(class).create)(class, ptr::null_mut(), &MINIDRIVER, &mut mini),
+            0
+        );
+        (table(class).release)(class);
+        let methods = &**mini.cast::<*const MiniPrefix>();
+        assert_eq!(std::mem::size_of::<MiniPrefix>(), 160);
+        assert_eq!(std::mem::offset_of!(MiniPrefix, notify), 144);
+
+        let device_name: Vec<u16> = "synthetic-device".encode_utf16().collect();
+        let device = SysAllocStringLen(device_name.as_ptr(), device_name.len() as u32);
+        assert!(!device.is_null());
+        assert_eq!((methods.notify)(mini, &WIA_EVENT_CANCEL_IO, device, 0), 0);
+        assert_eq!(
+            (methods.notify)(mini, &DRIVER_CLASS_ID, device, 0),
+            E_NOTIMPL
+        );
+        assert_eq!(
+            (methods.notify)(mini, ptr::null(), device, 0),
+            E_POINTER,
+            "null event is rejected before dereference"
+        );
+        assert_eq!(
+            (methods.notify)(mini, &WIA_EVENT_CANCEL_IO, ptr::null_mut(), 0),
+            E_POINTER,
+            "null BSTR is rejected before reading"
+        );
+        assert_eq!(
+            (methods.notify)(mini, &WIA_EVENT_CANCEL_IO, device, 1),
+            E_INVALIDARG,
+            "reserved values are rejected"
+        );
+        SysFreeString(device);
         assert_eq!((table(mini).release)(mini), 0);
     }
     assert_eq!(DllCanUnloadNow(), 0);

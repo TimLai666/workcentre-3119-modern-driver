@@ -1,7 +1,46 @@
 //! Bounded flatbed scan jobs. Wire field provenance is recorded in ENG.md.
 
 use crate::protocol::Capabilities;
-use std::io;
+use std::{fmt, io};
+
+/// An explicit host cancellation checkpoint, distinct from interrupted I/O.
+#[derive(Debug)]
+pub(crate) struct HostCancelled;
+
+impl fmt::Display for HostCancelled {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Scan cancelled")
+    }
+}
+impl std::error::Error for HostCancelled {}
+
+#[derive(Debug)]
+struct DiagnosticError {
+    original: io::Error,
+    context: String,
+}
+impl fmt::Display for DiagnosticError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.context, self.original)
+    }
+}
+impl std::error::Error for DiagnosticError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.original)
+    }
+}
+
+pub(crate) fn is_host_cancelled(error: &io::Error) -> bool {
+    let Some(inner) = error.get_ref() else {
+        return false;
+    };
+    if inner.is::<HostCancelled>() {
+        return true;
+    }
+    inner
+        .downcast_ref::<DiagnosticError>()
+        .is_some_and(|detail| is_host_cancelled(&detail.original))
+}
 
 const MAX_BAND_BYTES: usize = 16 * 1024 * 1024;
 
@@ -432,27 +471,30 @@ impl ScanDiagnostics {
         };
         io::Error::new(
             error.kind(),
-            format!(
-                "stage={} elapsed_ms={} completed_bands={} pixel_bytes={} opcode={} last_busy_status={} last_busy_state={} busy_replies={}{}: {error}",
-                self.stage.name(),
-                self.started.elapsed().as_millis(),
-                self.completed_bands,
-                self.pixel_bytes,
-                match self.opcode {
-                    Some(opcode) => format!("0x{opcode:02x}"),
-                    None => "unknown".into(),
-                },
-                match self.last_busy_status {
-                    Some(status) => format!("0x{status:02x}"),
-                    None => "unknown".into(),
-                },
-                match self.last_busy_state {
-                    Some(state) => format!("0x{state:04x}"),
-                    None => "unknown".into(),
-                },
-                self.busy_replies,
-                detail,
-            ),
+            DiagnosticError {
+                context: format!(
+                    "stage={} elapsed_ms={} completed_bands={} pixel_bytes={} opcode={} last_busy_status={} last_busy_state={} busy_replies={}{}",
+                    self.stage.name(),
+                    self.started.elapsed().as_millis(),
+                    self.completed_bands,
+                    self.pixel_bytes,
+                    match self.opcode {
+                        Some(opcode) => format!("0x{opcode:02x}"),
+                        None => "unknown".into(),
+                    },
+                    match self.last_busy_status {
+                        Some(status) => format!("0x{status:02x}"),
+                        None => "unknown".into(),
+                    },
+                    match self.last_busy_state {
+                        Some(state) => format!("0x{state:04x}"),
+                        None => "unknown".into(),
+                    },
+                    self.busy_replies,
+                    detail,
+                ),
+                original: error,
+            },
         )
     }
 }
@@ -515,7 +557,7 @@ pub(crate) fn scan_in_session(
 ) -> (io::Result<ScanSummary>, SessionHealth) {
     if cancel.load(Ordering::Relaxed) {
         return (
-            Err(io::Error::new(io::ErrorKind::Interrupted, "Scan cancelled")),
+            Err(io::Error::new(io::ErrorKind::Interrupted, HostCancelled)),
             SessionHealth::Ready,
         );
     }
@@ -586,7 +628,7 @@ pub fn scan_with_profile(
     let tuning = tuning.into();
     tuning.validate()?;
     if cancel.load(Ordering::Relaxed) {
-        return Err(io::Error::new(io::ErrorKind::Interrupted, "Scan cancelled"));
+        return Err(io::Error::new(io::ErrorKind::Interrupted, HostCancelled));
     }
     let mut usb = crate::usb::UsbSession::open()?;
     let read_limit = preflight_read_buffer(&usb, tuning.read_buffer_bytes, profile)?;
@@ -662,7 +704,7 @@ fn busy_poll_interval(opcode: u8, read_interval: Duration) -> Duration {
 
 fn checkpoint(cancel: &AtomicBool, deadline: Instant) -> io::Result<()> {
     if cancel.load(Ordering::Relaxed) {
-        Err(io::Error::new(io::ErrorKind::Interrupted, "Scan cancelled"))
+        Err(io::Error::new(io::ErrorKind::Interrupted, HostCancelled))
     } else if Instant::now() >= deadline {
         Err(io::Error::new(
             io::ErrorKind::TimedOut,
@@ -1241,6 +1283,25 @@ fn run_prepared_job_observed_with_health(
 mod tests {
     use super::*;
 
+    #[test]
+    fn host_cancellation_survives_diagnostics_without_matching_unrelated_interruptions() {
+        let error = checkpoint(&AtomicBool::new(true), Instant::now()).unwrap_err();
+        assert!(is_host_cancelled(&error));
+        let diagnostics = ScanDiagnostics::new();
+        let error = diagnostics.error(error, "synthetic checkpoint");
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(is_host_cancelled(&error));
+        assert!(
+            error
+                .to_string()
+                .contains("synthetic checkpoint: Scan cancelled")
+        );
+        let unrelated = io::Error::new(io::ErrorKind::Interrupted, "Scan cancelled");
+        assert!(!is_host_cancelled(
+            &diagnostics.error(unrelated, "synthetic consumer")
+        ));
+    }
+
     fn caps() -> crate::protocol::Capabilities {
         crate::protocol::Capabilities {
             identity: "synthetic".into(),
@@ -1524,7 +1585,9 @@ mod tests {
             cancel.store(true, Ordering::Relaxed);
             Ok(())
         });
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(is_host_cancelled(&error));
         assert_eq!(health, SessionHealth::Ready);
         assert_eq!(usb.writes, [0x12, 0x16, 0x24, 0x31, 0x28, 0x29, 0x06, 0x17]);
     }
@@ -2178,6 +2241,7 @@ mod tests {
                     io::ErrorKind::TimedOut
                 }
             );
+            assert_eq!(is_host_cancelled(&error), cancelled);
             assert!(synchronized);
             assert!(usb.replies.is_empty());
         }

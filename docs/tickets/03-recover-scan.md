@@ -43,6 +43,8 @@ Microsoft 說明非零 `PIPE_TRANSFER_TIMEOUT` 會在期限到達時取消請求
 
 ## 測試
 
+2026-09-14 WIA 取消事件補驗：原生通知已能更新目前工作旗標，合成取消起因／清理測試通過。實機在 Gray75 結束後約 500 ms 取消下一張 RGB，兩次發生於 RESERVE Busy，未取得保留權而回一般錯誤並隔離。由閒置裝置開始 RGB 後約 500 ms 取消，720 ms 返回 S_FALSE 且沒有影像；緊接的 RGB 重掃卻在約 120 秒失敗。補上原始診斷後再現，取消約 600 ms 返回 S_FALSE，重掃在 RESERVE 收到 800 次 Busy（0x08），120.049 秒到期。這是新發現的提早取消復原缺口，不能宣稱暖機與等待期間取消已驗收。既有回呼取消流程在兩次閒置測試之間完整回歸通過 42.99 秒，沒有重插。下一步記錄成功取消時的階段及 ABORT／RELEASE 回覆，查明確認清理後為何保留權仍長期 Busy；不得先加入固定延遲、延長工作期限或盲送 ABORT。詳細資料見 [硬體紀錄](../hardware.md#wia-取消事件與提早取消後重掃)。
+
 2026-09-14：同一 IStiUSD 物件只鎖定一次，完成 Gray75、第一個影像寫入 callback 觸發 RGB75 取消、RGB75 重掃，每個工作後均可透過原連線診斷。修正版實機測試 42.12 秒通過，沒有重插。另以合成測試先重現有效 INQUIRY 後、尚未送 RESERVE 就取消會錯誤隔離的問題，再修正為保留連線；已送 RESERVE 且回報 Busy 後取消則維持隔離，不送 ABORT／RELEASE 接管未確認的保留權。這個精確取消時機由合成回覆控制，沒有宣稱實機重現相同競態。詳細證據見 [共用連線實掃](../hardware.md#共用連線實掃與提早取消修正)。
 
 2026-09-13 後續：新增已知剩餘長度的有限排空。合成測試證明取消、期限到達與單次零進度可在排空後 ABORT／RELEASE，且仍回傳原始失敗；第二次空讀、超量或不明 USB 失敗不繼續嘗試。定時取消實機測試：100 ms 取消回傳 Interrupted；600RGB 於 8000 ms 取消前已收到 4 塊，亦正常取消；其後 Gray75 重掃成功。這證明早期與進行中取消，但沒有追蹤到發生取消當下精確落在哪個 USB 呼叫，不能宣稱所有階段已驗收。
@@ -54,5 +56,7 @@ Microsoft 說明非零 `PIPE_TRANSFER_TIMEOUT` 會在期限到達時取消請求
 跨工作隔離仍是已確認的缺口：目前失同步只在該次工作回報需重插，API 尚未強制阻擋下一次開啟。後續須讓失同步裝置停止接受工作，並驗證解除條件。`DEVPKEY_Device_LastArrivalDate` 只有活動時間戳記定義；Windows 的 arrival／removal 通知是介面啟用／停用，不能單靠時間戳記變動推論實體拔插完成。不得把它直接當成解除隔離的證據。[Microsoft 屬性定義](https://raw.githubusercontent.com/microsoft/win32metadata/main/generation/WinSDK/RecompiledIdlHeaders/shared/devpkey.h)、[PnP 事件定義](https://learn.microsoft.com/en-us/windows/win32/api/cfgmgr32/ne-cfgmgr32-cm_notify_action)
 
 掃描工作交界的取消與錯誤注入，搭配實機故障操作。20 次是專案驗收門檻，不是既有產品表現。
+
+錯誤來源後續：本輪已以型別保留主機取消與一般診斷來源，WIA callback／IStream 的 HRESULT 另經 TransferError 保留。但既有 `exchange` 及次要清理錯誤仍有字串合併，底層 Win32 錯誤可能只剩 kind／文字。後續統一保留原始 error source，檢查 ABI 映射，維持主要與次要清理原因分開，不能以文字辨識錯誤種類。
 
 協定處理另有待查證項目：`src/scan.rs` 的 `response_status` 遇 CHECK 時，既有行為未先要求訊息為 scanner state（0x20）即解讀狀態位元；新增 Busy 診斷已限制此條件。須用真實回覆或有來源的樣本確認非 0x20 CHECK 的處置，不能因本次 0x08 Busy 便認定該舊邏輯造成卡住。

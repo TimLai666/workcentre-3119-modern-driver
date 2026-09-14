@@ -86,15 +86,27 @@ fn outcome(result: io::Result<TransferOutcome>) -> i32 {
 pub(super) fn dispatch(
     interface: &Interface,
     read: impl FnOnce() -> Result<properties::Snapshot, i32>,
-    transfer: impl FnOnce(properties::Snapshot) -> io::Result<TransferOutcome>,
+    transfer: impl FnOnce(properties::Snapshot, &AtomicBool) -> io::Result<TransferOutcome>,
 ) -> i32 {
-    let _connection = match locking::Borrow::take(interface) {
+    let connection = match locking::Borrow::take(interface) {
         Ok(connection) => connection,
         Err(hr) => return hr,
     };
-    match read() {
-        Ok(snapshot) => outcome(transfer(snapshot)),
-        Err(hr) => failed_status(hr),
+    let job = match interface.cancellation.begin(connection.device()) {
+        Ok(job) => job,
+        Err(hr) => return hr,
+    };
+    let result = match read() {
+        Ok(snapshot) => transfer(snapshot, job.flag()),
+        Err(hr) => return failed_status(hr),
+    };
+    // This is the acquisition's completion point. An event ordered before it
+    // cancels a successful transfer; events after removal are harmless. Errors
+    // retain precedence even if cancellation won the ordering race.
+    let cancelled = job.finish();
+    match result {
+        Ok(_) if cancelled => 1,
+        result => outcome(result),
     }
 }
 
@@ -124,16 +136,16 @@ pub(super) unsafe extern "system" fn entry(
             }
             let interface = &*this.cast::<Interface>();
             // The service already owns the WIA lock. Borrow the same STI USB
-            // session; callback reentry cannot disconnect this item tree. The
-            // callback handles cancellation; WIA_EVENT_CANCEL_IO is still pending.
-            let cancel = AtomicBool::new(false);
+            // session; callback reentry cannot disconnect this item tree.
+            // WIA_EVENT_CANCEL_IO signals this acquisition's own flag, while
+            // callback cancellation is returned explicitly by the transfer.
             dispatch(
                 interface,
                 || properties::read(context),
-                |snapshot| {
+                |snapshot, cancel| {
                     (*super::owner(this).cast::<Instance>()).state.transfer_bmp(
                         snapshot.settings,
-                        &cancel,
+                        cancel,
                         callback,
                         &snapshot.item,
                         &snapshot.full_item,

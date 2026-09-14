@@ -8,6 +8,8 @@ use std::{
     sync::{Mutex, MutexGuard},
 };
 mod acquire;
+mod cancel;
+mod formats;
 mod locking;
 mod properties;
 mod tree;
@@ -80,12 +82,14 @@ struct Vtable {
 pub(super) struct Interface {
     vtable: *const Vtable,
     lifecycle: Mutex<Lifecycle>,
+    cancellation: cancel::State,
 }
 impl Interface {
     pub(super) const fn new() -> Self {
         Self {
             vtable: &VTABLE,
             lifecycle: Mutex::new(Lifecycle::Idle),
+            cancellation: cancel::State::new(),
         }
     }
     fn state(&self) -> MutexGuard<'_, Lifecycle> {
@@ -411,14 +415,6 @@ unsafe extern "system" fn free_context(
     // itself; this notification must not free the service's context storage.
     unsafe { report(error, if flags == 0 { 0 } else { E_INVALIDARG }) }
 }
-unsafe extern "system" fn notify(
-    _this: *mut c_void,
-    _event: *const Guid,
-    _device_id: *mut u16,
-    _reserved: u32,
-) -> i32 {
-    E_NOTIMPL
-}
 unsafe extern "system" fn uninitialize(this: *mut c_void, context: *mut u8) -> i32 {
     if this.is_null() || context.is_null() {
         return E_INVALIDARG;
@@ -445,8 +441,8 @@ static VTABLE: Vtable = Vtable {
     capabilities: unsupported_list,
     delete: unsupported_item,
     free_context,
-    formats: unsupported_list,
-    notify,
+    formats: formats::entry,
+    notify: cancel::notify,
     uninitialize,
 };
 
@@ -629,45 +625,68 @@ mod tests {
                     acquire::dispatch(
                         interface,
                         || Err(E_INVALIDARG),
-                        |_| { panic!("failed properties must not start a transfer") }
+                        |_, _| { panic!("failed properties must not start a transfer") }
                     ),
                     E_INVALIDARG
                 );
-                assert_eq!(
-                    acquire::dispatch(
-                        interface,
-                        || {
-                            assert_eq!(interface.disconnect_client(), WIA_ERROR_BUSY);
-                            assert_eq!(locking::dispatch(interface, false), WIA_ERROR_BUSY);
-                            Ok(properties::Snapshot {
-                                settings: crate::wia::FlatbedSettings {
-                                    x_resolution: 75,
-                                    y_resolution: 75,
-                                    x_position: 0,
-                                    y_position: 0,
-                                    x_extent: 600,
-                                    y_extent: 800,
-                                    data_type: 2,
-                                    depth: 8,
-                                    brightness: 0,
-                                    contrast: 0,
-                                    compression: 0,
-                                    format: crate::wia::BMP_FORMAT,
-                                },
-                                item: "Flatbed".into(),
-                                full_item: "synthetic\\Root\\Flatbed".into(),
-                            })
-                        },
-                        |snapshot| {
-                            assert_eq!(snapshot.settings.x_resolution, 75);
-                            assert_eq!(snapshot.item, "Flatbed");
-                            assert_eq!(interface.disconnect_client(), WIA_ERROR_BUSY);
-                            assert_eq!(locking::dispatch(interface, true), WIA_ERROR_BUSY);
-                            Ok(crate::wia_transfer::TransferOutcome::Cancelled)
+                for cancellation_case in 0..3 {
+                    assert_eq!(
+                        acquire::dispatch(
+                            interface,
+                            || {
+                                assert_eq!(interface.disconnect_client(), WIA_ERROR_BUSY);
+                                assert_eq!(locking::dispatch(interface, false), WIA_ERROR_BUSY);
+                                Ok(properties::Snapshot {
+                                    settings: crate::wia::FlatbedSettings {
+                                        x_resolution: 75,
+                                        y_resolution: 75,
+                                        x_position: 0,
+                                        y_position: 0,
+                                        x_extent: 600,
+                                        y_extent: 800,
+                                        data_type: 2,
+                                        depth: 8,
+                                        brightness: 0,
+                                        contrast: 0,
+                                        compression: 0,
+                                        format: crate::wia::BMP_FORMAT,
+                                    },
+                                    item: "Flatbed".into(),
+                                    full_item: "synthetic\\Root\\Flatbed".into(),
+                                })
+                            },
+                            |snapshot, cancel| {
+                                assert!(!cancel.load(std::sync::atomic::Ordering::Relaxed));
+                                assert_eq!(snapshot.settings.x_resolution, 75);
+                                assert_eq!(snapshot.item, "Flatbed");
+                                assert_eq!(interface.disconnect_client(), WIA_ERROR_BUSY);
+                                assert_eq!(locking::dispatch(interface, true), WIA_ERROR_BUSY);
+                                if cancellation_case != 0 {
+                                    assert!(interface.cancellation.cancel(&device));
+                                    assert!(cancel.load(std::sync::atomic::Ordering::Relaxed));
+                                }
+                                match cancellation_case {
+                                    0 => Ok(crate::wia_transfer::TransferOutcome::Cancelled),
+                                    1 => Ok(crate::wia_transfer::TransferOutcome::Completed(
+                                        crate::scan::ScanSummary {
+                                            width: 600,
+                                            height: 800,
+                                            bands: 1,
+                                            bytes: 480_000,
+                                        },
+                                    )),
+                                    _ => Err(std::io::Error::from_raw_os_error(5)),
+                                }
+                            }
+                        ),
+                        if cancellation_case == 2 {
+                            0x80070005u32 as i32
+                        } else {
+                            1
                         }
-                    ),
-                    1
-                );
+                    );
+                    assert!(!interface.cancellation.cancel(&device));
+                }
                 assert!(matches!(*interface.state(), Lifecycle::Connected(_)));
                 for result in [WIA_ERROR_BUSY, 0x80070005u32 as i32, 1, 0] {
                     helper.lock_result.set(result);

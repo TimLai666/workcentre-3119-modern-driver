@@ -132,7 +132,21 @@ fn actual_wia_dispatch_scans_cancels_and_rescans() {
     exercise(true);
 }
 
+#[test]
+#[ignore = "Hardware scan: fresh WC3119_TEST_STI_PATH and new WC3119_TEST_OUTPUT_DIR; parallel Rust cancellation, partial output, RGB rescan."]
+fn actual_wia_dispatch_cancels_from_parallel_thread_and_rescans() {
+    exercise_async_cancel();
+}
+
 fn exercise(scan: bool) {
+    exercise_mode(scan, false);
+}
+
+fn exercise_async_cancel() {
+    exercise_mode(true, true);
+}
+
+fn exercise_mode(scan: bool, async_cancel: bool) {
     let output = scan.then(|| {
         let path = std::path::PathBuf::from(
             std::env::var_os("WC3119_TEST_OUTPUT_DIR").expect("set new WC3119_TEST_OUTPUT_DIR"),
@@ -211,7 +225,17 @@ fn exercise(scan: bool) {
             // A second lock cannot reopen or replace the held USB handle.
             assert!(dispatch(interface, true) < 0);
             if let Some(output) = &output {
-                scan_one(mini, round, output);
+                // Start asynchronous cancellation from an idle device. A
+                // previous completed scan may still return RESERVE Busy while
+                // the carriage returns; cancelling that unconfirmed ownership
+                // intentionally quarantines the session instead of sending ABORT.
+                if async_cancel && round == 0 {
+                    scan_one_async_cancel(mini, interface, output);
+                } else if async_cancel {
+                    scan_one(mini, if round == 1 { 2 } else { 0 }, output);
+                } else {
+                    scan_one(mini, round, output);
+                }
                 assert_eq!((sti::VTABLE.diagnostic)(owner, &mut diagnostic), 0);
             }
             assert_eq!(dispatch(interface, false), 0);
@@ -233,7 +257,7 @@ fn exercise(scan: bool) {
 }
 
 unsafe fn scan_one(mini: *mut c_void, round: usize, output: &std::path::Path) {
-    use std::{io::Write, sync::atomic::AtomicBool};
+    use std::io::Write;
     let mut callback = fixture::FakeTransferCallback::new();
     if round == 1 {
         callback.set_send_plan(fixture::SendMessagePlan::CancelAt(2));
@@ -248,7 +272,7 @@ unsafe fn scan_one(mini: *mut c_void, round: usize, output: &std::path::Path) {
                 minidrv::acquire::dispatch(
                     interface,
                     || panic!("nested read"),
-                    |_| panic!("nested scan")
+                    |_, _| panic!("nested scan")
                 ),
                 WIA_ERROR_BUSY
             );
@@ -276,16 +300,25 @@ unsafe fn scan_one(mini: *mut c_void, round: usize, output: &std::path::Path) {
                     full_item: "synthetic\\Root\\Flatbed".into(),
                 })
             },
-            |snapshot| {
+            |snapshot, cancel| {
                 (*minidrv::owner(mini).cast::<com_server::Instance>())
                     .state
                     .transfer_bmp(
                         snapshot.settings,
-                        &AtomicBool::new(false),
+                        cancel,
                         callback.as_raw(),
                         &snapshot.item,
                         &snapshot.full_item,
                     )
+                    .inspect_err(|error| {
+                        eprintln!("scan round {round} error: {error}");
+                        let mut log = std::fs::File::create_new(
+                            output.join(format!("scan-round-{round}-error.txt")),
+                        )
+                        .expect("new error evidence");
+                        writeln!(log, "{error}").unwrap();
+                        log.sync_all().unwrap();
+                    })
             },
         );
         let bytes = callback.stream_bytes().unwrap();
@@ -312,6 +345,152 @@ unsafe fn scan_one(mini: *mut c_void, round: usize, output: &std::path::Path) {
         println!("{name}: HRESULT={result}, bytes={}", bytes.len());
     }
 }
+
+unsafe fn scan_one_async_cancel(
+    mini: *mut c_void,
+    interface: &Interface,
+    output: &std::path::Path,
+) {
+    use std::{
+        io::Write,
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+
+    let mut callback = fixture::FakeTransferCallback::new();
+    let (registered_tx, registered_rx) = mpsc::sync_channel(0);
+    let (done_tx, done_rx) = mpsc::sync_channel(0);
+    let started = Instant::now();
+
+    // SAFETY: only the pure-Rust cancellation state is borrowed by the worker;
+    // all native COM objects and the USB-backed interface stay on this thread.
+    let result = std::thread::scope(|scope| {
+        let cancel_state = &interface.cancellation;
+        let cancel_thread = scope.spawn(move || {
+            registered_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("scan did not register its cancellation job");
+            match done_rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    assert!(
+                        cancel_state.cancel(&[65]),
+                        "registered scan disappeared before asynchronous cancellation"
+                    );
+                }
+            }
+        });
+
+        let dispatch_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: exercise retains mini and its COM apartment until callback drops.
+            unsafe {
+                callback.set_hook(Box::new(move || {
+                    let interface = &*mini.cast::<Interface>();
+                    assert_eq!(interface.disconnect_client(), WIA_ERROR_BUSY);
+                    assert_eq!(dispatch(interface, false), WIA_ERROR_BUSY);
+                    assert_eq!(
+                        minidrv::acquire::dispatch(
+                            interface,
+                            || panic!("nested read"),
+                            |_, _| panic!("nested scan")
+                        ),
+                        WIA_ERROR_BUSY
+                    );
+                }));
+                minidrv::acquire::dispatch(
+                    interface,
+                    || {
+                        // The job is registered before this closure runs. The
+                        // zero-capacity channel makes the timer handshake explicit.
+                        registered_tx
+                            .send(())
+                            .expect("cancellation worker stopped before registration");
+                        // Synthetic property values, never a fake WIA service context.
+                        Ok(minidrv::properties::Snapshot {
+                            settings: crate::wia::FlatbedSettings {
+                                x_resolution: 75,
+                                y_resolution: 75,
+                                x_position: 0,
+                                y_position: 0,
+                                x_extent: 600,
+                                y_extent: 800,
+                                data_type: 3,
+                                depth: 24,
+                                brightness: 0,
+                                contrast: 0,
+                                compression: 0,
+                                format: crate::wia::BMP_FORMAT,
+                            },
+                            item: "Flatbed".into(),
+                            full_item: "synthetic\\Root\\Flatbed".into(),
+                        })
+                    },
+                    |snapshot, cancel| {
+                        (*minidrv::owner(mini).cast::<com_server::Instance>())
+                            .state
+                            .transfer_bmp(
+                                snapshot.settings,
+                                cancel,
+                                callback.as_raw(),
+                                &snapshot.item,
+                                &snapshot.full_item,
+                            )
+                            .inspect_err(|error| {
+                                eprintln!("asynchronous scan error: {error}");
+                                let mut log =
+                                    std::fs::File::create_new(output.join("scan-error.txt"))
+                                        .expect("new error evidence");
+                                writeln!(log, "{error}").unwrap();
+                                log.sync_all().unwrap();
+                            })
+                    },
+                )
+            }
+        }));
+        let _ = done_tx.send(());
+        cancel_thread
+            .join()
+            .expect("asynchronous cancellation worker panicked");
+        match dispatch_result {
+            Ok(result) => result,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    });
+
+    let elapsed = started.elapsed();
+    let bytes = callback
+        .stream_bytes()
+        .expect("cancelled scan must leave an inspectable callback stream");
+    let name = "cancelled-rgb75.partial";
+    let mut file = std::fs::File::create_new(output.join(name)).unwrap();
+    file.write_all(&bytes).unwrap();
+    file.sync_all().unwrap();
+    let callback_count = callback.messages().len();
+    let mut log = std::fs::File::create_new(output.join(format!("{name}.txt"))).unwrap();
+    writeln!(
+        log,
+        "HRESULT={result:#010x}\ncancel_requested_after_ms=500\nelapsed_ms={}\ncallback_count={callback_count}\nbytes={}\n{:?}",
+        elapsed.as_millis(),
+        bytes.len(),
+        callback.messages()
+    )
+    .unwrap();
+    log.sync_all().unwrap();
+    assert_eq!(callback.reference_count(), 1);
+    assert_eq!(callback.stream_reference_count(), 1);
+    assert_eq!(result, 1);
+    assert!(
+        !bytes.starts_with(b"BM"),
+        "cancelled output must remain partial"
+    );
+    assert!(callback.messages().iter().all(|m| m.percent < 100));
+    println!(
+        "{name}: HRESULT={result}, bytes={}, callbacks={callback_count}, elapsed_ms={}",
+        bytes.len(),
+        elapsed.as_millis()
+    );
+}
+
 #[link(name = "Ole32")]
 unsafe extern "system" {
     fn CoInitializeEx(reserved: *mut c_void, flags: u32) -> i32;

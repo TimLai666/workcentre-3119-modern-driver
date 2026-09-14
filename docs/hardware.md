@@ -2,6 +2,26 @@
 
 觀測日期：2026-09-13、2026-09-14。此檔省略 USB 序號與完整實例路徑。
 
+## WIA 取消事件與提早取消後重掃
+
+2026-09-14，重新偵測三個介面均問題碼 0、started=true，每次硬體測試重新列舉唯一啟用的 MI_00 路徑，全部序列執行。新增 `actual_wia_dispatch_cancels_from_parallel_thread_and_rescans` 使用原生 Windows 項目、真實 USB／HGLOBAL IStream 與合成服務 helper／屬性／回呼。另一執行緒只通知純 Rust 取消狀態，不跨執行緒呼叫未 marshal 的 COM。服務派送 WIA_EVENT_CANCEL_IO 本身仍未實測。
+
+**新驗收失敗，未建立完成標記**：
+
+| 情境 | 結果 |
+| --- | --- |
+| Gray75 完成後，下一張 RGB75 於註冊工作 500 ms 後取消 | 兩次約 610 ms 回 E_FAIL、零影像。第二次原始診斷為 RESERVE（0x16）收到 4 次 Busy（0x08）後取消，尚未確認保留權，維持隔離 |
+| 閒置裝置開始 RGB75，500 ms 後取消，再立即重掃 | 取消 720 ms 回 S_FALSE、零影像、僅初始 0% 訊息；重掃約 120 秒 E_FAIL，整體 120.83 秒。第一次沒有記下原始錯誤階段 |
+| 補入錯誤診斷後重現閒置情境 | 取消 600 ms 回 S_FALSE；重掃在 RESERVE 收到 800 次 Busy，status=0x08、state=unknown、120049 ms 到期。整體 120.75 秒，未進入灰階對照輪 |
+
+這些結果不能解讀為 USB 斷線或已修復暖機取消。成功取消的精確階段及 ABORT／RELEASE 回覆未保留，下一步須取得這些資料，區分裝置端取消時序與保留權狀態。未確認所有權前不盲送 ABORT，沒有套用固定重掃延遲、延長期限、USB reset 或 CLEAR_HALT。
+
+兩次閒置情境之間，既有 `actual_wia_dispatch_scans_cancels_and_rescans` 回歸通過 42.99 秒：Gray75 完成、RGB75 第一塊回呼取消、RGB75 重掃成功，各輪診斷與鎖定清理完成。灰階／彩色為 600×801，BMP 分別 481678／1441854 bytes。回呼取消留下 919854 bytes，不以 BM 開頭且沒有 100% 訊息。Pillow 獨立解析標頭、灰色盤、DPI、行序與全部有效樣本一致，實際查看無損 PNG 為白色空平台與少量細點。沒有原稿品質或精確幾何驗收。
+
+私人證據集中在 `artifacts/wia-cancel-validation-20260914-a/`：`async-scan`／`async-scan-b` 為先灰階的兩次失敗，`idle-async-scan`／`idle-async-diagnostic` 為閒置取消與重掃失敗，只有 `callback-regression` 有 complete.txt 與 verification.json。回歸灰階 SHA256：`d1f8ac6c7e4c0c40654a9be20dfe776f2d5991d95555e2cc1e567ec6bd121bec`，彩色：`142271466cc4a9ed21299080025c249d972b86a8220bc21bad4b38af8a4135fa`。掃描核心 SHA256：`807D9CD7D2DA89311D61AE7A9C95A7BBF79B070CED4973BED79E17C1106B23DA`。
+
+最後 doctor 三個介面正常，INQUIRY 解析度、範圍及行序與既有回報相符。此查詢不證明掃描馬達已恢復。沒有重插、驅動配對、COM／WIA 登錄或權限變更。
+
 ## WIA 鎖定與 dispatch 實機驗證
 
 2026-09-14，重新偵測三個介面均問題碼 0、started=true，列舉唯一啟用的 MI_00 專案介面。新 `actual_wia_dispatch_scans_cancels_and_rescans` 以 `--ignored --exact` 序列執行，42.21 秒通過。使用真正 Windows 根／平台項目，透過合成 IStiDevice helper 轉送到 IStiUSD 鎖定；acquire dispatch 接受合成屬性快照，回呼提供真正 Windows HGLOBAL IStream，USB 為實機。沒有偽造 WIA property context，也沒有登錄服務。

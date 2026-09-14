@@ -38,7 +38,7 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 | 清理失敗、最終進度取消 | 不回報 Completed，清理失敗保持隔離，離線測試通過 |
 | QI／GetNextStream／SendMessage／Release 重入 | 查詢可返回，掃描／解鎖回忙碌，實機測試通過 |
 | 原生參考釋放 | callback QI 與 stream owned ref 各自釋放，HGLOBAL 原生計數回到測試保留的一個參考 |
-| WIA 服務與等待期間取消 | 尚未驗證，須接上 IWiaMiniDrv、真實 property context 及 WIA_EVENT_CANCEL_IO |
+| WIA 服務與等待期間取消 | 原生取消事件已接上；500 ms 提早取消可返回 S_FALSE，但立即重掃尚未通過。真實服務 context／排程未驗證 |
 
 單張平台的 skip 發生於 RESERVE 前，沒有開始的頁面需要排空。驅動僅發 STATUS，END_OF_STREAM／END_OF_TRANSFER 由服務發送。[Microsoft 傳輸常數](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-transfer-constants)
 
@@ -60,6 +60,22 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 
 ## 測試
 
+### 取消事件與格式列舉
+
+離線驗證：178 個 all-targets 測試、一般測試及 2 個 doc-tests、fmt、Clippy、全部 release targets 通過。補正文內說明後再建置，當次 release DLL 動態載入明確以 ignored 模式執行通過，包含真 BSTR 的取消方法呼叫，DLL SHA256：`27050B253D8C9DBA302DB5E947EEEC13B98488D5DF9544099ACE0BD639AFBE92`。另以 SDK 10.0.26100.0 C11 編譯斷言核對格式結構及方法偏移。capture_scan 範例測試／建置及 STI 一般測試通過；硬體結果獨立列於下文，不能用離線通過抵銷提早取消後重掃失敗。
+
+`drvNotifyPnpEvent` 已處理 WIA_EVENT_CANCEL_IO，以初始化時的裝置識別限定目前工作。註冊、完成及取消有一致排序，閒置通知為成功的空操作，錯誤裝置不影響正在執行的掃描；未知事件回 E_NOTIMPL。跨執行緒測試只共享 Rust 取消狀態，原生 COM 留在原執行緒。服務實際是否並行派送此方法仍未驗證。[Microsoft 取消契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamindr_lh/nf-wiamindr_lh-iwiaminidrv-drvnotifypnpevent)
+
+掃描 checkpoint 的明確取消以型別保留經過診斷包裝的起因。只有 Ready 且沒有輸出失敗才轉成取消；Interrupted、USB 或 callback 錯誤不因同時收到取消而被遮蓋。合成測試涵蓋起因保留、成功／失敗清理、舊旗標移除、錯誤裝置、重入與完成競態。新取消狀態、格式與取消起因功能均先取得缺少實作的 RED，再實作通過。
+
+`drvGetWiaFormatInfo` 先透過真實 WIA context 的 `wiasGetItemType` 確認可傳輸影像，然後回傳程序生命週期的靜態 BMP／TYMED_FILE。根、資料夾、非影像或不可傳輸項目拒絕，count／device-error 必填、format-list 可省略。SDK 的 WIA_FORMAT_INFO 大小 20 bytes、tymed 偏移 16；取消方法位於 IWiaMiniDrv 的 slot 18／x64 偏移 144。[Microsoft 格式契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamindr_lh/nf-wiamindr_lh-iwiaminidrv-drvgetwiaformatinfo)
+
+**實機驗收不完整**：灰階完成後約 500 ms 取消下一張 RGB，兩次在 RESERVE Busy 時被保守隔離。改由閒置狀態開始 RGB，約 720 ms 返回取消，沒有影像或 100% 訊息，但其後 RGB 重掃約 120 秒失敗。第一次重掃只留下 HRESULT 與零影像。補上原始診斷後重現：取消約 600 ms 返回 S_FALSE，重掃在 RESERVE 收到 800 次 Busy（0x08），120.049 秒到期。測試順序調整只區分取消情境，未修改核心隔離策略，也沒有把失敗的驗收放寬為通過。證據見 [硬體紀錄](../hardware.md#wia-取消事件與提早取消後重掃)，復原工作由 [03](03-recover-scan.md) 接續。
+
+減法審查：取消沿用現有有限排空及清理流程，格式使用單一靜態 BMP 表。沒有增加背景 USB 執行緒或重試機制；屬性初始化以實際能力為前置，不加入固定機型能力假資料。
+
+Diff Inspector：Scope CLEAN，根代理檢查相對 `8d2913d` 的完整核心／測試差異與文件，Luna 獨立審查取消併發、錯誤分類及協定限制。沒有確認的新增程式缺陷；已知提早取消實機失敗仍由 03 處理。完成與取消的先後以 `job.finish` 共用 Mutex 為準，Completed 結果在完成點前收到取消及錯誤優先的測試通過。待查證：服務是否使用同一 minidriver instance／裝置 ID 派送取消，以及原生屬性 context／格式列表的服務使用方式。既有 `exchange`／二次清理錯誤字串化仍不能保留所有底層 HRESULT，另列 03 後續，未把本輪的 callback／stream HRESULT 保留宣稱成全鏈完成。
+
 ### 原生鎖定與掃描 dispatch
 
 最終離線驗證：168 個 all-targets 測試、一般測試及 2 個 doc-tests、格式、Clippy、全部 release targets 通過；補正文內說明後重新建置，當次 release DLL 的動態載入另行通過。DLL SHA256：`69562D5C698873D322707BCC6B83CCE7B823C3875667B7C689E9D7DD442D1FFF`。acquire／properties／locking 來源 SHA256 依序為 `8511C9A1F5EC381D9ADFA69858F5746532257CEEF1C751C86E06A9AB86F48434`、`CDAB5887E403ACCC1C429CC42ED53716357DD8EEC5868B61B88241CE6881A53A`、`D3497C9EF5F5B6FD6BF6FE5C995E790AA2C6933DA8D73FF10363656B5F180192`。
@@ -75,7 +91,7 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 | 實機 dispatch | 合成屬性快照與 callback、真正原生項目／USB／IStream，灰階、彩色取消及彩色重掃 42.21 秒通過，詳見 [硬體紀錄](../hardware.md#wia-鎖定與-dispatch-實機驗證) |
 | 真正服務 context | 尚未執行，測試不以假指標呼叫 wiasReadProp 系列，不能當作屬性儲存或 Windows 掃描驗收 |
 
-下一步建立由硬體能力限制的屬性初始值／有效範圍、相依驗證、格式列舉及 WIA_EVENT_CANCEL_IO。測試編碼與實機掃描沒有改動 COM／WIA 登錄或系統權限。
+由硬體能力限制的屬性初始值／有效範圍及相依驗證尚待建立。格式列舉與 WIA_EVENT_CANCEL_IO 的後續成果見本文件「取消事件與格式列舉」。測試編碼與實機掃描沒有改動 COM／WIA 登錄或系統權限。
 
 Diff Inspector：Scope CLEAN。根代理追蹤 native acquire → 屬性快照 → STI session → 原生 callback／BMP 消費端，Luna 獨立審查 ABI、持有參考、重入與錯誤分類，沒有確認的未處理 P1／P2。平台未宣告 Folder／多項傳輸，拒絕 ACQUIRE_CHILDREN 與目前範圍一致。null STI helper 可建立項目樹但無法鎖定硬體，正式服務模式與 capability 宣告仍須驗證。
 

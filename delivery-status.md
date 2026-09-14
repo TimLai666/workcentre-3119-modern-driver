@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-2026-09-14：IWiaMiniDrv 已接上 IStiDevice 鎖定、服務屬性讀取及 drvAcquireItemData 串流入口。共用項目樹／USB 的 dispatch 經合成屬性與 callback 完成實機灰階、彩色取消及重掃；正式屬性初始化／相依驗證、取消事件與服務整合仍待完成，Windows 掃描尚不能使用本驅動。既有兩次自然逾時、20 次穩定性、文件品質、正式套件及列印仍未完成。
+2026-09-14：IWiaMiniDrv 已接上取消事件及 BMP 格式列舉，離線測試與當次 DLL 載入通過。提早取消能返回取消結果，但立即重掃在 RESERVE Busy 120 秒後失敗，這項實機驗收尚未通過。影像回呼取消及重掃回歸通過。屬性初始化／相依驗證與服務整合仍待完成，Windows 掃描尚不能使用本驅動。
 
 ## Stage Objective
 
@@ -24,11 +24,13 @@
 | 01 | 唯讀診斷完整情境 | 開發者 | in_progress | 本機問題碼 28 可重現，硬體異常情境未全部驗證 |
 | 02 | 第一張實機掃描 | 開發者 | in_progress | 空平台灰階／彩色及獨立像素比對成功；文件、色彩及精確幾何待驗收 |
 | 03 | 取消與復原 | 開發者 | in_progress | 連續工作前 4 次成功，第 5 次 RGB600 自然逾時，清理後 Gray75 成功；20 次驗收與失同步復原未完成 |
-| 05 | Windows 掃描與安裝 | 開發者 | in_progress | 原生項目樹、WIA 鎖定與串流 dispatch 已有測試及合成屬性實掃；屬性初始化／驗證、取消事件、服務與可攜套件未完成 |
+| 05 | Windows 掃描與安裝 | 開發者 | in_progress | 原生項目樹、鎖定／串流、取消事件與 BMP 格式列舉已實作；提早取消重掃失敗，屬性初始化／驗證、服務與可攜套件未完成 |
 | 06 | 列印 | 開發者 | not_started | 尚無 |
 | 07 | 掃描明暗品質 | 開發者 | blocked | 已有空平台影像，缺少可對照原稿；歷史偏白仍未重現 |
 
 ## Current Blockers
+
+- 新提早取消情境：閒置 RGB75 註冊 500 ms 後通知取消，約 600–720 ms 返回取消；緊接的 RGB 重掃 RESERVE 收到 800 次 Busy（0x08），120.049 秒到期。須補成功取消時的階段與清理回覆，不能由 USB 狀態正常或 S_FALSE 推論已可重掃。詳見 03 及硬體紀錄。
 
 - 使用者確認平台沒有文件，無法完成文字、色彩、精確幾何與淺色細節驗收。取消／復原與 WIA 的獨立開發可繼續。
 - RGB600 兩次停止影像進度後達到 120 秒工作期限，沒有 USB API 讀寫或清理錯誤。第二次第 20 塊後約 102 秒收到 678 次 Busy（0x08）回覆，未包含可解釋的 scanner state。仍需區分命令時序與裝置內部停止進度的原因，不能只延長期限當成修復。
@@ -39,9 +41,9 @@
 
 ## Next Verifiable Output
 
-下一步實作 IWiaMiniDrv 屬性初始化、有效範圍與相依更新，再接上格式列舉及服務取消事件。服務設定讀取及 drvAcquireItemData 已接上同一 STI USB session，不重做傳輸核心。硬體能力須來自實際裝置；原生服務 context 必須由 Windows 提供，不可用假指標替代。本輪新 dispatch 硬體測試已完成灰階、彩色取消及重掃；後續更動傳輸路徑時，重新列舉裝置、使用新輸出目錄並以 `--ignored --exact` 序列執行。
+兩條可平行工作：05 實作 IWiaMiniDrv 屬性初始化、有效範圍與相依更新；03 補提早取消時的階段、ABORT／RELEASE 回覆與保留權狀態證據，再修正及重跑失敗驗收。格式列舉與取消事件入口已接上，不重做。硬體能力須來自實際裝置，服務 context 必須由 Windows 提供，不可用假指標替代。硬體測試仍序列執行，重新列舉裝置並使用新輸出目錄。
 
-IWiaMiniDrv 的屬性初始化／驗證、格式及事件方法仍回不支援，STI 尚不宣告 WIA capability。COM aggregation 的實際需求、服務管理的並行載入／卸載排程、項目參考所有權與 runtime 前置條件仍須驗證。600×800 選取區仍回傳 600×801，不可將輸出尺寸任意當成 WIA 選取範圍。WinUSB 共存、服務帳號存取及 Windows 掃描消費 BMP 仍需整合驗證。跨工作隔離依 03 補完，不以介面到達時間戳記當成實體重插證據。準備具體安裝、備份及復原方案後，才提出必要的系統變更授權。平台有文件後補做 02／07 品質對照。
+IWiaMiniDrv 的屬性初始化／驗證及其他事件方法仍回不支援，STI 尚不宣告 WIA capability。COM aggregation 的實際需求、服務管理的並行載入／卸載排程、項目參考所有權與 runtime 前置條件仍須驗證。取消通知是否派送到同一 instance 與相同裝置 ID 也要由服務實測。600×800 選取區仍回傳 600×801，不可將輸出尺寸任意當成 WIA 選取範圍。WinUSB 共存、服務帳號存取及 Windows 掃描消費 BMP 仍需整合驗證。跨工作隔離依 03 補完，不以介面到達時間戳記當成實體重插證據。準備具體安裝、備份及復原方案後，才提出必要的系統變更授權。平台有文件後補做 02／07 品質對照。
 
 ## Next Ticket
 
@@ -64,6 +66,8 @@ IWiaMiniDrv 的屬性初始化／驗證、格式及事件方法仍回不支援�
 | 建立持續完成完整驅動的目標 | 使用者要求逐步完成實作、驗證與推送，需要使用者介入時提出具體需求，可獨立工作繼續推進 | 2026-09-13 | 01、02、03、05、06、07 |
 
 ## Verified
+
+2026-09-14 取消事件／格式版本：178 個 all-targets 測試、一般測試及 2 個 doc-tests、fmt、Clippy、全部 release targets、明確啟用的當次 DLL 動態載入通過。SDK C11 格式結構與方法偏移斷言通過。回呼取消回歸實掃 42.99 秒通過，BMP 全樣本與影像檢視通過。新提早取消測試四次失敗，已保留實際結果，詳見 [05](docs/tickets/05-windows-install.md#取消事件與格式列舉) 及 [硬體紀錄](docs/hardware.md#wia-取消事件與提早取消後重掃)。沒有 Windows 掃描或文件品質驗收。
 
 2026-09-14 原生鎖定／acquire 版本：168 個 all-targets 測試、一般測試與 2 個 doc-tests、格式、Clippy、全部 release targets 及明確啟用的當次 DLL 動態載入通過。合成屬性 dispatch 的灰階、彩色取消與重掃實機測試 42.21 秒通過，鎖定／INQUIRY 修後另通過 0.07 秒。Pillow 全樣本比對及實際影像檢視通過，仍是空平台，沒有服務 context 或 Windows 掃描驗收。證據與剩餘差異見 [05](docs/tickets/05-windows-install.md#原生鎖定與掃描-dispatch) 及 [實機紀錄](docs/hardware.md#wia-鎖定與-dispatch-實機驗證)。
 
@@ -195,6 +199,8 @@ Diff Inspector：本輪範圍符合診斷及可靠性調查，根代理已審查
 | [tests/wia.rs](tests/wia.rs) | 六種解析度、模式／色深、無效設定與預先取消 |
 | [src/wia_callback.rs](src/wia_callback.rs) | 原生 callback QI、BSTR、GetNextStream、進度與 HRESULT／參考管理 |
 | [src/wia_transfer.rs](src/wia_transfer.rs) | 同一連線的回呼掃描、BMP 進度、取消及輸出／清理錯誤保留 |
+| [src/com_server/minidrv/cancel.rs](src/com_server/minidrv/cancel.rs) | 每工作取消旗標與原生取消事件，完成／取消排序及裝置識別 |
+| [src/com_server/minidrv/formats.rs](src/com_server/minidrv/formats.rs) | 由真實項目型別列舉靜態 BMP／TYMED_FILE 格式 |
 | [tests/wia_callback.rs](tests/wia_callback.rs) | 15 個原生回呼契約與 Windows 記憶體串流測試 |
 | [tests/support/wia_callback.rs](tests/support/wia_callback.rs) | 共用的獨立 COM ABI 測試物件及真實 HGLOBAL 串流 |
 | [src/scan.rs](src/scan.rs) | 掃描工作、影像解碼、有限排空、階段／Busy 診斷與效能量測，共用上限預檢與連線健康狀態，RESERVE 前取消保留可用連線 |
@@ -220,6 +226,8 @@ Diff Inspector：本輪範圍符合診斷及可靠性調查，根代理已審查
 | [driver/README.md](driver/README.md) | 安裝範圍、風險與復原要求 |
 
 ## Actions
+
+2026-09-14 取消事件／格式版本依使用者要求平行實作與審查，沿用當次 Spark 用量限制後的 Luna 最高 effort。USB 測試全部序列執行，私有影像與失敗診斷保留在 `artifacts/`。沒有重插、配對、COM／WIA 登錄或安全設定變更。必要提交／推送依既有授權，版本識別由 Git 記錄。
 
 2026-09-14 原生項目樹版本執行程序內 Windows COM／WIA 項目 API、離線測試、SDK C11 編譯及當次 release DLL 載入／卸載。私人 probe 僅存 `artifacts/`，沒有 USB、系統登錄、配對或服務設定變更。
 

@@ -44,6 +44,13 @@ const MINI: Guid = Guid {
     data3: 0x11d2,
     data4: [0x9a, 0x35, 0, 0xc0, 0x4f, 0xa3, 0x61, 0x45],
 };
+const E_NOTIMPL: i32 = 0x80004001u32 as i32;
+const WIA_EVENT_CANCEL_IO: Guid = Guid {
+    data1: 0xc860_f7b8,
+    data2: 0x9ccd,
+    data3: 0x41ea,
+    data4: [0xbb, 0xbf, 0x4d, 0xd0, 0x9c, 0x5b, 0x17, 0x95],
+};
 #[repr(C)]
 struct UnknownTable {
     query: unsafe extern "system" fn(*mut c_void, *const Guid, *mut *mut c_void) -> i32,
@@ -57,11 +64,70 @@ struct FactoryTable {
         unsafe extern "system" fn(*mut c_void, *mut c_void, *const Guid, *mut *mut c_void) -> i32,
     lock: unsafe extern "system" fn(*mut c_void, i32) -> i32,
 }
+type ItemMethod = unsafe extern "system" fn(*mut c_void, *mut u8, i32, *mut i32) -> i32;
+type PropertiesMethod =
+    unsafe extern "system" fn(*mut c_void, *mut u8, i32, u32, *const c_void, *mut i32) -> i32;
+type TransferMethod =
+    unsafe extern "system" fn(*mut c_void, *mut u8, i32, *mut c_void, *mut i32) -> i32;
+type ListMethod = unsafe extern "system" fn(
+    *mut c_void,
+    *mut u8,
+    i32,
+    *mut i32,
+    *mut *mut c_void,
+    *mut i32,
+) -> i32;
+// SDK 10.0.26100.0 wiamindr_lh.h: drvNotifyPnpEvent is IWiaMiniDrvVtbl
+// slot 18, followed by drvUnInitialize at slot 19.
+#[repr(C)]
+struct MiniTable {
+    unknown: UnknownTable,
+    initialize: unsafe extern "system" fn(
+        *mut c_void,
+        *mut u8,
+        i32,
+        *mut u16,
+        *mut u16,
+        *mut c_void,
+        *mut c_void,
+        *mut *mut c_void,
+        *mut *mut c_void,
+        *mut i32,
+    ) -> i32,
+    acquire: TransferMethod,
+    init_properties: ItemMethod,
+    validate_properties: PropertiesMethod,
+    write_properties: TransferMethod,
+    read_properties: PropertiesMethod,
+    lock_item: ItemMethod,
+    unlock_item: ItemMethod,
+    analyze: ItemMethod,
+    error_string: unsafe extern "system" fn(*mut c_void, i32, i32, *mut *mut u16, *mut i32) -> i32,
+    command: unsafe extern "system" fn(
+        *mut c_void,
+        *mut u8,
+        i32,
+        *const Guid,
+        *mut *mut c_void,
+        *mut i32,
+    ) -> i32,
+    capabilities: ListMethod,
+    delete_item: ItemMethod,
+    free_context: unsafe extern "system" fn(*mut c_void, i32, *mut u8, *mut i32) -> i32,
+    formats: ListMethod,
+    notify: unsafe extern "system" fn(*mut c_void, *const Guid, *mut u16, u32) -> i32,
+    uninitialize: unsafe extern "system" fn(*mut c_void, *mut u8) -> i32,
+}
 #[link(name = "Kernel32")]
 unsafe extern "system" {
     fn LoadLibraryExW(path: *const u16, file: *mut c_void, flags: u32) -> *mut c_void;
     fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
     fn FreeLibrary(module: *mut c_void) -> i32;
+}
+#[link(name = "OleAut32")]
+unsafe extern "system" {
+    fn SysAllocStringLen(value: *const u16, length: u32) -> *mut u16;
+    fn SysFreeString(value: *mut u16);
 }
 struct Module(*mut c_void);
 impl Drop for Module {
@@ -102,6 +168,15 @@ impl Drop for Owned<'_> {
         // SAFETY: holds one COM reference with IUnknown prefix; module remains loaded.
         unsafe {
             ((**self.raw.cast::<*const UnknownTable>()).release)(self.raw);
+        }
+    }
+}
+struct Bstr(*mut u16);
+impl Drop for Bstr {
+    fn drop(&mut self) {
+        // SAFETY: this is either null or the sole BSTR returned by OleAut32.
+        unsafe {
+            SysFreeString(self.0);
         }
     }
 }
@@ -182,6 +257,20 @@ fn release_dll_exports_real_factory_and_keeps_objects_alive() {
             raw: mini,
             _module: &module,
         };
+        let methods = &**mini.raw.cast::<*const MiniTable>();
+        assert_eq!(std::mem::size_of::<MiniTable>(), 160);
+        assert_eq!(std::mem::offset_of!(MiniTable, notify), 144);
+        let device_name: Vec<u16> = "synthetic-device".encode_utf16().collect();
+        let device = Bstr(SysAllocStringLen(
+            device_name.as_ptr(),
+            device_name.len() as u32,
+        ));
+        assert!(!device.0.is_null());
+        assert_eq!(
+            (methods.notify)(mini.raw, &WIA_EVENT_CANCEL_IO, device.0, 0),
+            0
+        );
+        assert_eq!((methods.notify)(mini.raw, &CLASS, device.0, 0), E_NOTIMPL);
         let mut common_identity = ptr::null_mut();
         assert_eq!(
             ((**mini.raw.cast::<*const UnknownTable>()).query)(

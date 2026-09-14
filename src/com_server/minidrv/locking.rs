@@ -24,6 +24,9 @@ pub(super) struct Borrow<'a> {
     connection: Option<Connection>,
 }
 impl<'a> Borrow<'a> {
+    pub(super) fn device(&self) -> &[u16] {
+        &self.connection.as_ref().unwrap().device
+    }
     pub(super) fn take(interface: &'a Interface) -> Result<Self, i32> {
         let mut state = interface.state();
         match &*state {

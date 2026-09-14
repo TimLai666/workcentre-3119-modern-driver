@@ -132,7 +132,10 @@ fn transfer(
         let summary = match summary {
             Ok(summary) => summary,
             Err(error) => {
-                if callback_cancelled && health == SessionHealth::Ready {
+                if health == SessionHealth::Ready
+                    && (callback_cancelled
+                        || (output_failure.is_none() && crate::scan::is_host_cancelled(&error)))
+                {
                     return Ok(TransferOutcome::Cancelled);
                 }
                 return Err(match output_failure {
@@ -370,15 +373,17 @@ mod tests {
         let hresult = 0x80070005u32 as i32;
         fake.set_send_plan(SendMessagePlan::ErrorAt(2, hresult));
         let mut cb = callback(&mut fake);
+        let cancel = AtomicBool::new(false);
         let (result, health) = transfer(
             &mut cb,
             request(),
             2,
-            &AtomicBool::new(false),
+            &cancel,
             "Flatbed",
             "Root\\Flatbed",
             |sink| {
                 let error = sink(&band()).unwrap_err();
+                cancel.store(true, Ordering::Relaxed);
                 (
                     Err(io::Error::other(format!("core wrapped: {error}"))),
                     SessionHealth::Ready,
@@ -430,6 +435,46 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("RELEASE"));
         assert_ne!(&fake.stream_bytes().unwrap()[..2], b"BM");
         assert!(fake.messages().iter().all(|m| m.percent < 100));
+    }
+
+    #[test]
+    fn host_cancellation_requires_its_own_cause_and_successful_cleanup() {
+        let _com = ComApartment::new();
+        for host_cancel in [false, true] {
+            for health in [SessionHealth::Ready, SessionHealth::NeedsReconnect] {
+                let mut fake = FakeTransferCallback::new();
+                let mut cb = callback(&mut fake);
+                let cancel = AtomicBool::new(false);
+                let (result, actual_health) = transfer(
+                    &mut cb,
+                    request(),
+                    2,
+                    &cancel,
+                    "Flatbed",
+                    "Root\\Flatbed",
+                    |_| {
+                        cancel.store(true, Ordering::Relaxed);
+                        let error = if host_cancel {
+                            io::Error::new(io::ErrorKind::Interrupted, crate::scan::HostCancelled)
+                        } else {
+                            io::Error::new(
+                                io::ErrorKind::Interrupted,
+                                "synthetic unrelated interruption",
+                            )
+                        };
+                        (Err(error), health)
+                    },
+                );
+                assert_eq!(actual_health, health);
+                if host_cancel && health == SessionHealth::Ready {
+                    assert!(matches!(result.unwrap(), TransferOutcome::Cancelled));
+                } else {
+                    assert!(result.is_err());
+                }
+                assert!(fake.messages().iter().all(|message| message.percent < 100));
+                assert_eq!(fake.stream_reference_count(), 1);
+            }
+        }
     }
 
     #[test]
