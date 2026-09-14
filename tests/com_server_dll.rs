@@ -38,6 +38,12 @@ const STI: Guid = Guid {
     data3: 0x11d0,
     data4: [0x90, 0xea, 0, 0xaa, 0, 0x60, 0xf8, 0x6c],
 };
+const MINI: Guid = Guid {
+    data1: 0xd8cdee14,
+    data2: 0x3c6c,
+    data3: 0x11d2,
+    data4: [0x9a, 0x35, 0, 0xc0, 0x4f, 0xa3, 0x61, 0x45],
+};
 #[repr(C)]
 struct UnknownTable {
     query: unsafe extern "system" fn(*mut c_void, *const Guid, *mut *mut c_void) -> i32,
@@ -166,9 +172,35 @@ fn release_dll_exports_real_factory_and_keeps_objects_alive() {
             raw: sti,
             _module: &module,
         });
+        let mut mini = ptr::null_mut();
+        assert_eq!(
+            ((**object.raw.cast::<*const UnknownTable>()).query)(object.raw, &MINI, &mut mini),
+            0
+        );
+        assert_ne!(mini, object.raw);
+        let mini = Owned {
+            raw: mini,
+            _module: &module,
+        };
+        let mut common_identity = ptr::null_mut();
+        assert_eq!(
+            ((**mini.raw.cast::<*const UnknownTable>()).query)(
+                mini.raw,
+                &UNKNOWN,
+                &mut common_identity
+            ),
+            0
+        );
+        assert_eq!(common_identity, object.raw);
+        drop(Owned {
+            raw: common_identity,
+            _module: &module,
+        });
         drop(object);
         assert_eq!(can_unload(), 1);
         drop(alias);
+        assert_eq!(can_unload(), 1);
+        drop(mini);
         assert_eq!(can_unload(), 0);
     }
     module.unload();

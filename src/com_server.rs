@@ -1,8 +1,10 @@
 //! Windows COM server identity and lifetime for the scanner integration.
 //!
-//! The instance supports `IUnknown` and `IStiUSD`; WIA image transfer through
-//! `IWiaMiniDrv` and system registration are still under development.
+//! The instance shares `IUnknown`, `IStiUSD` and `IWiaMiniDrv` identity. Native
+//! driver items are implemented; WIA properties, acquisition and registration
+//! are still under development.
 
+mod minidrv;
 mod session;
 mod sti;
 
@@ -23,7 +25,7 @@ const CLASS_E_NOAGGREGATION: i32 = 0x8004_0110u32 as i32;
 /// Stream a BMP through an existing, locked driver object without reopening USB.
 ///
 /// This Rust integration entry point is used while the WIA COM transfer adapter
-/// is under development. It does not register a device or implement IWiaMiniDrv.
+/// is under development. It does not register a device or dispatch WIA acquisition.
 /// Any error invalidates the destination image. The caller must keep its owned
 /// COM reference alive throughout the call and all synchronous output callbacks.
 ///
@@ -131,6 +133,12 @@ const IID_ISTIUSD: Guid = Guid {
     data3: 0x11d0,
     data4: [0x90, 0xea, 0x00, 0xaa, 0x00, 0x60, 0xf8, 0x6c],
 };
+const IID_IWIAMINIDRV: Guid = Guid {
+    data1: 0xd8cd_ee14,
+    data2: 0x3c6c,
+    data3: 0x11d2,
+    data4: [0x9a, 0x35, 0, 0xc0, 0x4f, 0xa3, 0x61, 0x45],
+};
 
 type QueryInterfaceFn =
     unsafe extern "system" fn(*mut c_void, *const Guid, *mut *mut c_void) -> i32;
@@ -159,6 +167,7 @@ struct Factory {
 #[repr(C)]
 struct Instance {
     vtable: *const sti::Vtable,
+    mini: minidrv::Interface,
     refs: AtomicU32,
     state: sti::State,
 }
@@ -393,11 +402,12 @@ unsafe fn factory_create_instance_impl(
     // SAFETY: riid is non-null and valid for the duration of this call under
     // the IClassFactory contract.
     let requested = unsafe { *riid };
-    if requested != IID_IUNKNOWN && requested != IID_ISTIUSD {
+    if requested != IID_IUNKNOWN && requested != IID_ISTIUSD && requested != IID_IWIAMINIDRV {
         return E_NOINTERFACE;
     }
     let object = Box::new(Instance {
         vtable: &sti::VTABLE,
+        mini: minidrv::Interface::new(),
         refs: AtomicU32::new(1),
         state: sti::State::new(),
     });
@@ -406,7 +416,16 @@ unsafe fn factory_create_instance_impl(
     }
     // SAFETY: output was checked and cleared above; the caller receives one
     // owned reference and must release it exactly once.
-    unsafe { *output = Box::into_raw(object).cast::<c_void>() };
+    let object = Box::into_raw(object);
+    // SAFETY: this stable allocation contains both COM interfaces; one initial
+    // reference is transferred regardless of which interface was requested.
+    unsafe {
+        *output = if requested == IID_IWIAMINIDRV {
+            ptr::addr_of_mut!((*object).mini).cast()
+        } else {
+            object.cast()
+        };
+    }
     S_OK
 }
 
@@ -445,7 +464,7 @@ unsafe fn instance_query_interface_impl(
     // SAFETY: this and riid are valid for this COM call under the interface
     // contract, and this points to an Instance object.
     let requested = unsafe { *riid };
-    if requested != IID_IUNKNOWN && requested != IID_ISTIUSD {
+    if requested != IID_IUNKNOWN && requested != IID_ISTIUSD && requested != IID_IWIAMINIDRV {
         return E_NOINTERFACE;
     }
     // SAFETY: this is a live Instance interface pointer; successful identity
@@ -453,7 +472,13 @@ unsafe fn instance_query_interface_impl(
     let instance = unsafe { &*this.cast::<Instance>() };
     increment_ref(&instance.refs);
     // SAFETY: output was checked and cleared above.
-    unsafe { *output = this };
+    unsafe {
+        *output = if requested == IID_IWIAMINIDRV {
+            ptr::addr_of_mut!((*this.cast::<Instance>()).mini).cast()
+        } else {
+            this
+        };
+    }
     S_OK
 }
 
@@ -502,7 +527,8 @@ pub extern "system" fn DllCanUnloadNow() -> i32 {
 /// The returned pointer carries one owned `IClassFactory` reference. The
 /// caller must invoke its vtable `Release` exactly once after it is finished.
 /// The factory supports `IUnknown` and `IClassFactory`; instances support
-/// `IUnknown` and `IStiUSD`. `IWiaMiniDrv` remains unavailable.
+/// `IUnknown`, `IStiUSD` and `IWiaMiniDrv`. WIA properties and acquisition
+/// remain under development.
 ///
 /// # Safety
 /// `class_id` and `interface_id`, when non-null, must point to readable GUIDs

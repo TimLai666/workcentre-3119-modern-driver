@@ -19,7 +19,7 @@ WIA 2.0 的 IStream 傳輸路徑不呼叫 `drvWriteItemProperties`，硬體設�
 
 Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 callback，部分寫入、錯誤、取消及工作釋放已有離線測試與部分實機證據。WIA 2.0 裝置的預設傳輸格式須為 BMP，但完成 BMP 編碼不等於完成 WIA 傳輸。[Microsoft WIA 格式屬性](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ipa-format)
 
-原生 [IStream 輸出轉接](../../src/com_stream.rs) 及 [WIA 數值設定入口](../../src/wia.rs) 已連到實際掃描。Cargo 現已產生 COM DLL，[載入元件](../../src/com_server.rs) 提供 class factory、IUnknown 與 IStiUSD 生命週期，實際 DLL 動態測試已通過。[IStiUSD](../../src/com_server/sti.rs) 已支援初始化、指定裝置鎖定及 INQUIRY 診斷。`transfer_locked_bmp` 已接上原生傳輸回呼並重用 IStiUSD 的 USB session，`IWiaMiniDrv` 尚未實作，DLL 目前不能接收 WIA 服務的掃描要求。下一段完成 WIA 初始化、屬性模型及原生 dispatch。WIA2 串流只保證 `Write`、`Seek`、`SetSize`，不得依賴呼叫端提供完整檔案功能。BMP 的 `finish` 成功後位置為 byte 2，WIA 服務端的定位及影像消費行為仍待驗證。[Microsoft WIA 介面](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-minidriver-interfaces)、[COM 識別契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-a-com-interface)、[IStream 契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/istream-data-transfer-driver-changes)
+原生 [IStream 輸出轉接](../../src/com_stream.rs) 及 [WIA 數值設定入口](../../src/wia.rs) 已連到實際掃描。Cargo 現已產生 COM DLL，[載入元件](../../src/com_server.rs) 提供 class factory、IUnknown、IStiUSD 與 IWiaMiniDrv 共用生命週期，實際 DLL 動態測試已通過。[IStiUSD](../../src/com_server/sti.rs) 已支援初始化、指定裝置鎖定及 INQUIRY 診斷。`transfer_locked_bmp` 已接上原生傳輸回呼並重用 IStiUSD 的 USB session，IWiaMiniDrv 原生項目樹與多用戶端生命週期已實作，屬性模型及 drvAcquireItemData 尚未完成，DLL 目前不能接收 WIA 服務的掃描要求。下一段接上屬性及原生掃描 dispatch。WIA2 串流只保證 `Write`、`Seek`、`SetSize`，不得依賴呼叫端提供完整檔案功能。BMP 的 `finish` 成功後位置為 byte 2，WIA 服務端的定位及影像消費行為仍待驗證。[Microsoft WIA 介面](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-minidriver-interfaces)、[COM 識別契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-a-com-interface)、[IStream 契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/istream-data-transfer-driver-changes)
 
 目前 `FlatbedSettings` 僅驗證數值快照，支援六種對稱解析度、8-bit 灰階／24-bit 彩色、中性亮度／對比及無壓縮 BMP。位置按協定精確步進，範圍另由當次 INQUIRY 限制，詳見 [設定契約](../../ENG.md#wia-設定與掃描入口)。WIA 必備屬性、有效值範圍與相依更新尚未建立。正式屬性轉接還須明確設定每像素 3 個通道、每通道 8 bits 與逐像素排列，不能只由 datatype/depth 假定呼叫端的完整色彩契約。[Microsoft DATATYPE](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ipa-datatype) 實機指定 600×800 像素後回傳 600×801，必須釐清裝置幾何及 WIA 選取範圍的處理，不能把 BMP 成功當成範圍驗收。
 
@@ -59,6 +59,31 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 - 在安全設定維持啟用的 Windows 11 x64 驗證簽署套件。簽署、付費與對外送審先取得明確授權。
 
 ## 測試
+
+### 原生項目樹與介面身分
+
+2026-09-14：156 個 all-targets 測試、一般測試及 2 個 doc-tests、格式、Clippy、全部 release targets 通過，當次 release DLL 的動態載入另行通過。新 QI 測試先取得 E_NOINTERFACE 失敗再實作；項目樹測試先取得缺少實作的失敗，再使用真正 Windows 物件驗證。SDK 10.0.26100.0 C11 靜態斷言及 Rust 斷言核對 IWiaMiniDrv 的 20-slot、IWiaDrvItem 的 16-slot 大小／位置及根／平台旗標。
+
+| 情境 | 行為與證據 |
+| --- | --- |
+| 三種介面互查及最終釋放 | QI 回到同一 IUnknown，次要介面持有期間 DLL 不可卸載；公開 ABI 與實際 DLL 測試通過 |
+| 缺少服務 context／錯誤輸出 | 原生初始化拒絕，清空根／inner 輸出，不讀 BSTR 或碰觸 USB |
+| 空名稱、超長完整名稱 | 建立前拒絕，下一次合法初始化仍可成功；內部初始化入口測試通過 |
+| 原生根／平台內容 | 真正 wiasCreateDrvItem，逐一核對名稱、完整名稱與旗標，重複建立／解除三次通過 |
+| 兩個用戶端共用 | 回傳同一根，第一個離開保留項目樹，最後離開清理；三輪通過，不同識別拒絕且不增加計數 |
+| STI helper AddRef／Release 重入 | 同步重入回 Busy，沒有持有生命週期 Mutex；三輪各自保留／釋放一次 |
+| 真實服務初始化及項目儲存 | 未驗證；測試使用合成名稱及內部入口，不以假 context 呼叫 WIA 服務 |
+| 建立／unlink 系統錯誤及 panic | 實作保留 HRESULT、清理失敗隔離；原生資源耗盡與 unlink 故障未注入驗證 |
+
+測試初稿誤將 `GetFirstChildItem` 的借用結果當成 owned 參考，造成測試程序 heap corruption／清理失敗。獨立 native probe 確認本機 `wiaservc.dll` 10.0.26100.8875 的 getter 不增加參考，測試改為先 AddRef 後 RAII，重複建立／清理通過。AddItemToFolder 則確實增加子項目參考；原生建立不增加 minidriver 參考。這是本機 Windows runtime 證據，不是跨版本或 WIA 服務驗收。私人 probe 位於 `artifacts/wia-tree-probe-20260914-b/`，SDK 編譯驗證位於 `artifacts/minidrv-validation-20260914-a/`，皆不提交。
+
+本輪沒有 USB 或系統設定操作；沿用前版掃描核心，沒有把歷史實掃當成本版 WIA 服務測試。DLL 新增 `wiaservc.dll` 匯入，仍依賴 VCRUNTIME140.dll，runtime exports 恰為兩個 COM 入口。下一次以實際服務管理的 context 接上屬性儲存／相依驗證、drvAcquireItemData、WIA 鎖定與取消，準備具體可復原的登錄方案後再取得系統變更授權。
+
+Diff Inspector：Scope CLEAN。根代理查核全部差異及 STI／共用掃描消費端，Luna 完成身分、ABI、原生項目參考及重入的獨立對抗審查，沒有確認的未處理 P1／P2。仍需查證：服務是否保證最終 Release 前先 Uninitialize；尚未解除的物件直接析構時，helper Release 重入沒有測試；destructor 忽略 unlink 的 HRESULT，沒有原生故障注入證據確認其影響。這些事項列為服務生命週期整合的驗收條件，不能由正常程序內清理成功推論已完成。
+
+最終來源 SHA256：`minidrv.rs` 為 `16332D8F05AB171139D63286BB20867E5FF5DA263C3575057A5F1BD215B260BE`，`tree.rs` 為 `4BE000A2C7A4855B5DEF88B9F1B563B37B974AEB81215878779458F4E016F11A`；最後補正文內說明後重新建置並另行載入的 release DLL 為 `6E29682A421654DB6FB4C890A23039CFC20F4AF8F2203B4405BCBF5AFD7C771C`。
+
+### 先前版本證據
 
 2026-09-14 原生傳輸回呼版本：153 個 all-targets 測試、一般測試及 2 個 doc-tests、格式、Clippy、全部 release targets、另行執行的當次 DLL 載入測試均通過。新回呼契約 15 個、傳輸流程 7 個，另增加 BMP 進度及 STI 入口前置檢查。原生轉接、進度及公開入口先取得缺少實作的失敗再實作，其他邊界補測未宣稱取得 RED。根代理及 Luna 對抗審查沒有確認的未處理 P1／P2。Windows SDK 10.0.26100.0 C11 靜態斷言核對 x64 callback 的 5-slot vtable、GetNextStream／SendMessage 偏移、24-byte WiaTransferParams 欄位偏移與 STATUS／SKIP 常數。
 

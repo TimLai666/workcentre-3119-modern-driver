@@ -18,6 +18,18 @@ const UNSUPPORTED: Guid = Guid {
     data1: 0x12345678,
     ..UNKNOWN
 };
+const MINIDRIVER: Guid = Guid {
+    data1: 0xd8cd_ee14,
+    data2: 0x3c6c,
+    data3: 0x11d2,
+    data4: [0x9a, 0x35, 0, 0xc0, 0x4f, 0xa3, 0x61, 0x45],
+};
+const STI: Guid = Guid {
+    data1: 0x0c9b_b460,
+    data2: 0x51ac,
+    data3: 0x11d0,
+    data4: [0x90, 0xea, 0, 0xaa, 0, 0x60, 0xf8, 0x6c],
+};
 const E_POINTER: i32 = 0x80004003u32 as i32;
 const E_NOINTERFACE: i32 = 0x80004002u32 as i32;
 const CLASS_E_CLASSNOTAVAILABLE: i32 = 0x80040111u32 as i32;
@@ -37,6 +49,23 @@ struct FactoryTable {
     create:
         unsafe extern "system" fn(*mut c_void, *mut c_void, *const Guid, *mut *mut c_void) -> i32,
     lock: unsafe extern "system" fn(*mut c_void, i32) -> i32,
+}
+
+#[repr(C)]
+struct MiniPrefix {
+    unknown: UnknownTable,
+    initialize: unsafe extern "system" fn(
+        *mut c_void,
+        *mut u8,
+        i32,
+        *mut u16,
+        *mut u16,
+        *mut c_void,
+        *mut c_void,
+        *mut *mut c_void,
+        *mut *mut c_void,
+        *mut i32,
+    ) -> i32,
 }
 
 fn factory() -> *mut c_void {
@@ -199,6 +228,92 @@ fn reference_count_survives_concurrent_balanced_calls() {
     assert_eq!(DllCanUnloadNow(), 1);
     // SAFETY: all worker threads finished; release the sole remaining original reference.
     assert_eq!(unsafe { (table(class).release)(class) }, 0);
+    assert_eq!(DllCanUnloadNow(), 0);
+}
+
+#[test]
+fn minidriver_and_sti_share_one_identity_and_lifetime() {
+    let _serial = SERIAL.lock().unwrap();
+    let class = factory();
+    // SAFETY: independent SDK interface identifiers and live owned COM references.
+    unsafe {
+        let mut mini = ptr::null_mut();
+        let hr = (factory_table(class).create)(class, ptr::null_mut(), &MINIDRIVER, &mut mini);
+        (table(class).release)(class);
+        assert_eq!(hr, 0);
+        let mut sti = ptr::null_mut();
+        let mut identity = ptr::null_mut();
+        let mut identity_from_sti = ptr::null_mut();
+        let mut mini_from_sti = ptr::null_mut();
+        assert_eq!((table(mini).query)(mini, &STI, &mut sti), 0);
+        assert_eq!((table(mini).query)(mini, &UNKNOWN, &mut identity), 0);
+        assert_eq!((table(sti).query)(sti, &UNKNOWN, &mut identity_from_sti), 0);
+        assert_eq!(identity, identity_from_sti);
+        assert_eq!((table(sti).query)(sti, &MINIDRIVER, &mut mini_from_sti), 0);
+        assert_eq!(mini, mini_from_sti);
+        assert_ne!(mini, sti, "the interfaces have different method tables");
+        assert_eq!((table(mini_from_sti).release)(mini_from_sti), 4);
+        assert_eq!((table(identity_from_sti).release)(identity_from_sti), 3);
+        assert_eq!((table(identity).release)(identity), 2);
+        assert_eq!((table(sti).release)(sti), 1);
+        assert_eq!(DllCanUnloadNow(), 1);
+        assert_eq!((table(mini).release)(mini), 0);
+    }
+    assert_eq!(DllCanUnloadNow(), 0);
+}
+
+#[test]
+fn minidriver_rejects_absent_service_context_and_clears_outputs() {
+    let _serial = SERIAL.lock().unwrap();
+    let class = factory();
+    // SAFETY: held interface and writable outputs. No fake WIA service context
+    // is supplied; a null context must reject before any BSTR or helper access.
+    unsafe {
+        let mut mini = ptr::null_mut();
+        assert_eq!(
+            (factory_table(class).create)(class, ptr::null_mut(), &MINIDRIVER, &mut mini),
+            0
+        );
+        (table(class).release)(class);
+        let methods = &**mini.cast::<*const MiniPrefix>();
+        let mut root = ptr::dangling_mut();
+        let mut inner = ptr::dangling_mut();
+        let mut error = 123;
+        let invalid = 0x80070057u32 as i32;
+        assert_eq!(
+            (methods.initialize)(
+                mini,
+                ptr::null_mut(),
+                0,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut root,
+                &mut inner,
+                &mut error
+            ),
+            invalid
+        );
+        assert!(root.is_null() && inner.is_null());
+        assert_eq!(error, invalid);
+        assert_eq!(
+            (methods.initialize)(
+                mini,
+                ptr::null_mut(),
+                0,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut root,
+                &mut inner,
+                ptr::null_mut()
+            ),
+            E_POINTER
+        );
+        assert_eq!((table(mini).release)(mini), 0);
+    }
     assert_eq!(DllCanUnloadNow(), 0);
 }
 

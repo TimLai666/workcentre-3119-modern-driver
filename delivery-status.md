@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-2026-09-14：原生 WIA 傳輸回呼已接上同一 COM 物件的 USB 連線，透過 Windows 記憶體串流完成灰階、彩色取消及彩色重掃實測。進度、錯誤保留與參考釋放已驗證，IWiaMiniDrv 初始化、屬性模型及服務端身分映射仍待完成，Windows 掃描尚不能使用本驅動。既有兩次自然逾時、20 次穩定性、文件品質、正式套件及列印仍未完成。
+2026-09-14：IWiaMiniDrv 共用介面身分、原生根／平台項目樹與多用戶端生命週期已實作並通過原生 Windows 物件測試。前版傳輸回呼已有同物件 USB 灰階、彩色取消及重掃證據；正式屬性模型、掃描入口與服務整合仍待完成，Windows 掃描尚不能使用本驅動。既有兩次自然逾時、20 次穩定性、文件品質、正式套件及列印仍未完成。
 
 ## Stage Objective
 
@@ -24,7 +24,7 @@
 | 01 | 唯讀診斷完整情境 | 開發者 | in_progress | 本機問題碼 28 可重現，硬體異常情境未全部驗證 |
 | 02 | 第一張實機掃描 | 開發者 | in_progress | 空平台灰階／彩色及獨立像素比對成功；文件、色彩及精確幾何待驗收 |
 | 03 | 取消與復原 | 開發者 | in_progress | 連續工作前 4 次成功，第 5 次 RGB600 自然逾時，清理後 Gray75 成功；20 次驗收與失同步復原未完成 |
-| 05 | Windows 掃描與安裝 | 開發者 | in_progress | 本機配對、BMP 與原生傳輸回呼實掃通過；IWiaMiniDrv、服務整合、完整套件、復原與跨電腦／換孔未驗證 |
+| 05 | Windows 掃描與安裝 | 開發者 | in_progress | 本機配對、BMP 與原生回呼實掃通過，IWiaMiniDrv 身分／原生項目樹測試通過；屬性、正式掃描入口、服務與可攜套件未完成 |
 | 06 | 列印 | 開發者 | not_started | 尚無 |
 | 07 | 掃描明暗品質 | 開發者 | blocked | 已有空平台影像，缺少可對照原稿；歷史偏白仍未重現 |
 
@@ -39,9 +39,9 @@
 
 ## Next Verifiable Output
 
-接上原生 IWiaMiniDrv 的初始化、掃描項目／屬性及 drvAcquireItemData，沿用已驗證的 `com_server::transfer_locked_bmp` 回呼傳輸入口。先驗證 QI 共用身分與生命週期，再建立根項目／平台項目及有效屬性範圍，將服務的設定交給現有掃描路徑。可直接呼叫的 COM／SDK 部分先在程序內驗證，不以假指標替代 WIA 服務管理的 property context。三個 STI 硬體測試本輪已逐一明確執行通過，後續更動其傳輸路徑時才重新列舉裝置、使用新輸出目錄並以 `--ignored --exact` 重跑，不平行操作 USB。
+接上 IWiaMiniDrv 屬性模型及 drvAcquireItemData，沿用已驗證的 `com_server::transfer_locked_bmp` 回呼傳輸入口。QI 共用身分、原生根／平台項目與多用戶端生命週期已有測試，不重做。下一步建立有效屬性範圍、相依更新及服務設定到掃描的映射；原生服務 context 必須由 Windows 提供，不可用假指標替代。三個 STI 硬體測試於前版已逐一通過，本輪沒有 USB 存取改動或重跑實掃；後續更動傳輸路徑時，重新列舉裝置、使用新輸出目錄並以 `--ignored --exact` 序列執行。
 
-IWiaMiniDrv 的初始化、屬性模型及掃描傳輸先用直接 COM 呼叫驗證，不先登錄系統。COM aggregation 的實際需求、服務管理的並行載入／卸載排程與 runtime 前置條件亦須驗證。數值快照映射已完成，但正式屬性範圍、相依更新及幾何仍待實作／驗證。先前 600×800 選取區回傳 600×801，不可將輸出尺寸任意當成 WIA 選取範圍。WinUSB 共存、服務帳號存取及 Windows 掃描消費 BMP 仍需整合驗證。跨工作隔離依 03 補完，不以介面到達時間戳記當成實體重插證據。準備具體安裝、備份及復原方案後，才提出必要的系統變更授權。平台有文件後補做 02／07 品質對照。
+IWiaMiniDrv 目前只有項目樹與介面身分完成原生驗證，屬性、acquire、WIA 鎖定、格式及事件方法仍回不支援，STI 尚不宣告 WIA capability。COM aggregation 的實際需求、服務管理的並行載入／卸載排程、項目參考所有權與 runtime 前置條件仍須驗證。先前 600×800 選取區回傳 600×801，不可將輸出尺寸任意當成 WIA 選取範圍。WinUSB 共存、服務帳號存取及 Windows 掃描消費 BMP 仍需整合驗證。跨工作隔離依 03 補完，不以介面到達時間戳記當成實體重插證據。準備具體安裝、備份及復原方案後，才提出必要的系統變更授權。平台有文件後補做 02／07 品質對照。
 
 ## Next Ticket
 
@@ -64,6 +64,8 @@ IWiaMiniDrv 的初始化、屬性模型及掃描傳輸先用直接 COM 呼叫驗
 | 建立持續完成完整驅動的目標 | 使用者要求逐步完成實作、驗證與推送，需要使用者介入時提出具體需求，可獨立工作繼續推進 | 2026-09-13 | 01、02、03、05、06、07 |
 
 ## Verified
+
+2026-09-14 原生項目樹版本：156 個 all-targets 測試、一般測試與 2 個 doc-tests、格式、Clippy、全部 release targets 及另行執行的當次 DLL 動態載入通過。Windows 原生根／平台項目重複建立、雙用戶端共用、名稱拒絕、helper 參考與重入清理通過。SDK C11 與 Rust 斷言核對介面大小／偏移。這些測試沒有 WIA 服務 context、USB 或系統設定操作，完整證據及下一步見 [05](docs/tickets/05-windows-install.md#原生項目樹與介面身分)。
 
 2026-09-14 原生傳輸回呼版本：153 個 all-targets 測試、一般測試及 2 個 doc-tests、格式、Clippy、全部 release targets 通過；當次 release DLL 的動態載入測試另行通過。callback 轉接、BMP 進度與公開入口均先取得缺少實作的失敗，再實作通過。7 個傳輸流程測試涵蓋原生記憶體串流、合成像素、開始前取消／SKIP、非空串流、錯誤保留、清理失敗及最後進度取消。SDK C11 靜態斷言確認 callback vtable、結構偏移與常數。
 
@@ -167,6 +169,8 @@ Diff Inspector：本輪範圍符合診斷及可靠性調查，根代理已審查
 | [build.rs](build.rs) | MSVC cdylib 的 COM export 定義參數 |
 | [driver/com-exports.def](driver/com-exports.def) | 兩個 runtime COM exports，排除 import library 項目 |
 | [src/com_server.rs](src/com_server.rs) | DLL 入口、factory、IUnknown／module lock 生命週期及鎖定物件的原生回呼傳輸入口 |
+| [src/com_server/minidrv.rs](src/com_server/minidrv.rs) | IWiaMiniDrv 共用身分、原生初始化與多用戶端生命週期 |
+| [src/com_server/minidrv/tree.rs](src/com_server/minidrv/tree.rs) | Windows 根／平台項目、BSTR、連結及釋放 |
 | [src/com_server/sti.rs](src/com_server/sti.rs) | IStiUSD 初始化、指定裝置獨占、能力診斷及錯誤回報，共用 BMP／原生回呼的連線借用 |
 | [src/com_server/session.rs](src/com_server/session.rs) | 同一資源借用、回呼期間排他、關閉時序及異常隔離 |
 | [tests/sti.rs](tests/sti.rs) | SDK 契約、helper 參考及明確啟用的實機互斥／釋放、原生回呼取消與重掃驗證 |
@@ -210,6 +214,8 @@ Diff Inspector：本輪範圍符合診斷及可靠性調查，根代理已審查
 | [driver/README.md](driver/README.md) | 安裝範圍、風險與復原要求 |
 
 ## Actions
+
+2026-09-14 原生項目樹版本執行程序內 Windows COM／WIA 項目 API、離線測試、SDK C11 編譯及當次 release DLL 載入／卸載。私人 probe 僅存 `artifacts/`，沒有 USB、系統登錄、配對或服務設定變更。
 
 2026-09-14 執行真實 USB 鎖定／診斷、灰階掃描、彩色取消與重掃，修正前後分開保存影像及匿名化驗證結果。所有私人影像只存於 Git 排除的 `artifacts/`，完成後釋放資源並確認能力查詢及三個介面狀態正常。另執行離線／DLL 測試及建置，沒有重新配對、COM／WIA 登錄或安全設定變更。Spark 當次回報用量上限後改用 Luna 最高思考強度。前版 `705f0d6` 已推送 origin/main，本輪必要提交與推送依既有授權執行，版本識別以 Git 紀錄為準。
 
