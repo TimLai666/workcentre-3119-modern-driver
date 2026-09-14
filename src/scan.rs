@@ -2537,3 +2537,6 @@ mod tests {
         assert!(BandInfo::parse(&b, ColorMode::Rgb).is_err());
     }
 }
+
+#[cfg(all(test, windows))]
+mod hardware;

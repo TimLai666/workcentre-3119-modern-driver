@@ -43,6 +43,10 @@ Microsoft 說明非零 `PIPE_TRANSFER_TIMEOUT` 會在期限到達時取消請求
 
 ## 測試
 
+2026-09-14 精確階段對照：新增 test-only `scan::hardware::actual_cancel_phase_then_same_session_rescan`，以當下能力設定全平台 RGB75，取消後只在核心回報 Ready 時沿用同一 USB session 重掃。`first_band` 在第一塊後取消，重掃 648×871／2 塊完成，整組 26.41 秒通過；`metadata_busy` 在首次 READ Busy（246 ms）觸發，444 ms 返回取消，ABORT／RELEASE 均 status=0、message=0，但立即重掃仍收到 800 次 RESERVE Busy，120065 ms 到期。後者整組 120.52 秒失敗，沒有完成標記。這補足可重複的階段對照，沒有修復首塊前取消。
+
+一般合成測試涵蓋觸發僅一次、有效 Busy 訊息範圍、損壞或不相干回覆不觸發／不誤報成功，以及完成標記在記錄成功後才以不可覆寫方式發佈。先取得誤報成功的失敗測試，再刪除錯誤推導的 `status=good`，保留原始數值欄位。原始證據、雜湊及未驗收範圍見 [精確階段硬體紀錄](../hardware.md#精確階段取消與同連線重掃)。下一步追查首塊前取消之後的裝置保留權與結束時序；不能把核心的 Ready 或清理回覆當成可重掃證據。
+
 2026-09-14 控制回覆補查：取消發生於首塊影像之前的 READ metadata Busy，SET_WINDOW、START、ABORT、RELEASE 都回 status=0、message=0。取消 730 ms 返回 S_FALSE，立即重掃仍在 RESERVE Busy 120.029 秒後失敗。保持同一 USB session 的對照也失敗（取消 700 ms，重掃 RESERVE Busy 120.069 秒），因此關閉／重開連線不是必要條件。暫時測試變更已移除，原始證據與建置識別見 [硬體紀錄](../hardware.md#wia-取消事件與提早取消後重掃)。下一步以首塊前／後取消作可重複對照，查明影像尚未交付時的裝置取消時序，再決定復原策略。現有證據不足以在未取得保留權時再送 ABORT 或重設 USB。
 
 SET_WINDOW Busy 不能直接等同設定被拒絕：[SANE 1.4.0 啟動流程](https://gitlab.com/sane-project/backends/-/blob/1.4.0/backend/xerox_mfp.c#L1416-1422) 明確允許該狀態並接續等待 OBJECT_POSITION。曾以「遇 Busy 必須停止」為前提建立合成測試與草稿修正，查證後已撤回，不將該測試當成協定證據。正式核心保留既有行為。

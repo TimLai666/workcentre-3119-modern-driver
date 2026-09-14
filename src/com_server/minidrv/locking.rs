@@ -179,6 +179,23 @@ fn with_locked_capabilities<T>(
     publish(capabilities)
 }
 
+fn with_guarded_locked_capabilities<T>(
+    borrowed: &mut Borrow<'_>,
+    query: impl FnOnce() -> Result<crate::protocol::Capabilities, i32>,
+    publish: impl FnOnce(crate::protocol::Capabilities, &mut bool) -> Result<T, i32>,
+) -> Result<T, i32> {
+    let mut quarantine_on_failure = false;
+    let result = with_locked_capabilities(borrowed, query, |caps| {
+        publish(caps, &mut quarantine_on_failure)
+    });
+    if let Err(error) = result.as_ref()
+        && quarantine_on_failure
+    {
+        borrowed.quarantine(*error);
+    }
+    result
+}
+
 /// Lock the retained WIA service device, query capabilities through the
 /// already locked STI session, unlock it, and keep the WIA connection borrowed
 /// while the caller publishes the snapshot into the service item.
@@ -192,13 +209,30 @@ fn with_locked_capabilities<T>(
 /// `com_server::Instance` returned by this crate's class factory. The caller
 /// must keep the containing COM object and its apartment alive for the entire
 /// call, including `publish`.
+#[cfg(test)]
 pub(super) unsafe fn with_live_capabilities<T>(
     interface: &Interface,
     publish: impl FnOnce(crate::protocol::Capabilities) -> Result<T, i32>,
 ) -> Result<T, i32> {
+    // SAFETY: this wrapper preserves the live embedded-interface contract.
+    unsafe { with_live_capabilities_guarded(interface, |caps, _| publish(caps)) }
+}
+
+/// As `with_live_capabilities`, but the publisher can request quarantine on
+/// failure before starting nontransactional service writes. Pure validation
+/// errors leave this flag false. Quarantine runs before the borrow is returned,
+/// so no concurrent acquisition can observe a partially published item.
+///
+/// # Safety
+/// The same live embedded-interface and synchronous callback contract as
+/// `with_live_capabilities` applies.
+pub(super) unsafe fn with_live_capabilities_guarded<T>(
+    interface: &Interface,
+    publish: impl FnOnce(crate::protocol::Capabilities, &mut bool) -> Result<T, i32>,
+) -> Result<T, i32> {
     catch_unwind(AssertUnwindSafe(|| {
         let mut borrowed = Borrow::take(interface)?;
-        with_locked_capabilities(
+        with_guarded_locked_capabilities(
             &mut borrowed,
             || {
                 // SAFETY: this API is called only with the embedded Interface
@@ -512,6 +546,61 @@ mod tests {
         assert_eq!(result, Err(0x8007_0005u32 as i32));
         assert_eq!(fixture.device.lock_calls.get(), 1);
         assert_eq!(fixture.device.unlock_calls.get(), 0);
+    }
+
+    #[test]
+    fn failed_publication_quarantines_but_input_rejection_keeps_connection() {
+        for started in [false, true] {
+            let fixture = Fixture::new();
+            let primary = 0x8000_4005u32 as i32;
+            {
+                let mut borrowed = Borrow::take(fixture.interface()).unwrap();
+                let result: Result<(), i32> = with_guarded_locked_capabilities(
+                    &mut borrowed,
+                    || Ok(capabilities()),
+                    |_, quarantine| {
+                        assert_eq!(fixture.interface().disconnect_client(), WIA_ERROR_BUSY);
+                        *quarantine = started;
+                        Err(primary)
+                    },
+                );
+                assert_eq!(result, Err(primary));
+            }
+            assert_eq!(fixture.device.lock_calls.get(), 1);
+            assert_eq!(fixture.device.unlock_calls.get(), 1);
+            if started {
+                assert!(matches!(*fixture.interface().state(), Lifecycle::Failed));
+                assert_eq!(dispatch(fixture.interface(), true), E_UNEXPECTED);
+            } else {
+                assert!(matches!(
+                    *fixture.interface().state(),
+                    Lifecycle::Connected(_)
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn successful_guarded_publication_keeps_connection() {
+        let fixture = Fixture::new();
+        {
+            let mut borrowed = Borrow::take(fixture.interface()).unwrap();
+            assert_eq!(
+                with_guarded_locked_capabilities(
+                    &mut borrowed,
+                    || Ok(capabilities()),
+                    |_, quarantine| {
+                        *quarantine = true;
+                        Ok(42)
+                    },
+                ),
+                Ok(42)
+            );
+        }
+        assert!(matches!(
+            *fixture.interface().state(),
+            Lifecycle::Connected(_)
+        ));
     }
 
     #[test]

@@ -119,7 +119,6 @@ pub(super) enum PropertyAttribute {
 }
 
 impl PropertyAttribute {
-    #[cfg(test)]
     pub(super) fn access(&self) -> u32 {
         match self {
             Self::None { access, .. }
@@ -576,6 +575,114 @@ impl PropertyCatalog {
         Ok(catalog)
     }
 
+    /// Build the values and effective ranges for an already resolved setting
+    /// snapshot. The caller resolves old/new dependent selections first; this
+    /// method never silently rounds a requested position or changes the mode.
+    /// Failure leaves the source catalog unchanged and performs no SDK writes.
+    pub(super) fn with_settings(&self, settings: crate::wia::FlatbedSettings) -> Result<Self, i32> {
+        if self.kind != ItemKind::Flatbed
+            || !self.resolutions.contains(&settings.x_resolution)
+            || !self.data_types.contains(&settings.data_type)
+        {
+            return Err(E_INVALIDARG);
+        }
+        settings.to_request().map_err(|_| E_INVALIDARG)?;
+        self.assert_aligned()?;
+        let (max_width, max_height) = self.max_extent(settings.x_resolution);
+        if settings
+            .x_position
+            .checked_add(settings.x_extent)
+            .is_none_or(|end| end > max_width)
+            || settings
+                .y_position
+                .checked_add(settings.y_extent)
+                .is_none_or(|end| end > max_height)
+        {
+            return Err(E_INVALIDARG);
+        }
+        let size = bmp_size(settings.x_extent, settings.y_extent, settings.depth)?;
+        let min_size = min_size_thousandths(settings.x_resolution)?;
+        let step = offset_step(settings.x_resolution);
+        let mut selected = self.clone();
+        for (id, value) in [
+            (WIA_IPS_XRES, settings.x_resolution),
+            (WIA_IPS_YRES, settings.y_resolution),
+            (WIA_IPS_XPOS, settings.x_position),
+            (WIA_IPS_YPOS, settings.y_position),
+            (WIA_IPS_XEXTENT, settings.x_extent),
+            (WIA_IPS_YEXTENT, settings.y_extent),
+            (WIA_IPA_DATATYPE, settings.data_type),
+            (WIA_IPA_DEPTH, settings.depth),
+            (WIA_IPA_CHANNELS_PER_PIXEL, channels_for(settings.data_type)),
+            (WIA_IPA_PIXELS_PER_LINE, settings.x_extent),
+            (WIA_IPA_NUMBER_OF_LINES, settings.y_extent),
+            (WIA_IPA_ITEM_SIZE, size),
+            (WIA_IPS_MIN_HORIZONTAL_SIZE, min_size),
+            (WIA_IPS_MIN_VERTICAL_SIZE, min_size),
+        ] {
+            let index = selected.index(id)?;
+            selected.initial_values[index] = PropertyValue::Long(value);
+        }
+        for (id, value) in [
+            (WIA_IPA_DEPTH, settings.depth),
+            (WIA_IPS_YRES, settings.y_resolution),
+        ] {
+            let index = selected.index(id)?;
+            selected.attributes[index] = PropertyAttribute::ListLong {
+                access: WIA_PROP_RW | WIA_PROP_LIST,
+                values: vec![value],
+                nominal: value,
+            };
+        }
+        for (id, min, nominal, max, increment) in [
+            (
+                WIA_IPS_XPOS,
+                0,
+                0,
+                (max_width - settings.x_extent) / step * step,
+                step,
+            ),
+            (
+                WIA_IPS_YPOS,
+                0,
+                0,
+                (max_height - settings.y_extent) / step * step,
+                step,
+            ),
+            (
+                WIA_IPS_XEXTENT,
+                1,
+                max_width - settings.x_position,
+                max_width - settings.x_position,
+                1,
+            ),
+            (
+                WIA_IPS_YEXTENT,
+                1,
+                max_height - settings.y_position,
+                max_height - settings.y_position,
+                1,
+            ),
+        ] {
+            let index = selected.index(id)?;
+            selected.attributes[index] = PropertyAttribute::RangeLong {
+                access: WIA_PROP_RW | WIA_PROP_RANGE,
+                min,
+                nominal,
+                max,
+                step: increment,
+            };
+        }
+        Ok(selected)
+    }
+
+    fn index(&self, id: u32) -> Result<usize, i32> {
+        self.ids
+            .iter()
+            .position(|value| *value == id)
+            .ok_or(E_UNEXPECTED)
+    }
+
     fn push(&mut self, id: u32, name: &str, value: PropertyValue, attribute: PropertyAttribute) {
         self.ids.push(id);
         self.names.push(name.to_owned());
@@ -675,7 +782,7 @@ fn min_size_thousandths(max_dpi: i32) -> Result<i32, i32> {
     i32::try_from(value).map_err(|_| E_INVALIDARG)
 }
 
-fn offset_step(dpi: i32) -> i32 {
+pub(super) fn offset_step(dpi: i32) -> i32 {
     // One offset unit is 1/100 inch; find the smallest pixel increment that
     // is an exact multiple of it. All selectable DPI values divide 1200.
     let mut a = dpi;
@@ -747,6 +854,171 @@ mod tests {
     fn property(catalog: &PropertyCatalog, id: u32) -> (&PropertyValue, &PropertyAttribute) {
         let index = catalog.ids.iter().position(|value| *value == id).unwrap();
         (&catalog.initial_values[index], &catalog.attributes[index])
+    }
+
+    fn rgb_crop() -> crate::wia::FlatbedSettings {
+        crate::wia::FlatbedSettings {
+            x_resolution: 300,
+            y_resolution: 300,
+            x_position: 3,
+            y_position: 6,
+            x_extent: 601,
+            y_extent: 801,
+            data_type: 3,
+            depth: 24,
+            brightness: 0,
+            contrast: 0,
+            compression: 0,
+            format: BMP_FORMAT,
+        }
+    }
+
+    #[test]
+    fn selected_settings_update_all_dependent_values_without_changing_the_original() {
+        let original = PropertyCatalog::flatbed(&caps(), "Flatbed", "Root\\Flatbed").unwrap();
+        let saved = original.clone();
+        let selected = original.with_settings(rgb_crop()).unwrap();
+        assert_eq!(original, saved);
+        for (id, expected) in [
+            (WIA_IPS_XRES, 300),
+            (WIA_IPS_YRES, 300),
+            (WIA_IPA_DATATYPE, 3),
+            (WIA_IPA_DEPTH, 24),
+            (WIA_IPA_CHANNELS_PER_PIXEL, 3),
+            (WIA_IPA_BITS_PER_CHANNEL, 8),
+            (WIA_IPA_PIXELS_PER_LINE, 601),
+            (WIA_IPA_NUMBER_OF_LINES, 801),
+            (WIA_IPA_ITEM_SIZE, 1_445_058),
+            (WIA_IPS_MIN_HORIZONTAL_SIZE, 4),
+            (WIA_IPS_MIN_VERTICAL_SIZE, 4),
+        ] {
+            assert_eq!(
+                property(&selected, id).0,
+                &PropertyValue::Long(expected),
+                "property {id}"
+            );
+        }
+        assert!(matches!(property(&selected, WIA_IPA_DEPTH).1,
+            PropertyAttribute::ListLong { values, .. } if values == &[24]));
+        assert!(matches!(property(&selected, WIA_IPS_YRES).1,
+            PropertyAttribute::ListLong { values, .. } if values == &[300]));
+        for (id, expected_max, expected_step) in [
+            (WIA_IPS_XPOS, 1947, 3),
+            (WIA_IPS_YPOS, 2709, 3),
+            (WIA_IPS_XEXTENT, 2547, 1),
+            (WIA_IPS_YEXTENT, 3504, 1),
+        ] {
+            assert!(
+                matches!(property(&selected, id).1,
+                PropertyAttribute::RangeLong { max, step, .. }
+                if *max == expected_max && *step == expected_step),
+                "range {id}"
+            );
+        }
+        for id in [
+            WIA_IPA_ITEM_NAME,
+            WIA_IPA_FULL_ITEM_NAME,
+            WIA_IPA_ACCESS_RIGHTS,
+            WIA_IPS_OPTICAL_YRES,
+        ] {
+            assert_eq!(property(&selected, id), property(&original, id));
+        }
+    }
+
+    #[test]
+    fn settings_reject_unsupported_or_unrepresentable_requests_without_partial_updates() {
+        let original = PropertyCatalog::flatbed(&caps(), "Flatbed", "Root\\Flatbed").unwrap();
+        let saved = original.clone();
+        let good = rgb_crop();
+        for invalid in [
+            crate::wia::FlatbedSettings {
+                x_resolution: 200,
+                y_resolution: 200,
+                ..good
+            },
+            crate::wia::FlatbedSettings {
+                y_resolution: 600,
+                ..good
+            },
+            crate::wia::FlatbedSettings { depth: 8, ..good },
+            crate::wia::FlatbedSettings {
+                x_position: 1,
+                ..good
+            },
+            crate::wia::FlatbedSettings {
+                x_extent: 2550,
+                ..good
+            },
+            crate::wia::FlatbedSettings {
+                y_extent: 0,
+                ..good
+            },
+            crate::wia::FlatbedSettings {
+                y_position: i32::MAX,
+                ..good
+            },
+            crate::wia::FlatbedSettings {
+                brightness: 1,
+                ..good
+            },
+            crate::wia::FlatbedSettings {
+                format: [0; 16],
+                ..good
+            },
+        ] {
+            assert_eq!(original.with_settings(invalid).unwrap_err(), E_INVALIDARG);
+            assert_eq!(original, saved);
+        }
+        let mut gray_only = caps();
+        gray_only.mode_mask = 1 << 3;
+        let gray = PropertyCatalog::flatbed(&gray_only, "Flatbed", "Root\\Flatbed").unwrap();
+        assert_eq!(gray.with_settings(good).unwrap_err(), E_INVALIDARG);
+        assert_eq!(
+            PropertyCatalog::root(&caps(), 0)
+                .unwrap()
+                .with_settings(good)
+                .unwrap_err(),
+            E_INVALIDARG
+        );
+    }
+
+    #[test]
+    fn selected_edge_rectangle_keeps_only_representable_positions() {
+        let original = PropertyCatalog::flatbed(&caps(), "Flatbed", "Root\\Flatbed").unwrap();
+        let selected = original
+            .with_settings(crate::wia::FlatbedSettings {
+                x_resolution: 600,
+                y_resolution: 600,
+                x_position: 5094,
+                y_position: 7014,
+                x_extent: 6,
+                y_extent: 6,
+                data_type: 2,
+                depth: 8,
+                ..rgb_crop()
+            })
+            .unwrap();
+        assert_eq!(
+            property(&selected, WIA_IPA_ITEM_SIZE).0,
+            &PropertyValue::Long(1126)
+        );
+        assert!(matches!(
+            property(&selected, WIA_IPS_XPOS).1,
+            PropertyAttribute::RangeLong {
+                max: 5094,
+                step: 6,
+                ..
+            }
+        ));
+        assert!(matches!(
+            property(&selected, WIA_IPS_XEXTENT).1,
+            PropertyAttribute::RangeLong {
+                min: 1,
+                max: 6,
+                step: 1,
+                ..
+            }
+        ));
     }
 
     #[test]

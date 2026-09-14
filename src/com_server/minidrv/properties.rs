@@ -5,6 +5,9 @@ use super::{E_INVALIDARG, E_POINTER};
 
 mod catalog;
 mod native;
+mod validation;
+mod validation_entry;
+pub(super) use validation_entry::entry as validate_entry;
 
 const S_OK: i32 = 0;
 const E_UNEXPECTED: i32 = 0x8000_ffffu32 as i32;
@@ -44,7 +47,7 @@ pub(super) struct Snapshot {
 /// Initialize the property set for one real WIA service item.
 ///
 /// The live capability query and the service-library writes share the one
-/// lifecycle borrow created by `locking::with_live_capabilities`.  The WIA
+/// lifecycle borrow created by `locking::with_live_capabilities_guarded`. The WIA
 /// context is only passed to SDK helpers; no service object is fabricated by
 /// this module.  The root status is intentionally initialized to zero because
 /// the current STI layer exposes no cover/paper status field.  A later status
@@ -78,7 +81,7 @@ pub(super) unsafe extern "system" fn init_entry(
         // the connection borrow and keeps all SDK calls synchronous within the
         // closure, including the final publication.
         unsafe {
-            super::locking::with_live_capabilities(interface, |capabilities| {
+            super::locking::with_live_capabilities_guarded(interface, |capabilities, quarantine| {
                 let mut item_type = MaybeUninit::<i32>::uninit();
                 // SAFETY: WIA supplied the live opaque context; this local LONG is
                 // writable storage matching the SDK declaration.
@@ -113,6 +116,9 @@ pub(super) unsafe extern "system" fn init_entry(
                 }?;
                 // SAFETY: the service context is live for this synchronous SDK
                 // publication; `catalog` owns all temporary pointers until return.
+                // Initial publication can partially succeed just like updates.
+                // Never reuse this COM object after a failed SDK write.
+                *quarantine = true;
                 native::publish(context, &catalog)
             })
         }

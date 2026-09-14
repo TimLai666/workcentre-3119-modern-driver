@@ -82,7 +82,9 @@ struct MiniPrefix {
     ) -> i32,
     acquire: unsafe extern "system" fn(*mut c_void, *mut u8, i32, *mut c_void, *mut i32) -> i32,
     init_properties: unsafe extern "system" fn(*mut c_void, *mut u8, i32, *mut i32) -> i32,
-    unused: [usize; 3],
+    validate_properties:
+        unsafe extern "system" fn(*mut c_void, *mut u8, i32, u32, *const c_void, *mut i32) -> i32,
+    unused: [usize; 2],
     lock: unsafe extern "system" fn(*mut c_void, *mut u8, i32, *mut i32) -> i32,
     unlock: unsafe extern "system" fn(*mut c_void, *mut u8, i32, *mut i32) -> i32,
     // SDK 10.0.26100.0 wiamindr_lh.h slots 11-17 precede drvNotifyPnpEvent.
@@ -301,6 +303,7 @@ fn minidriver_rejects_absent_service_context_and_clears_outputs() {
         let methods = &**mini.cast::<*const MiniPrefix>();
         assert_eq!(std::mem::offset_of!(MiniPrefix, acquire), 32);
         assert_eq!(std::mem::offset_of!(MiniPrefix, init_properties), 40);
+        assert_eq!(std::mem::offset_of!(MiniPrefix, validate_properties), 48);
         assert_eq!(std::mem::offset_of!(MiniPrefix, lock), 72);
         assert_eq!(std::mem::offset_of!(MiniPrefix, unlock), 80);
         let mut root = ptr::dangling_mut();
@@ -339,6 +342,23 @@ fn minidriver_rejects_absent_service_context_and_clears_outputs() {
             assert_eq!(error, invalid);
             assert_eq!(method(mini, ptr::null_mut(), 0, ptr::null_mut()), E_POINTER);
         }
+        error = 123;
+        assert_eq!(
+            (methods.validate_properties)(mini, ptr::null_mut(), 0, 0, ptr::null(), &mut error),
+            invalid
+        );
+        assert_eq!(error, invalid);
+        assert_eq!(
+            (methods.validate_properties)(
+                mini,
+                ptr::null_mut(),
+                0,
+                0,
+                ptr::null(),
+                ptr::null_mut()
+            ),
+            E_POINTER
+        );
         assert_eq!(
             (methods.initialize)(
                 mini,

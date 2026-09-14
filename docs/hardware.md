@@ -2,7 +2,24 @@
 
 觀測日期：2026-09-13、2026-09-14。此檔省略 USB 序號與完整實例路徑。
 
+## 精確階段取消與同連線重掃
+
+2026-09-14，以僅在測試建置啟用的 `scan::hardware::actual_cancel_phase_then_same_session_rescan` 作兩次序列對照。每次重新列舉唯一啟用的 MI_00、建立新輸出目錄，一次開啟 USB 後沿用同一 session 取消及立即重掃。設定由當下 INQUIRY 建立全平台 RGB75；正式命令、64 KiB 緩衝區、100 ms Busy 等待及 120 秒期限未更動。
+
+| 取消階段 | 取消與清理 | 同 session 重掃 | 驗收 |
+| --- | --- | --- | --- |
+| 第一塊影像後 | 7007 ms 觸發；工作 7103 ms 以 Interrupted 返回，已接收 1 塊／921456 像素 bytes；ABORT／RELEASE 均 status=0、message=0 | 19284 ms 完成，648×871、2 塊、1693224 像素 bytes | 26.41 秒通過，complete.txt 存在 |
+| 首次 READ metadata Busy | 246 ms 觸發；工作 444 ms 以 Interrupted 返回，零影像；ABORT／RELEASE 均 status=0、message=0 | RESERVE 收到 800 次 Busy，120065 ms 達期限，零影像，NeedsReconnect | 120.52 秒失敗，沒有 complete.txt |
+
+取消後核心均回報 SessionHealth::Ready；這是目前清理及串流同步判斷，不是裝置已能開始下一次掃描的證明。精確對照重現首塊前後差異，仍不能判定機器故障或修復策略。沒有增加重試、固定延遲、USB reset／CLEAR_HALT、重插或系統設定變更。測試後 doctor 三個介面問題碼均 0、started=true，不能據此認定掃描機構已復原。
+
+此測試只累計影像尺寸、塊數及 bytes，保存命令、數值 status／message 和耗時，沒有保存或檢查影像內容。它不是文件品質、WIA 服務、600 dpi 穩定性或完整取消復原驗收。
+
+私人診斷與完成標記分別在 `artifacts/cancel-phase-first-band-20260914-b/`、`artifacts/cancel-phase-metadata-busy-20260914-b/`。首塊後測試執行檔 SHA256：`58B2CCB6AA367B281E5BF3D223AB465FF3D6B8BE6A09B7835BD9DC3647B3DF38`；首塊前測試：`F7DCB775620E2751B47EA94B536C8D484142066EDA2E9B9FAEEA32B67F7E1150`。兩次之間只修正測試日誌的成功判定文字、補合成回歸測試及格式，不改正式協定與取消時機。首塊後日誌的 `status=good` 是當時由數值狀態推導的文字，不能單獨視為整個命令回覆有效；最終版僅記錄原始數值欄位。最終測試來源 SHA256：`FFD094F0B0B5F69EFB90ADA6F54F146827CA8D69C86429A6AE052B194841371A`。
+
 ## WIA 屬性初始化的能力查詢
+
+屬性相依驗證完成後再次重新列舉介面，以最終版本單獨執行下述能力查詢測試，0.02 秒通過。測試執行檔 SHA256：`F7DCB775620E2751B47EA94B536C8D484142066EDA2E9B9FAEEA32B67F7E1150`；鎖定來源：`79FFC1E6D6DE4FCB6F192DA2E82720528BFA5FC027E64E0BCDC71194F7F21CD4`。證據為 `artifacts/wia-property-validation-20260914-b/live-capabilities-final.txt`。它只確認鎖定／能力查詢／解鎖，不驗證屬性發佈或前述取消後重掃。以下保留初始化版本的歷史結果。
 
 2026-09-14，重新列舉唯一啟用的 MI_00 後，個別執行 `actual_wia_lock_queries_live_capabilities_without_scan --ignored --exact`，0.02 秒通過。測試使用原生 Windows 項目樹、合成 IStiDevice 服務轉送及真實 IStiUSD／WinUSB／INQUIRY，驗證一次鎖定、查詢、解鎖、解除連線與參考釋放。沒有掃描、影像或服務 property context，不代表 WIA 服務已接受初始化。
 

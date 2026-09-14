@@ -36,7 +36,7 @@
 
 開發機的 [Rust 配對工具](examples/winusb_setup.rs) 要求完整實例 ID，只搜尋本機內建 `C:\Windows\INF\winusb.inf`，以 `DiInstallDevice` 綁定單一裝置。本機已獲授權並完成配對與真實 INQUIRY，結果見 [硬體紀錄](docs/hardware.md)。這次完整實例 ID 只限定被授權操作的目標，不是正式套件的匹配條件；正式套件仍需支援其他電腦的系統路徑、裝置實例及 USB 接孔。
 
-真正的 Windows 掃描整合仍需完成屬性相依驗證、WIA 服務驗收與安裝登錄，目前已具備部分 IWiaMiniDrv、屬性初始化及傳輸入口。WinUSB 本身不會把裝置變成 Windows 掃描器。WIA 如何發現裝置、COM 生命週期、USB 句柄交接與一般使用者權限須先完成實機小範圍驗證，再確定正式安裝架構。
+真正的 Windows 掃描整合仍需完成屬性服務驗收與安裝登錄，目前已具備部分 IWiaMiniDrv、屬性初始化及傳輸入口。WinUSB 本身不會把裝置變成 Windows 掃描器。WIA 如何發現裝置、COM 生命週期、USB 句柄交接與一般使用者權限須先完成實機小範圍驗證，再確定正式安裝架構。
 
 跨電腦安裝、換孔、拔插與重新開機的實機驗收集中於 [05](docs/tickets/05-windows-install.md)。單次工作可以使用目前取得的裝置路徑，重連後必須重新取得；多台候選不可任意選第一台。
 
@@ -94,11 +94,11 @@ WIA 選取範圍 `XEXTENT/YEXTENT` 與輸出尺寸屬性用途不同。正式屬
 
 回呼 S_FALSE 只在確認清理成功後回報 `TransferOutcome::Cancelled`。一般 IStream 錯誤保留原始 `StreamError`，回呼錯誤保留 `CallbackError`；掃描期間的輸出錯誤另以 `TransferError::original` 保存，包含清理診斷，不能以 Interrupted 一律當成取消。失同步／清理失敗保持隔離。單張平台的 SKIP 在開始掃描前返回 `Skipped`，沒有進行中的頁面或下一個項目要排空。[GetNextStream](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamindr_lh/nf-wiamindr_lh-iwiaminidrvtransfercallback-getnextstream)、[SendMessage](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamindr_lh/nf-wiamindr_lh-iwiaminidrvtransfercallback-sendmessage)
 
-原生回呼以獨立宣告 ABI 的測試物件供應 Windows HGLOBAL IStream，核心流程測試使用明示的合成影像與清理結果。實機測試則沿用同一鎖定物件跑灰階、彩色取消及重掃，驗收矩陣見 [05](docs/tickets/05-windows-install.md)。`IWiaMiniDrv::drvAcquireItemData` 已重用此入口，不能用任意指標偽造 WIA 服務的 property context。原生項目樹及其生命週期已實作，屬性相依更新與服務提供的串流尚待整合。進度回呼目前只在開始、影像塊完成與結束時執行；WIA_EVENT_CANCEL_IO 已能通知目前工作，不依賴下一次進度回呼，但提早取消後重掃尚未通過實機驗收。
+原生回呼以獨立宣告 ABI 的測試物件供應 Windows HGLOBAL IStream，核心流程測試使用明示的合成影像與清理結果。實機測試則沿用同一鎖定物件跑灰階、彩色取消及重掃，驗收矩陣見 [05](docs/tickets/05-windows-install.md)。`IWiaMiniDrv::drvAcquireItemData` 已重用此入口，不能用任意指標偽造 WIA 服務的 property context。原生項目樹、生命週期及屬性相依更新已實作，服務提供的串流尚待整合驗收。進度回呼目前只在開始、影像塊完成與結束時執行；WIA_EVENT_CANCEL_IO 已能通知目前工作，不依賴下一次進度回呼，但提早取消後重掃尚未通過實機驗收。
 
 ### WIA 原生項目生命週期
 
-`com_server::minidrv` 以 SDK `wiamindr_lh.h` 的 20-slot vtable 提供 IWiaMiniDrv；次要介面以固定欄位偏移回到同一 COM 物件，共用 IUnknown 與 IStiUSD 的參考計數。`drvInitializeWia` 驗證必要輸出、flags、服務 context 非空及有上限的 BSTR，再建立 Windows `wiasCreateDrvItem` 根／平台項目。它不自行配置或釋放服務 context，未要求額外的裝置 context。鎖定、屬性初始化、串流 acquire、BMP 格式列舉及取消事件已實作；屬性驗證與其他事件仍回傳 E_NOTIMPL，STI 目前仍不宣告 WIA capability。[初始化契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamindr_lh/nf-wiamindr_lh-iwiaminidrv-drvinitializewia)、[原生項目 API](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamdef/nf-wiamdef-wiascreatedrvitem)
+`com_server::minidrv` 以 SDK `wiamindr_lh.h` 的 20-slot vtable 提供 IWiaMiniDrv；次要介面以固定欄位偏移回到同一 COM 物件，共用 IUnknown 與 IStiUSD 的參考計數。`drvInitializeWia` 驗證必要輸出、flags、服務 context 非空及有上限的 BSTR，再建立 Windows `wiasCreateDrvItem` 根／平台項目。它不自行配置或釋放服務 context，未要求額外的裝置 context。鎖定、屬性初始化、串流 acquire、BMP 格式列舉及取消事件已實作；屬性驗證已接上；讀取通知與其他未實作事件仍回傳 E_NOTIMPL，STI 目前仍不宣告 WIA capability。[初始化契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamindr_lh/nf-wiamindr_lh-iwiaminidrv-drvinitializewia)、[原生項目 API](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamdef/nf-wiamdef-wiascreatedrvitem)
 
 `drvLockWiaDevice`／`drvUnLockWiaDevice` 必須透過初始化時保留的 IStiDevice，再由服務呼叫 IStiUSD，不直接繞過服務鎖。鎖定等待上限 5000 ms，不是掃描期限；只接受 S_OK 為成功，負 HRESULT 保留，非預期正值回 E_UNEXPECTED。鎖定及 acquire 都將 Connection 暫借到 Mutex 外，期間重入解除初始化或其他工作回 Busy，正常返回歸還，Rust panic 清理後保持 Failed。[Microsoft 鎖定契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/locking-and-unlocking-best-practices)
 
@@ -122,11 +122,21 @@ WIA 選取範圍 `XEXTENT/YEXTENT` 與輸出尺寸屬性用途不同。正式屬
 
 `properties/native.rs` 依名稱 → 初始值 → 有效值／權限的順序寫入，任一步非 S_OK 立即失敗，未知正值不當成功。屬性名稱沿用服務建立的項目名稱，ICM profile 交由服務依安裝資訊維護，不覆寫空值。動態影像屬性不標記可快取。一般測試使用共用寫入流程的合成接收端，不建立假 WIA context；真正 SDK 寫入、相依更新、即時狀態及服務消費仍須整合驗收。根狀態目前 0，不把 INQUIRY 成功當成平台已就緒。[屬性初始化順序](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/adding-wia-properties-to-a-wia-item)、[共通屬性所有權](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/wia/-wia-wiaitempropcommonitem)
 
+### WIA 屬性相依驗證
+
+`drvValidateItemProperties` 已接到 `properties/validation_entry.rs`。入口限制 PROPSPEC 數量、UTF-16 名稱長度及可寫權限，以初始化時登錄的屬性名稱轉成 ID，拒絕未知及唯讀屬性。使用 SDK `wiasReadPropLong`／`wiasReadPropGuid` 的 current／old 輸出讀取明確改寫的設定，未寫入欄位沿用當前值；不建立假的服務 context。驗證沿用初始化的服務鎖定與當次能力查詢，但不送掃描啟動命令。[Microsoft 驗證流程](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/writing-wia-item-properties-by-an-application)
+
+`properties/validation.rs` 先在 Rust 內處理模式、色深、解析度及選取區，再交給 `catalog.with_settings` 驗證實機能力並建立相依範圍。DATATYPE 決定 DEPTH，XRES 決定 YRES；只寫不相容的 DEPTH／YRES 會拒絕，不反向改變模式／XRES。解析度改變時只縮放及量化未明確寫入的座標，明確指定卻無法表示的位置直接拒絕。位置／範圍共同超界亦拒絕；只有未寫入的相依欄位可調整。這是設定的像素座標轉換，不是影像縮放或明暗處理。[相依解析度](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ips-xres)、[位置](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ips-xpos)
+
+原生更新沿用 `native.rs` 的 ABI 與暫存所有權，只發佈改變的數值／有效範圍，最後呼叫 `wiasValidateItemProperties`。固定選項先驗證，格式 GUID 另由核心檢查。SDK 寫入沒有已確認的整批回復保證，因此初始化或相依更新開始發佈後若失敗，會在同一次借用結束前隔離 COM 物件，保留原始錯誤。此 Failed 狀態不能在同一物件重新初始化，須由服務釋放並建立新物件；實際服務復原流程尚待驗收。一般無效輸入在發佈前拒絕，不隔離連線。設定仍由 WIA 服務儲存。[SDK 最終驗證](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamdef/nf-wiamdef-wiasvalidateitemproperties)
+
+WIA 服務實際提供的 old 值、名稱存取、應用程式可見的相依範圍、多用戶端排程與失敗後重新載入仍待整合驗收。SDK-only probe 確認名稱形式的 PROPSPEC 不會讓 `wiasCreatePropContext` 將對應數值 ID 標為 changed，因此本實作保留原始寫入集合並明確解析已登錄名稱，不依賴該 helper 替驅動解析名稱。
+
 ### COM DLL 載入與驗證
 
 Cargo 同時建置 Rust `rlib` 與原生 `cdylib`。Windows release 檔案為 `target/release/workcentre_3119.dll`，輸出 `DllGetClassObject` 與 `DllCanUnloadNow`，class ID 為 `{F71A8435-AA10-40A6-8334-49EEC8FE9C63}`。此 ID 識別專案的 COM 類別，不含裝置實例或 USB 孔位，也未登錄到系統。
 
-`com_server` 的 factory 支援 `IUnknown`／`IClassFactory`，建立的物件支援 `IUnknown`／`IStiUSD`／`IWiaMiniDrv`，三者共享物件身分與參考計數。未知類別回傳 `CLASS_E_CLASSNOTAVAILABLE`，不支援的介面回傳 `E_NOINTERFACE`，無效輸出指標回傳 `E_POINTER`，失敗時清空有效的輸出欄位。尚未支援 COM aggregation，非空 outer 指標回傳 `CLASS_E_NOAGGREGATION`。`IWiaMiniDrv` 的原生項目生命週期見上節，屬性相依更新與服務整合仍須接續實作，不能把載入成功當成 WIA 服務已接受此 DLL。[Microsoft COM 識別要求](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-a-com-interface)、[QueryInterface 規則](https://learn.microsoft.com/en-us/windows/win32/com/rules-for-implementing-queryinterface)
+`com_server` 的 factory 支援 `IUnknown`／`IClassFactory`，建立的物件支援 `IUnknown`／`IStiUSD`／`IWiaMiniDrv`，三者共享物件身分與參考計數。未知類別回傳 `CLASS_E_CLASSNOTAVAILABLE`，不支援的介面回傳 `E_NOINTERFACE`，無效輸出指標回傳 `E_POINTER`，失敗時清空有效的輸出欄位。尚未支援 COM aggregation，非空 outer 指標回傳 `CLASS_E_NOAGGREGATION`。`IWiaMiniDrv` 的原生項目生命週期見上節，屬性相依更新已接上，服務整合仍須接續實作，不能把載入成功當成 WIA 服務已接受此 DLL。[Microsoft COM 識別要求](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-a-com-interface)、[QueryInterface 規則](https://learn.microsoft.com/en-us/windows/win32/com/rules-for-implementing-queryinterface)
 
 `com_server::sti` 的 19 個方法位置依 SDK `stiusd.h` 宣告。Initialize 驗證 Unicode STI 2 版本，保留 helper 參考並取得有上限的 UTF-16 port name，借用的登錄句柄不使用也不關閉。helper 呼叫在狀態鎖外執行，失敗初始化可重試。LockDevice 重新列舉當下 MI_00，僅開啟與 helper 路徑相符的裝置，沒有找不到時改選其他裝置的行為。UnLockDevice 與最終 Release 釋放持有的 USB session。Diagnostic 僅在鎖定後執行既有 INQUIRY 並驗證能力回覆，不能用此結果宣稱掃描馬達已就緒。未實作的狀態、reset、raw、escape 與通知回傳不支援，GetCapabilities 目前不宣告 WIA／通知能力。[Microsoft IStiUSD](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-an-istiusd-interface)
 

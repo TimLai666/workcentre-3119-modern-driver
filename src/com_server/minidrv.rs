@@ -430,7 +430,7 @@ static VTABLE: Vtable = Vtable {
     initialize,
     acquire: acquire::entry,
     init_properties: properties::init_entry,
-    validate_properties: unsupported_properties,
+    validate_properties: properties::validate_entry,
     write_properties: unsupported_transfer,
     read_properties: unsupported_properties,
     lock: locking::lock,
