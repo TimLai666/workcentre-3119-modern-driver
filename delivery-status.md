@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-2026-09-19：IWiaMiniDrv 已接上根／平台屬性初始化、相依驗證、屬性讀取通知與裝置錯誤字串；讀取根項目狀態時以同一 STI session 的 INQUIRY 回報 FLAT_READY，原生屬性發佈失敗會隔離整個 COM 物件。真正 WIA 服務與安裝整合仍未完成，Windows 掃描尚不能使用本驅動。精確階段取消對照已加入測試建置，第一塊影像後取消並以同一 USB session 重掃通過；首塊前取消的復原缺口仍由 03 追蹤。
+2026-09-19：IWiaMiniDrv 已接上根／平台屬性初始化、相依驗證、屬性讀取通知、裝置錯誤字串、能力列舉與同步命令，IStiUSD 宣告 STI_GENCAP_WIA；讀取根項目狀態時以同一 STI session 的 INQUIRY 回報 FLAT_READY，原生屬性發佈失敗會隔離整個 COM 物件。真正 WIA 服務與安裝整合仍未完成，Windows 掃描尚不能使用本驅動。精確階段取消對照已加入測試建置，第一塊影像後取消並以同一 USB session 重掃通過；首塊前取消的復原缺口仍由 03 追蹤。
 
 ## Stage Objective
 
@@ -24,7 +24,7 @@
 | 01 | 唯讀診斷完整情境 | 開發者 | in_progress | 本機問題碼 28 可重現，硬體異常情境未全部驗證 |
 | 02 | 第一張實機掃描 | 開發者 | in_progress | 空平台灰階／彩色及獨立像素比對成功；文件、色彩及精確幾何待驗收 |
 | 03 | 取消與復原 | 開發者 | in_progress | 連續工作前 4 次成功，第 5 次 RGB600 自然逾時，清理後 Gray75 成功；20 次驗收與失同步復原未完成 |
-| 05 | Windows 掃描與安裝 | 開發者 | in_progress | 原生項目樹、鎖定／串流、取消事件、BMP 格式列舉、屬性初始化／相依驗證／讀取通知及錯誤字串已實作；服務驗收與可攜套件未完成 |
+| 05 | Windows 掃描與安裝 | 開發者 | in_progress | 原生項目樹、鎖定／串流、取消事件、BMP 格式列舉、屬性初始化／相依驗證／讀取通知、錯誤字串、能力列舉、同步命令及 STI_GENCAP_WIA 已實作；服務驗收與可攜套件未完成 |
 | 06 | 列印 | 開發者 | not_started | 尚無 |
 | 07 | 掃描明暗品質 | 開發者 | blocked | 已有空平台影像，缺少可對照原稿；歷史偏白仍未重現 |
 
@@ -41,9 +41,9 @@
 
 ## Next Verifiable Output
 
-兩條可平行工作：05 準備真正 WIA 服務的註冊、備份及復原驗證，並補 STI 的 WIA capability 宣告與 `drvGetCapabilities`；03 依精確階段取消日誌查明首塊前取消的裝置時序，再修正及重跑失敗驗收。屬性初始化、相依驗證、讀取通知、錯誤字串、格式列舉與取消事件入口已接上，不重做。硬體能力須來自實際裝置，服務 context 必須由 Windows 提供，不可用假指標替代。硬體測試仍序列執行，重新列舉裝置並使用新輸出目錄。
+兩條可平行工作：05 準備真正 WIA 服務的註冊、備份及復原驗證方案並取得授權；03 依精確階段取消日誌查明首塊前取消的裝置時序，再修正及重跑失敗驗收。屬性初始化、相依驗證、讀取通知、錯誤字串、格式列舉、能力列舉、同步命令與取消事件入口已接上，不重做。硬體能力須來自實際裝置，服務 context 必須由 Windows 提供，不可用假指標替代。硬體測試仍序列執行，重新列舉裝置並使用新輸出目錄。
 
-IWiaMiniDrv 的 `drvGetCapabilities`、`drvDeviceCommand`、`drvWriteItemProperties`、`drvAnalyzeItem` 與 `drvDeleteItem` 仍回不支援，STI 尚不宣告 WIA capability。COM aggregation 的實際需求、服務管理的並行載入／卸載排程、項目參考所有權與 runtime 前置條件仍須驗證。取消通知是否派送到同一 instance 與相同裝置 ID 也要由服務實測。600×800 選取區仍回傳 600×801，不可將輸出尺寸任意當成 WIA 選取範圍。WinUSB 共存、服務帳號存取及 Windows 掃描消費 BMP 仍需整合驗證。跨工作隔離依 03 補完，不以介面到達時間戳記當成實體重插證據。準備具體安裝、備份及復原方案後，才提出必要的系統變更授權。平台有文件後補做 02／07 品質對照。
+IWiaMiniDrv 的 `drvWriteItemProperties`、`drvAnalyzeItem` 與 `drvDeleteItem` 仍回不支援；WIA 2.0 串流路徑不呼叫前者，後兩者不適用單一平台項目。STI 已宣告 STI_GENCAP_WIA，但服務是否據此載入 minidriver 仍待登錄後實測。COM aggregation 的實際需求、服務管理的並行載入／卸載排程、項目參考所有權與 runtime 前置條件仍須驗證。取消通知是否派送到同一 instance 與相同裝置 ID 也要由服務實測。600×800 選取區仍回傳 600×801，不可將輸出尺寸任意當成 WIA 選取範圍。WinUSB 共存、服務帳號存取及 Windows 掃描消費 BMP 仍需整合驗證。跨工作隔離依 03 補完，不以介面到達時間戳記當成實體重插證據。準備具體安裝、備份及復原方案後，才提出必要的系統變更授權。平台有文件後補做 02／07 品質對照。
 
 ## Next Ticket
 
@@ -66,6 +66,8 @@ IWiaMiniDrv 的 `drvGetCapabilities`、`drvDeviceCommand`、`drvWriteItemPropert
 | 建立持續完成完整驅動的目標 | 使用者要求逐步完成實作、驗證與推送，需要使用者介入時提出具體需求，可獨立工作繼續推進 | 2026-09-13 | 01、02、03、05、06、07 |
 
 ## Verified
+
+2026-09-19 能力列舉版本：176 個 lib 測試、全部整合測試及 2 個 doc-tests、fmt、Clippy（all targets，warnings 為錯誤）、全部 release targets 通過；當次 release DLL 動態載入以 ignored 模式另行通過，slot 14／x64 偏移 112 的能力列舉以 null context 回傳 2 個事件。TDD：公開 COM 測試先取得能力列舉回 E_NOTIMPL 的 RED。`tests/sti.rs` 原本斷言 GetCapabilities 旗標為 0 並註明「實作前不宣告」，前提已不成立，改為斷言 STI_GENCAP_WIA。沒有硬體、系統登錄或 Windows 掃描驗收，詳見 [05](docs/tickets/05-windows-install.md#能力列舉同步命令與-sti-wia-宣告)。
 
 2026-09-19 屬性讀取／錯誤字串版本：171 個 lib 測試、全部整合測試及 2 個 doc-tests、fmt、Clippy（all targets，warnings 為錯誤）、全部 release targets 通過；當次 release DLL 動態載入以 ignored 模式另行通過，slot 8／x64 偏移 64 的讀取入口拒絕缺少服務 context，slot 12／偏移 96 的錯誤字串入口回傳呼叫端釋放的 OLE 字串。TDD：公開 COM 測試先取得讀取入口回 E_NOTIMPL 而非 E_INVALIDARG 的 RED。沒有硬體、系統登錄或 Windows 掃描驗收，詳見 [05](docs/tickets/05-windows-install.md#屬性讀取通知與裝置錯誤字串)。
 

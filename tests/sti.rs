@@ -265,10 +265,9 @@ fn sti_identity_initialization_and_helper_ownership() {
         };
         assert_eq!((m.capabilities)(device.0, &mut caps), 0);
         assert_eq!(caps.version, VERSION);
-        assert_eq!(
-            caps.flags, 0,
-            "do not advertise IWiaMiniDrv or notifications before implementation"
-        );
+        // SDK sti.h STI_GENCAP_WIA: the USD now exposes a full IWiaMiniDrv.
+        // Notifications remain undeclared; the driver signals no events.
+        assert_eq!(caps.flags, 0x10, "advertise WIA only, no STI notifications");
     }
     drop(device);
     assert_eq!(helper.refs.load(Ordering::SeqCst), 1);

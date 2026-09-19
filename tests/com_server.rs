@@ -42,6 +42,12 @@ const WIA_EVENT_CANCEL_IO: Guid = Guid {
     data3: 0x41ea,
     data4: [0xbb, 0xbf, 0x4d, 0xd0, 0x9c, 0x5b, 0x17, 0x95],
 };
+const WIA_CMD_SYNCHRONIZE: Guid = Guid {
+    data1: 0x9b26_b7b2,
+    data2: 0xacad,
+    data3: 0x11d2,
+    data4: [0xa0, 0x93, 0x00, 0xc0, 0x4f, 0x72, 0xdc, 0x3c],
+};
 static SERIAL: Mutex<()> = Mutex::new(());
 
 #[link(name = "OleAut32")]
@@ -97,8 +103,24 @@ struct MiniPrefix {
     analyze: unsafe extern "system" fn(*mut c_void, *mut u8, i32, *mut i32) -> i32,
     // SDK 10.0.26100.0 wiamindr_lh.h slot 12 is drvGetDeviceErrorStr.
     error_string: unsafe extern "system" fn(*mut c_void, i32, i32, *mut *mut u16, *mut i32) -> i32,
-    // Slots 13-17 precede drvNotifyPnpEvent.
-    unused_after_error_string: [usize; 5],
+    command: unsafe extern "system" fn(
+        *mut c_void,
+        *mut u8,
+        i32,
+        *const Guid,
+        *mut *mut c_void,
+        *mut i32,
+    ) -> i32,
+    capabilities: unsafe extern "system" fn(
+        *mut c_void,
+        *mut u8,
+        i32,
+        *mut i32,
+        *mut *mut c_void,
+        *mut i32,
+    ) -> i32,
+    // Slots 15-17 precede drvNotifyPnpEvent.
+    unused_after_capabilities: [usize; 3],
     notify: unsafe extern "system" fn(*mut c_void, *const Guid, *mut u16, u32) -> i32,
     uninitialize: unsafe extern "system" fn(*mut c_void, *mut u8) -> i32,
 }
@@ -318,6 +340,8 @@ fn minidriver_rejects_absent_service_context_and_clears_outputs() {
         assert_eq!(std::mem::offset_of!(MiniPrefix, lock), 72);
         assert_eq!(std::mem::offset_of!(MiniPrefix, unlock), 80);
         assert_eq!(std::mem::offset_of!(MiniPrefix, error_string), 96);
+        assert_eq!(std::mem::offset_of!(MiniPrefix, command), 104);
+        assert_eq!(std::mem::offset_of!(MiniPrefix, capabilities), 112);
         let mut root = ptr::dangling_mut();
         let mut inner = ptr::dangling_mut();
         let mut error = 123;
@@ -402,6 +426,37 @@ fn minidriver_rejects_absent_service_context_and_clears_outputs() {
             (methods.error_string)(mini, 0, 0, &mut text, ptr::null_mut()),
             E_POINTER
         );
+        // drvGetCapabilities may run before any item tree exists, so a null
+        // context is legal; the driver-owned table is borrowed, never freed.
+        let mut count = 99;
+        let mut list = ptr::dangling_mut();
+        error = 123;
+        assert_eq!(
+            (methods.capabilities)(mini, ptr::null_mut(), 3, &mut count, &mut list, &mut error),
+            0
+        );
+        assert_eq!((count, error), (3, 0), "one command followed by two events");
+        assert!(!list.is_null());
+        assert_eq!(
+            (methods.capabilities)(mini, ptr::null_mut(), 0, &mut count, &mut list, &mut error),
+            invalid
+        );
+        assert_eq!((count, error), (0, invalid));
+        assert!(list.is_null());
+        let mut item = ptr::dangling_mut();
+        assert_eq!(
+            (methods.command)(
+                mini,
+                ptr::null_mut(),
+                0,
+                &WIA_CMD_SYNCHRONIZE,
+                &mut item,
+                &mut error
+            ),
+            invalid,
+            "commands need the service item context"
+        );
+        assert!(item.is_null());
         assert_eq!(
             (methods.initialize)(
                 mini,

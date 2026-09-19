@@ -79,7 +79,8 @@ const STI_VERSION_FLAG_UNICODE: DWORD = 0x0100_0000;
 const STI_VERSION_REAL: DWORD = 0x0000_0002;
 pub(super) const STI_VERSION: DWORD = STI_VERSION_REAL | STI_VERSION_FLAG_UNICODE;
 
-const STI_GENCAPS_NONE: DWORD = 0;
+// SDK 10.0.26100.0 sti.h: the USD also exposes IWiaMiniDrv.
+const STI_GENCAP_WIA: DWORD = 0x0000_0010;
 const STI_MAX_INTERNAL_NAME_LENGTH: usize = 128;
 const MAX_DEVICE_PATH_WORDS: usize = 32_768;
 
@@ -614,14 +615,16 @@ unsafe fn get_capabilities_impl(this: *mut c_void, capabilities: *mut StiUsdCaps
         return fail(state, STIERR_NOT_INITIALIZED, "IStiUSD is not initialized");
     }
     // SAFETY: the caller supplied writable STI_USD_CAPS storage.
-    unsafe {
-        *capabilities = StiUsdCaps {
-            dw_version: STI_VERSION,
-            dw_generic_caps: STI_GENCAPS_NONE,
-        };
-    }
+    unsafe { *capabilities = usd_capabilities() };
     state.clear_last_error();
     S_OK
+}
+
+fn usd_capabilities() -> StiUsdCaps {
+    StiUsdCaps {
+        dw_version: STI_VERSION,
+        dw_generic_caps: STI_GENCAP_WIA,
+    }
 }
 
 unsafe extern "system" fn get_status(this: *mut c_void, status: *mut StiDeviceStatus) -> HRESULT {
@@ -1095,6 +1098,13 @@ unsafe fn get_last_error_info_impl(this: *mut c_void, error_info: *mut StiErrorI
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usd_declares_wia_support_with_the_unicode_sti_version() {
+        let caps = usd_capabilities();
+        assert_eq!(caps.dw_version, STI_VERSION);
+        assert_eq!(caps.dw_generic_caps, STI_GENCAP_WIA);
+    }
 
     #[test]
     fn live_capabilities_rejects_uninitialized_state_before_session_access() {

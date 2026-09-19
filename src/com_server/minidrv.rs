@@ -9,6 +9,7 @@ use std::{
 };
 mod acquire;
 mod cancel;
+mod capabilities;
 mod errors;
 mod formats;
 mod locking;
@@ -345,41 +346,6 @@ unsafe extern "system" fn unsupported_transfer(
     // SAFETY: error is the method's writable output, checked by report.
     unsafe { report(error, E_NOTIMPL) }
 }
-unsafe extern "system" fn command(
-    _this: *mut c_void,
-    _context: *mut u8,
-    _flags: i32,
-    _command: *const Guid,
-    item: *mut *mut c_void,
-    error: *mut i32,
-) -> i32 {
-    // SAFETY: optional writable item output belongs to caller.
-    unsafe {
-        if !item.is_null() {
-            *item = ptr::null_mut();
-        }
-        report(error, E_NOTIMPL)
-    }
-}
-unsafe extern "system" fn unsupported_list(
-    _this: *mut c_void,
-    _context: *mut u8,
-    _flags: i32,
-    count: *mut i32,
-    list: *mut *mut c_void,
-    error: *mut i32,
-) -> i32 {
-    // SAFETY: clear caller's valid outputs before reporting unsupported work.
-    unsafe {
-        if !count.is_null() {
-            *count = 0;
-        }
-        if !list.is_null() {
-            *list = ptr::null_mut();
-        }
-        report(error, E_NOTIMPL)
-    }
-}
 unsafe extern "system" fn free_context(
     _this: *mut c_void,
     flags: i32,
@@ -412,8 +378,8 @@ static VTABLE: Vtable = Vtable {
     unlock: locking::unlock,
     analyze: unsupported_item,
     error_string: errors::entry,
-    command,
-    capabilities: unsupported_list,
+    command: capabilities::command,
+    capabilities: capabilities::entry,
     delete: unsupported_item,
     free_context,
     formats: formats::entry,

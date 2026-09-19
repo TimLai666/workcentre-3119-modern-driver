@@ -96,7 +96,13 @@ pub(super) unsafe extern "system" fn notify(
     // No USB or external COM call occurs while holding the cancellation mutex.
     super::super::catch_hresult(|| unsafe {
         if *event != CANCEL_IO {
-            return E_NOTIMPL;
+            // Connection events are declared by drvGetCapabilities and raised
+            // by Windows itself; the static tree needs no reaction to them.
+            return if super::capabilities::declares_event(&*event) {
+                0
+            } else {
+                E_NOTIMPL
+            };
         }
         let device = match super::read_bstr(device) {
             Ok(device) => device,
@@ -183,6 +189,16 @@ mod tests {
             assert!(!job.flag().load(Ordering::Relaxed));
             assert_eq!(notify(mini, &CANCEL_IO, a, 1), E_INVALIDARG);
             assert_eq!(notify(mini, &com_server::DRIVER_CLASS_ID, a, 0), E_NOTIMPL);
+            assert_eq!(
+                notify(
+                    mini,
+                    &super::super::capabilities::WIA_EVENT_DEVICE_CONNECTED,
+                    a,
+                    0
+                ),
+                0,
+                "declared connection events are accepted without touching the job"
+            );
             assert_eq!(notify(mini, ptr::null(), a, 0), E_POINTER);
             assert!(!job.flag().load(Ordering::Relaxed));
             assert_eq!(notify(mini, &CANCEL_IO, a, 0), 0);

@@ -60,6 +60,18 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 
 ## 測試
 
+### 能力列舉、同步命令與 STI WIA 宣告
+
+2026-09-19：176 個 lib 測試、全部整合測試與 2 個 doc-tests、fmt、Clippy（all targets，warnings 為錯誤）、全部 release targets 通過。另指定當次 release DLL 執行 ignored 動態載入測試通過，DLL SHA256 `A56CFCC5743FC12ACBC947421F02D0EB7C9338577C4967EB1F2C88D7F43D23F6`。沒有偽造 WIA context、沒有 USB 或系統登錄操作。
+
+`drvGetCapabilities` 依 [Microsoft 契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamindr_lh/nf-wiamindr_lh-iwiaminidrv-drvgetcapabilities) 回傳程序生命週期的靜態 `WIA_DEV_CAP_DRV` 表（SDK 大小 40 bytes、flags 偏移 8），flags 1 為命令、2 為事件、3 為命令在前事件在後，其他值回 E_INVALIDARG；count 必填、list 可省略；context 允許 null，因為 [ProdScan](https://github.com/microsoft/Windows-driver-samples/blob/main/wia/ProdScan/MiniDrv.cpp) 指出服務可能在項目樹建立前呼叫。目前宣告 WIA_CMD_SYNCHRONIZE（icon `sti.dll,-2000`）及 WIA_EVENT_DEVICE_CONNECTED／DISCONNECTED（WIA_NOTIFICATION_EVENT，icon `sti.dll,-1001`）。驅動本身不發送任何事件，因此未宣告 SCAN_IMAGE、READY、COVER 等事件，也未接 STI 通知。[能力模組](../../src/com_server/minidrv/capabilities.rs)
+
+`drvDeviceCommand` 只接受 WIA_CMD_SYNCHRONIZE 並回 S_OK：本驅動的平台項目樹在初始化時固定，沒有需要重建的內容，因此不像 ProdScan 刪除再重建項目樹或發 TREE_UPDATED。其他命令回 E_NOTIMPL，缺 context 回 E_INVALIDARG，item 輸出可省略且一律清空。`drvNotifyPnpEvent` 對已宣告的連線／斷線事件回 S_OK 且不影響取消狀態，未宣告事件維持 E_NOTIMPL。[命令契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamindr_lh/nf-wiamindr_lh-iwiaminidrv-drvdevicecommand)
+
+`IStiUSD::GetCapabilities` 改為回報 STI_GENCAP_WIA（SDK sti.h 0x10）與 Unicode STI_VERSION，不宣告 STI_GENCAP_NOTIFICATIONS 或 POLLING。這是服務判斷 USD 是否附帶 IWiaMiniDrv 的依據；實際是否被載入須待 WIA 登錄後實測。[GetCapabilities 契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/stiusd/nf-stiusd-istiusd-getcapabilities)
+
+TDD：`tests/com_server.rs` 先命名 command／capabilities slot 並斷言能力列舉成功，實跑取得 E_NOTIMPL 的 RED，再實作至 GREEN。單元測試核對結構佔位、命令先於事件、NUL 結尾名稱、flags 拒絕、null context／可省略 list、同步命令空操作與未知命令拒絕。`tests/sti.rs` 原斷言旗標為 0，其訊息明示前提是「IWiaMiniDrv 實作前」，前提已不成立故改為 0x10。待服務驗收：服務是否用同一 instance 派送連線事件、是否對本驅動發 SYNCHRONIZE，以及 STI_GENCAP_WIA 是否為載入 minidriver 的充分條件。
+
 ### 屬性讀取通知與裝置錯誤字串
 
 2026-09-19：171 個 lib 測試、全部整合測試與 2 個 doc-tests、fmt、Clippy（all targets，warnings 為錯誤）、全部 release targets 通過。另指定當次 release DLL 執行 ignored 動態載入測試通過，DLL SHA256 `976033154F7B6CA1C72EC2664B1B0D296D90EF0B005FFC9C869E21B98D8CBA5C`。這些測試沒有偽造 WIA context、沒有操作 USB 或系統登錄。

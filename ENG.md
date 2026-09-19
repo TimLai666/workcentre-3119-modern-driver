@@ -98,7 +98,7 @@ WIA 選取範圍 `XEXTENT/YEXTENT` 與輸出尺寸屬性用途不同。正式屬
 
 ### WIA 原生項目生命週期
 
-`com_server::minidrv` 以 SDK `wiamindr_lh.h` 的 20-slot vtable 提供 IWiaMiniDrv；次要介面以固定欄位偏移回到同一 COM 物件，共用 IUnknown 與 IStiUSD 的參考計數。`drvInitializeWia` 驗證必要輸出、flags、服務 context 非空及有上限的 BSTR，再建立 Windows `wiasCreateDrvItem` 根／平台項目。它不自行配置或釋放服務 context，未要求額外的裝置 context。鎖定、屬性初始化、串流 acquire、BMP 格式列舉及取消事件已實作；屬性驗證已接上；讀取通知與其他未實作事件仍回傳 E_NOTIMPL，STI 目前仍不宣告 WIA capability。[初始化契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamindr_lh/nf-wiamindr_lh-iwiaminidrv-drvinitializewia)、[原生項目 API](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamdef/nf-wiamdef-wiascreatedrvitem)
+`com_server::minidrv` 以 SDK `wiamindr_lh.h` 的 20-slot vtable 提供 IWiaMiniDrv；次要介面以固定欄位偏移回到同一 COM 物件，共用 IUnknown 與 IStiUSD 的參考計數。`drvInitializeWia` 驗證必要輸出、flags、服務 context 非空及有上限的 BSTR，再建立 Windows `wiasCreateDrvItem` 根／平台項目。它不自行配置或釋放服務 context，未要求額外的裝置 context。鎖定、屬性初始化／驗證／讀取通知、串流 acquire、BMP 格式列舉、取消事件、能力列舉、WIA_CMD_SYNCHRONIZE 與裝置錯誤字串已實作；IStiUSD::GetCapabilities 宣告 STI_GENCAP_WIA。`drvWriteItemProperties`、`drvAnalyzeItem`、`drvDeleteItem` 與未宣告的事件仍回傳 E_NOTIMPL。[初始化契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamindr_lh/nf-wiamindr_lh-iwiaminidrv-drvinitializewia)、[原生項目 API](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamdef/nf-wiamdef-wiascreatedrvitem)
 
 `drvLockWiaDevice`／`drvUnLockWiaDevice` 必須透過初始化時保留的 IStiDevice，再由服務呼叫 IStiUSD，不直接繞過服務鎖。鎖定等待上限 5000 ms，不是掃描期限；只接受 S_OK 為成功，負 HRESULT 保留，非預期正值回 E_UNEXPECTED。鎖定及 acquire 都將 Connection 暫借到 Mutex 外，期間重入解除初始化或其他工作回 Busy，正常返回歸還，Rust panic 清理後保持 Failed。[Microsoft 鎖定契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/locking-and-unlocking-best-practices)
 
