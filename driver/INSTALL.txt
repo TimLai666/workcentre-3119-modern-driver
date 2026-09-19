@@ -1,0 +1,22 @@
+Xerox WorkCentre 3119 掃描器驅動（Windows 11 x64）
+
+安裝
+  1. 用 USB 線接上 WorkCentre 3119 並開機（沒接也可以先裝，接上後 Windows 會自動載入）。
+  2. 對 install.cmd 按兩下，同意「使用者帳戶控制」提示。
+  3. 視窗顯示 Done 就完成，可以直接用 Windows 掃描 App、Windows 傳真和掃描或任何 WIA 掃描軟體。
+
+install.cmd 會做的事
+  - 信任本套件的測試憑證（因為沒有付費簽章，Windows 才會接受這個驅動）。
+  - 安裝或更新驅動套件，重新啟動 Windows 影像擷取服務並確認掃描器可用。
+  - 已安裝同版本時只做檢查，安裝舊版時自動更新，不需要先移除。
+  - 不會碰印表機介面，也不會改任何其他裝置。
+
+解除安裝
+  對 uninstall.cmd 按兩下：移除驅動、COM 登錄與憑證信任。
+
+疑難排解
+  - 紀錄在 %ProgramData%\WorkCentre3119Driver\setup-logs。
+  - 若顯示「bound to ...」，代表掃描介面被別的掃描驅動（例如原廠驅動）綁定，先在裝置管理員解除安裝那個驅動再跑一次。
+  - 若要求重新開機，重開後再跑一次 install.cmd 完成確認。
+
+原始碼與授權：MIT，https://github.com/TimLai666/workcentre-3119-modern-driver

@@ -30,7 +30,7 @@
 
 ## Current Blockers
 
-- 免費路線的限制：每台要用的電腦都得先信任專案測試憑證，不能公開分發。目前只在開發機驗證，第二台乾淨電腦、換孔、拔插、重開機與解除安裝尚未實測。
+- 免費路線的限制：每台要用的電腦都得先信任專案測試憑證（`install.cmd` 會自動做，但需要 UAC 同意），不能公開分發。目前只在開發機驗證，第二台乾淨電腦、換孔與拔插尚未實測。
 
 - 提早取消情境：已確認取消發生於首塊前的 READ metadata Busy，ABORT／RELEASE 都回成功，但立即重掃 RESERVE 收到 800 次 Busy、約 120 秒到期。保持同一 USB session 也失敗，關閉／重開連線不是必要條件。須查明首塊前取消的裝置時序，不能由成功清理回覆推論已可重掃。詳見 03 及硬體紀錄。
 
@@ -68,6 +68,8 @@ IWiaMiniDrv 的 `drvWriteItemProperties`、`drvAnalyzeItem` 與 `drvDeleteItem` 
 | 建立持續完成完整驅動的目標 | 使用者要求逐步完成實作、驗證與推送，需要使用者介入時提出具體需求，可獨立工作繼續推進 | 2026-09-13 | 01、02、03、05、06、07 |
 
 ## Verified
+
+2026-09-19 一鍵安裝套件：套件目錄自帶 `install.cmd`／`uninstall.cmd`／`wc3119-setup.ps1`／`INSTALL.txt`，兩支腳本 PSParser 無錯誤。開發機把套件複製到 `%TEMP%` 模擬新電腦：`uninstall.cmd` 移除套件、CLSID 與憑證信任（Status：未安裝、信任 0、WIA 0 台）；`install.cmd` 匯入憑證、安裝 0.2.15.0、重啟 stisvc、WIA 1 台、exit 0；重跑走同版驗證路徑；Windows 掃描 App 隨後直接連線並掃描成功。詳見 [05](docs/tickets/05-windows-install.md#一鍵安裝套件)。
 
 2026-09-19 Windows 掃描 App 實掃版本：182 個 lib 測試、整合測試、doc-tests、fmt、Clippy、release、DLL 動態載入通過；DLL SHA256 `9363EB564DD10CE0E094103A430E5F117A42D6249B9781379FB34F4EF7DDD041`，套件 0.2.15.0 以 Update 流程安裝（自動移除 0.2.14.0）。根因追查：ETW WinRT-Error 與 Process Monitor 都看不到 App 的失敗，改以 WDK cdb 附加載有 Windows.Devices.Scanners.dll 的 RuntimeBroker，對所有 `Windows::Devices::Scanners::*Server::*` 下中斷點並在返回位址讀 HRESULT，再以停止 stisvc→remove-device→scan-devices 讓 App 重新連線。結果：`FromIdAsync`、`FlatbedConfiguration` 初始化全部 S_OK；App 讀 Min／Max／Optical 解析度後呼叫 `put_DesiredResolution(100, 100)`，`RegularInputSource::SetDesiredResolution` 在 RuntimeBroker 內回 0x80070057 並 RoOriginateError，wiatrace 沒有任何 WriteMultiple。原因是 WIA_IPS_YRES 有效清單只列目前值（[75]），WinRT 以初始化時快取的 X／Y 清單在客戶端驗證。修正：X／Y 都列完整清單、選定後只移動 nominal，y-only 寫入改為兩軸一起跟隨（[catalog.rs](src/com_server/minidrv/properties/catalog.rs)、[validation.rs](src/com_server/minidrv/properties/validation.rs)），先以失敗測試確認再改。實機：Windows 掃描 App 啟動即列出「WorkCentre 3119 Series」，按「掃描」後 wiatrace 顯示寫入 Format／Media Type、75×75 dpi、Data Type 2／8 bpp、637×877、Preview 0，drvAcquireItemData 回 S_OK，產生 `Pictures\掃描\掃描_20260919.png` 648×871（3796 bytes，空平台）。除錯過程 `pnputil /disable-device` 在服務持有句柄時回 3010 並把 ConfigFlags 設為 DISABLED，已用同一套 remove-device／scan-devices 流程復原，不需重開機。
 

@@ -52,16 +52,18 @@
 
 ### 套件、安裝、更新、解除安裝
 
-兩支腳本都在本目錄，預設只做預檢，加 `-Apply` 才會改系統，且需要提升權限的 PowerShell。每次執行都在 Git 排除的 `artifacts/wia-setup-*` 留下日誌與備份。
+一般使用者只需要套件目錄：`package.ps1` 會把 `wc3119-setup.ps1`、`install.cmd`、`uninstall.cmd` 與 `INSTALL.txt` 一起放進 `artifacts/wia-package-<版本>-<時間>/`，整個目錄複製到目標電腦後，對 `install.cmd` 按兩下（UAC 提權）就會信任憑證、安裝或更新套件、重啟 WIA 服務並驗證；`uninstall.cmd` 反向移除套件、CLSID 與憑證信任。套件模式下腳本以自己所在目錄為 `-Package`，日誌寫在 `%ProgramData%\WorkCentre3119Driver\setup-logs`。掃描器沒接上時只先放進驅動存放區，接上後 Windows 自動綁定；同版本重跑只做檢查；MI_00 被別的掃描驅動綁定時停止並提示先移除。2026-09-19 在開發機以 `uninstall.cmd`（含移除信任）→ `install.cmd` 完整實跑，之後 Windows 掃描 App 直接掃描成功。
+
+以下是開發者用法。兩支腳本都在本目錄，預設只做預檢，加 `-Apply` 才會改系統，且需要提升權限的 PowerShell。在儲存庫內執行時，每次都在 Git 排除的 `artifacts/wia-setup-*` 留下日誌與備份。
 
 | 步驟 | 指令 | 改動範圍 |
 | --- | --- | --- |
 | 打包簽署 | `driver/package.ps1 -NewTestCertificate`（之後用 `-CertificateThumbprint`） | 只寫 `artifacts/wia-package-<版本>-<時間>/`；憑證只進 CurrentUser\My |
 | 查看狀態 | `driver/wc3119-setup.ps1 -Action Status` | 唯讀 |
-| 信任憑證 | `driver/wc3119-setup.ps1 -Package <dir> -TrustCertificate -Apply` | LocalMachine Root＋TrustedPublisher 各加一張憑證，只接受本專案主體名稱 |
-| 安裝 | `driver/wc3119-setup.ps1 -Package <dir> -Action Install -Apply` | 備份 → `pnputil /add-driver … /install` → 驗證 MI_00 為 Image 類別、服務仍 WINUSB、CLSID 已登錄、WIA 看得到裝置 |
+| 信任憑證 | `driver/wc3119-setup.ps1 -Package <dir> -TrustCertificate -Apply`（可與 Install／Update 同一次執行） | LocalMachine Root＋TrustedPublisher 各加一張憑證，只接受本專案主體名稱；已存在則略過 |
+| 安裝 | `driver/wc3119-setup.ps1 -Package <dir> -Action Install -Apply` | 備份 → `pnputil /add-driver … /install` → 驗證 MI_00 為 Image 類別、服務仍 WINUSB、CLSID 已登錄、WIA 看得到裝置；已裝舊版時自動走更新，同版只驗證 |
 | 更新 | 改 INF `DriverVer` 版本 → 重新打包 → `-Action Update -Apply` | 要求版本比已安裝新；安裝新套件後刪除舊的 `oem*.inf`；要求重開機時先停下回報 |
-| 解除安裝 | `driver/wc3119-setup.ps1 -Action Uninstall -Apply` | `pnputil /delete-driver oemN.inf /uninstall /force` → 移除 HKCR CLSID 鍵（INF 的 HKCR AddReg 不會自動清） → 核對父裝置與 MI_01 未變 |
+| 解除安裝 | `driver/wc3119-setup.ps1 -Action Uninstall -Apply`（加 `-UntrustCertificate` 一併移除信任） | `pnputil /delete-driver oemN.inf /uninstall /force` → 移除 HKCR CLSID 鍵（INF 的 HKCR AddReg 不會自動清） → 核對父裝置與 MI_01 未變 |
 | 移除信任 | `-UntrustCertificate -Apply` | 只在沒有本專案套件時允許，移除兩個機器儲存區的測試憑證 |
 
 安裝腳本的保護：只認 `wc3119-wia.inf` 且 Provider 為本專案的套件；MI_00 必須是唯一在線介面且目前為 WinUSB 或無驅動；父裝置與 MI_01 的 Service、INF、問題碼、ClassGuid、Parent 在每次操作後與備份比對，不同就報錯；`pnputil` 回 3010 時不自動重開機。腳本本身不會自動重試安裝。

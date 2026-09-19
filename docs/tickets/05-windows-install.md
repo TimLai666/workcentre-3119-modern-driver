@@ -60,6 +60,12 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 
 ## 測試
 
+### 一鍵安裝套件
+
+2026-09-19 使用者要求「所有要做的事都包含在安裝程式裡，一裝即用」。[package.ps1](../../driver/package.ps1) 現在把 [wc3119-setup.ps1](../../driver/wc3119-setup.ps1)、[install.cmd](../../driver/install.cmd)、[uninstall.cmd](../../driver/uninstall.cmd) 與 [INSTALL.txt](../../driver/INSTALL.txt) 一起放進套件；`.cmd` 自行要求 UAC 提權後呼叫 `-Action Install -TrustCertificate -Apply`／`-Action Uninstall -UntrustCertificate -Apply`，結束時停在視窗顯示結果。安裝腳本改動：套件模式（旁邊有 manifest.json）自動以所在目錄為套件、日誌寫 `%ProgramData%\WorkCentre3119Driver\setup-logs`；憑證信任可與安裝同一次執行且已存在則略過；Install 對已裝舊版自動更新、同版只驗證、更新版已裝則拒絕；掃描器未接上時只暫存套件（pnputil 259 視為成功），接上後由 Windows 綁定；MI_00 被其他驅動綁定時明確提示；Uninstall 可一併移除信任。修正一個實跑發現的 bug：安裝函式的日誌輸出曾混進回傳值，改以 script 變數傳回結束碼。
+
+開發機實跑：把套件複製到 `%TEMP%` 模擬新電腦，`uninstall.cmd` 移除套件、CLSID 與兩張憑證（Status 顯示未安裝、信任 0、WIA 0 台），`install.cmd` 匯入憑證→安裝→重啟 stisvc→WIA 1 台→提示 Windows 掃描 App／傳真和掃描皆已安裝，exit 0；再跑一次走「已安裝，只驗證」路徑。之後 Windows 掃描 App 直接連線並掃描成功（存到使用者設定的「掃描的文件」）。尚未在第二台乾淨電腦實跑；原廠驅動已綁定時的處理只提示不自動移除。
+
 ### Windows 掃描 App 實掃與 YRES 清單
 
 2026-09-19：Windows 掃描 App（Microsoft.WindowsScan 6.3.9654）完成一次平台灰階 75 dpi 掃描（`掃描_20260919.png` 648×871）。此前 App 一直顯示「連線到掃描器時發生問題」，而 wiatrace、ETW WinRT-Error、Process Monitor 都沒有失敗證據。最後以 WDK cdb 附加載有 `Windows.Devices.Scanners.dll` 的 RuntimeBroker（`tasklist /m` 找出），用 `bm` 對 `Windows::Devices::Scanners::*Server::*` 記錄呼叫、在返回位址一次性中斷讀 HRESULT，並以停止 stisvc→`pnputil /remove-device`→`/scan-devices` 觸發 App 重新連線：

@@ -72,6 +72,12 @@ $package = Join-Path $OutputRoot "wia-package-$driverVersion-$stamp"
 New-Item -ItemType Directory -Path $package | Out-Null
 Copy-Item $inf (Join-Path $package 'wc3119-wia.inf')
 Copy-Item $dll (Join-Path $package 'workcentre_3119.dll')
+# The package is self-contained: the setup script runs in package mode next
+# to manifest.json, and the .cmd wrappers give the end user one-click
+# install/uninstall with UAC elevation.
+foreach ($name in @('wc3119-setup.ps1', 'install.cmd', 'uninstall.cmd', 'INSTALL.txt')) {
+    Copy-Item (Join-Path $PSScriptRoot $name) (Join-Path $package $name)
+}
 
 $manifest = [ordered]@{
     driverVersion = $driverVersion
@@ -134,4 +140,4 @@ Copy-Item $dll (Join-Path $package 'workcentre_3119.dll')
 if ((Get-FileHash (Join-Path $package 'workcentre_3119.dll')).Hash -ne $manifest.dllSha256) { throw 'DLL changed during packaging' }
 Write-Output "Signed package: $package"
 Write-Output "Signer: $($certificate.Subject) $($certificate.Thumbprint)"
-Write-Output 'Next: wc3119-setup.ps1 -Package <dir> -Action Status, then -TrustCertificate and -Action Install -Apply after authorization.'
+Write-Output 'Next: copy the directory to the target PC and run install.cmd (or wc3119-setup.ps1 -Action Install -TrustCertificate -Apply) after authorization.'
