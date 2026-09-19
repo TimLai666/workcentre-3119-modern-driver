@@ -68,7 +68,7 @@
 
 解除安裝後 MI_00 會回到沒有驅動（問題碼 28），因為內建 `winusb.inf` 不匹配這個硬體 ID。若還要以開發工具存取 USB，需重新以 [配對工具](../examples/winusb_setup.rs) 綁定內建 WinUSB。這是與 WinUSB 開發配對並存的既有限制。
 
-已實跑（2026-09-19，本開發機）：winget 安裝 WDK 10.0.26100 取得 Inf2Cat；`package.ps1 -NewTestCertificate` 產出簽署套件；`-TrustCertificate -Apply` 匯入兩個機器儲存區；`-Action Install -Apply` 安裝 0.2.0.0（pnputil 回 0、oem19.inf、MI_00 轉為 Image 類別且服務仍 WINUSB、CLSID 指向驅動存放區）；之後以 `-Action Update -Apply` 連續更新到 0.2.6.0，每次刪除前一版 oem inf。測試憑證簽署不需要 testsigning 的推論已由實際安裝證實。解除安裝已實跑一次：`-Action Uninstall -Apply` 時 WIA 服務仍載著 DLL 與 WinUSB 句柄，pnputil 回 3010（需重開機），裝置節點進入「等待重開機」狀態；此狀態下立即 `Install` 也回 3010，重啟 stisvc 後 `pnputil /restart-device` 被拒（pending reboot），WIA 連線失敗直到重開機。腳本已改為解除安裝前先停止 stisvc 並在之後 `/scan-devices`，但尚未在乾淨狀態重跑驗證；Install 預檢改為接受「無驅動」的暫態。移除信任尚未實跑。第一次 Install 曾因腳本用英文解析中文版 pnputil 輸出而誤報失敗，已改成掃描 `oem*.inf` 內容判斷；Update 另加入重啟 stisvc，否則服務仍持有舊 DLL。
+已實跑（2026-09-19，本開發機）：winget 安裝 WDK 10.0.26100 取得 Inf2Cat；`package.ps1 -NewTestCertificate` 產出簽署套件；`-TrustCertificate -Apply` 匯入兩個機器儲存區；`-Action Install -Apply` 安裝 0.2.0.0（pnputil 回 0、oem19.inf、MI_00 轉為 Image 類別且服務仍 WINUSB、CLSID 指向驅動存放區）；之後以 `-Action Update -Apply` 連續更新到 0.2.6.0，每次刪除前一版 oem inf。測試憑證簽署不需要 testsigning 的推論已由實際安裝證實。解除安裝已實跑一次：`-Action Uninstall -Apply` 時 WIA 服務仍載著 DLL 與 WinUSB 句柄，pnputil 回 3010（需重開機），裝置節點進入「等待重開機」狀態；此狀態下立即 `Install` 也回 3010，重啟 stisvc 後 `pnputil /restart-device` 被拒（pending reboot），WIA 連線失敗直到重開機。腳本已改為解除安裝前先停止 stisvc 並在之後 `/scan-devices`，但尚未在乾淨狀態重跑驗證；Install 預檢改為接受「無驅動」的暫態。重開機後 Status 與 WIA 掃描恢復正常，證明該循環可復原。移除信任尚未實跑。第一次 Install 曾因腳本用英文解析中文版 pnputil 輸出而誤報失敗，已改成掃描 `oem*.inf` 內容判斷；Update 另加入重啟 stisvc，否則服務仍持有舊 DLL。
 
 ### 授權後的執行與復原順序
 

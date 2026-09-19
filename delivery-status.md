@@ -30,8 +30,6 @@
 
 ## Current Blockers
 
-- 2026-09-19 17:05 開發機的 MI_00 處於「等待重開機完成先前操作」狀態：解除安裝時 WIA 服務仍持有 DLL／句柄導致 pnputil 回 3010，之後重新安裝 0.2.9.0 也回 3010，`pnputil /restart-device` 被拒，WIA 連線回 E_FAIL。需要使用者重開機後再執行 `driver/wc3119-setup.ps1 -Action Status` 與一次 WIA 掃描確認復原。解除安裝腳本已補「先停止 stisvc、再 /scan-devices」，尚未重驗。
-
 - Windows 掃描 App（Microsoft.WindowsScan）能找到裝置但顯示「連線到掃描器時發生問題」。同一台電腦以桌面 PowerShell 呼叫 WinRT `ImageScanner.FromIdAsync`／`ScanFilesToFolderAsync` 成功掃描，wiatrace 顯示兩者對驅動的呼叫序列與回傳值完全相同（drvInitializeWia、drvInitItemProperties×2、drvReadItemProperties 1／1／1／12 全部 S_OK），差異在 App 的 AppContainer 客戶端。嘗試以 TraceLogging 名稱推導 GUID 擷取 `Microsoft.Windows.Scan.Runtime` 沒有事件，PrintScanBrokerService 未被啟動。待查：AppContainer 對 WinUSB 裝置介面的存取政策、WinRT 只回報灰階（`IsColorModeSupported(Color)` 為 false，可能與 WIA_IPS_CUR_INTENT 有效旗標有關）。
 
 - 免費路線的限制：每台要用的電腦都得先信任專案測試憑證，不能公開分發。目前只在開發機驗證，第二台乾淨電腦、換孔、拔插、重開機與解除安裝尚未實測。
@@ -72,6 +70,8 @@ IWiaMiniDrv 的 `drvWriteItemProperties`、`drvAnalyzeItem` 與 `drvDeleteItem` 
 | 建立持續完成完整驅動的目標 | 使用者要求逐步完成實作、驗證與推送，需要使用者介入時提出具體需求，可獨立工作繼續推進 | 2026-09-13 | 01、02、03、05、06、07 |
 
 ## Verified
+
+2026-09-19 重開機後：使用者重開機，`wc3119-setup.ps1 -Action Status` 顯示 MI_00 服務 WINUSB、oem19.inf 0.2.9.0、Image 類別、問題碼 0，兩個裝置介面 Enabled，stisvc Running，WIA 1 台；WIA automation 連線 75 ms、灰階 75 dpi 傳輸 7.4 秒成功。這證明「解除安裝→重新安裝→重開機」的循環可以復原，也是第一次重開機後的自動載入驗收。
 
 2026-09-19 影像介面與句柄保留版本：178 個 lib 測試、全部整合測試及 2 個 doc-tests、fmt、Clippy、release targets、當次 release DLL 動態載入通過；DLL SHA256 `C3DD8218E3B7901C0FDB2589CFD808C546A392272AEF418691E558FFE155ACEE`，套件 0.2.9.0 以 Update 流程安裝。實機：INF 加入 `GUID_DEVINTERFACE_IMAGE` 後 `pnputil /enum-interfaces` 列出兩個介面，WinRT 選擇器（InterfaceClassGuid＋WiaDeviceType=1）找到裝置。提權探針證實 WinUSB 每台裝置只接受一個開啟中的句柄（第二次任何存取／共用模式的開啟皆回 ERROR_ACCESS_DENIED，零存取權的句柄也會阻擋），因此服務的通知句柄曾使 LockDevice 回 0x80070005；改為 Initialize 即開啟並保留句柄後，WIA automation 灰階 75 dpi 掃描 7.3 秒成功，WinRT `ScanFilesToFolderAsync` 7.3 秒產生 565486 bytes BMP。硬體測試 `actual_sti_device_lock_presence_and_release` 已改為「第一個物件 Release 前第二個物件不能鎖定」，本輪未在實機重跑（WIA 服務持有裝置時無法執行硬體測試，須先停止 stisvc）。
 
