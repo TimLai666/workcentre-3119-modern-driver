@@ -1,6 +1,6 @@
 #![allow(clippy::upper_case_acronyms)]
 
-use super::session::{AccessError, SessionSlot};
+use super::session::{AccessError, SessionSlot, SlotStatus};
 use crate::{protocol, usb};
 use std::{
     ffi::c_void,
@@ -231,6 +231,12 @@ pub(super) struct State {
 
 struct StateInner {
     initialized: bool,
+    /// STI lock held by the service. Independent of the USB handle, which is
+    /// kept open from the first successful open until the object is released:
+    /// WinUSB admits a single open handle per device, and once the devnode
+    /// also exposes GUID_DEVINTERFACE_IMAGE the WIA service grabs a
+    /// notification handle whenever ours is closed (observed 2026-09-19).
+    sti_locked: bool,
     helper: Option<*mut c_void>,
     helper_port_name: Vec<u16>,
     last_error: HRESULT,
@@ -242,6 +248,7 @@ impl State {
         Self {
             inner: Mutex::new(StateInner {
                 initialized: false,
+                sti_locked: false,
                 helper: None,
                 helper_port_name: Vec::new(),
                 last_error: S_OK,
@@ -328,11 +335,17 @@ impl State {
     }
 
     fn presence_capabilities(&self) -> Result<protocol::Capabilities, (HRESULT, String)> {
-        if !self.lock().initialized {
-            return Err((
-                STIERR_NOT_INITIALIZED,
-                "IStiUSD is not initialized".to_owned(),
-            ));
+        {
+            let inner = self.lock();
+            if !inner.initialized {
+                return Err((
+                    STIERR_NOT_INITIALIZED,
+                    "IStiUSD is not initialized".to_owned(),
+                ));
+            }
+            if !inner.sti_locked {
+                return Err((STIERR_NEEDS_LOCK, "LockDevice is required".to_owned()));
+            }
         }
         self.session
             .with_session(|session| {
@@ -348,11 +361,20 @@ impl State {
         &self,
         run: impl FnOnce(&mut usb::UsbSession) -> (io::Result<T>, crate::scan::SessionHealth),
     ) -> io::Result<T> {
-        if !self.lock().initialized {
-            return Err(io::Error::new(
-                io::ErrorKind::NotConnected,
-                "IStiUSD is not initialized",
-            ));
+        {
+            let inner = self.lock();
+            if !inner.initialized {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "IStiUSD is not initialized",
+                ));
+            }
+            if !inner.sti_locked {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "LockDevice is required",
+                ));
+            }
         }
         let result = self
             .session
@@ -594,7 +616,23 @@ unsafe fn initialize_impl(this: *mut c_void, helper: *mut c_void, sti_version: D
         // the state lock has been released before calling external COM.
         unsafe { release_helper(helper) };
     }
+    if result == S_OK {
+        // Dedicated-port devices may open in Initialize (Microsoft IStiUSD
+        // guidance). Claim the single WinUSB handle now so the WIA service's
+        // later notification open cannot take it; a failure here is retried by
+        // LockDevice and must not fail initialization.
+        let path = state.lock().helper_port_name.clone();
+        let _ = state.session.open(|| open_scanner(&path));
+    }
     result
+}
+
+fn open_scanner(port: &[u16]) -> io::Result<usb::UsbSession> {
+    if port_selects_unique_device(port) {
+        usb::UsbSession::open()
+    } else {
+        usb::UsbSession::open_matching_path(port)
+    }
 }
 
 unsafe extern "system" fn get_capabilities(
@@ -907,17 +945,21 @@ unsafe fn lock_device_impl(this: *mut c_void) -> HRESULT {
             drop(inner);
             return fail(state, STIERR_NOT_INITIALIZED, "IStiUSD is not initialized");
         }
+        if inner.sti_locked {
+            drop(inner);
+            return fail(state, STIERR_DEVICE_LOCKED, "Device is already locked");
+        }
         inner.helper_port_name.clone()
     };
-    let open = || {
-        if port_selects_unique_device(&path) {
-            usb::UsbSession::open()
-        } else {
-            usb::UsbSession::open_matching_path(&path)
-        }
+    let opened = match state.session.status() {
+        SlotStatus::Locked => Ok(()),
+        SlotStatus::Unlocked => state.session.open(|| open_scanner(&path)),
+        SlotStatus::Quarantined => Err(AccessError::Quarantined),
+        SlotStatus::Busy => Err(AccessError::Busy),
     };
-    match state.session.open(open) {
+    match opened {
         Ok(()) => {
+            state.lock().sti_locked = true;
             state.clear_last_error();
             S_OK
         }
@@ -939,17 +981,33 @@ unsafe fn un_lock_device_impl(this: *mut c_void) -> HRESULT {
         Ok(state) => state,
         Err(error) => return error,
     };
-    if !state.lock().initialized {
-        return fail(state, STIERR_NOT_INITIALIZED, "IStiUSD is not initialized");
+    {
+        let inner = state.lock();
+        if !inner.initialized {
+            drop(inner);
+            return fail(state, STIERR_NOT_INITIALIZED, "IStiUSD is not initialized");
+        }
+        if !inner.sti_locked {
+            drop(inner);
+            let (code, text) = access_error(AccessError::NotLocked);
+            return fail(state, code, &text);
+        }
     }
-    match state.session.unlock() {
-        Ok(()) => {
+    // The USB handle stays open across STI unlock; only the lock flag clears.
+    // An operation still in flight or a quarantined transport keeps the lock.
+    match state.session.status() {
+        SlotStatus::Busy => {
+            let (code, text) = access_error(AccessError::Busy);
+            fail(state, code, &text)
+        }
+        SlotStatus::Quarantined => {
+            let (code, text) = access_error(AccessError::Quarantined);
+            fail(state, code, &text)
+        }
+        SlotStatus::Locked | SlotStatus::Unlocked => {
+            state.lock().sti_locked = false;
             state.clear_last_error();
             S_OK
-        }
-        Err(error) => {
-            let (code, text) = access_error(error);
-            fail(state, code, &text)
         }
     }
 }

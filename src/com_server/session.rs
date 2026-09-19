@@ -26,6 +26,14 @@ pub(super) struct SessionSlot<T> {
     state: Mutex<Connection<T>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SlotStatus {
+    Unlocked,
+    Busy,
+    Locked,
+    Quarantined,
+}
+
 impl<T> SessionSlot<T> {
     pub(super) const fn new() -> Self {
         Self {
@@ -37,6 +45,15 @@ impl<T> SessionSlot<T> {
         self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub(super) fn status(&self) -> SlotStatus {
+        match &*self.state() {
+            Connection::Unlocked => SlotStatus::Unlocked,
+            Connection::Opening | Connection::Closing | Connection::InUse => SlotStatus::Busy,
+            Connection::Locked(_) => SlotStatus::Locked,
+            Connection::Quarantined => SlotStatus::Quarantined,
+        }
     }
 
     pub(super) fn open(&self, open: impl FnOnce() -> io::Result<T>) -> Result<(), AccessError> {

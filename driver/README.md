@@ -38,6 +38,7 @@
 - 函式驅動仍是 `Include=winusb.inf` 的 WinUSB，並沿用同一裝置介面 GUID。不引用 `STI.USBSection`，因為它會加入 `usbscan.sys` 服務並改變傳輸方式。
 - `AddReg` 寫入 `HardwareConfig=1,4`、`CreateFileName=AUTO`、`USDClass` 與 HKCR `CLSID\{F71A8435-…}\InProcServer32` 指向驅動存放區（`%13%`）內的 `workcentre_3119.dll`，ThreadingModel 為 Both。minidriver 不使用 port name，自行以 GUID 列舉介面，因此 AUTO 與現有實作一致。
 - 事件只宣告連線／斷線，與 `drvGetCapabilities` 相同；驅動不自行發送事件。
+- `DeviceInterfaceGUIDs` 同時列出專案 GUID 與 `GUID_DEVINTERFACE_IMAGE`：WinUSB 會登錄兩個介面，後者讓 WIA 服務寫入 `DEVPKEY_WIA_DeviceType` 並讓 WinRT `Windows.Devices.Scanners`（Windows 掃描 App 用的 API）以介面類別找到裝置。代價是 WIA 服務會嘗試在該介面上開啟通知句柄，而 WinUSB 只允許一個句柄，所以驅動在 `IStiUSD::Initialize` 就開啟並保留 USB 句柄（見 ENG.md）。
 
 尚未查證、必須以實測確認的前提：`Image` 類別搭配 WinUSB 函式驅動是否被類別安裝程式接受並建立 StillImage 裝置介面；WIA 服務帳號 `NT Authority\LocalService` 能否開啟 WinUSB 裝置介面；DLL 目前仍匯入 `VCRUNTIME140.dll` 與 UCRT，服務帳號載入時的 runtime 前置條件；`stisvc` 目前為 Stopped，實測時服務會由 PnP 事件啟動。
 

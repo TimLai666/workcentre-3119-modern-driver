@@ -632,6 +632,15 @@ fn actual_sti_device_lock_presence_and_release() {
         );
         assert_eq!(diagnostic.error.generic, 0);
         assert_eq!((a.unlock)(first.0), 0);
+        // The USB handle is held by the first object until it is released;
+        // WinUSB admits one open handle, so the second object still cannot lock.
+        assert!(
+            (b.lock)(second.0) < 0,
+            "the WinUSB handle stays with the first object after STI unlock"
+        );
+        assert_eq!((a.lock)(first.0), 0);
+        assert_eq!((a.unlock)(first.0), 0);
+        drop(first); // Release closes the held USB session.
         assert_eq!((b.lock)(second.0), 0);
         let mut diagnostic = presence_request();
         assert_eq!(
@@ -639,11 +648,9 @@ fn actual_sti_device_lock_presence_and_release() {
             0
         );
         assert_eq!(diagnostic.error.generic, 0);
-        drop(second); // Release must close an owned USB session even without explicit Unlock.
-        assert_eq!((a.lock)(first.0), 0);
-        assert_eq!((a.unlock)(first.0), 0);
+        assert_eq!((b.unlock)(second.0), 0);
     }
-    drop(first);
+    drop(second);
     assert_eq!(helper.refs.load(Ordering::SeqCst), 1);
 }
 

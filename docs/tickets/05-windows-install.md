@@ -60,6 +60,12 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 
 ## 測試
 
+### 影像裝置介面、句柄保留與 Windows 掃描 App
+
+2026-09-19：為了讓 WinRT `Windows.Devices.Scanners`（Windows 掃描 App 的 API）找到裝置，INF `DeviceInterfaceGUIDs` 加入 `GUID_DEVINTERFACE_IMAGE`，WIA 服務因此能寫入 `DEVPKEY_WIA_DeviceType`，WinRT 選擇器可列舉並連線。副作用：服務會在該介面開啟通知句柄，而提權探針（停止 stisvc 後以 P/Invoke 開啟）證實 WinUSB 每台裝置只允許一個開啟中的句柄，任何第二次開啟都回 ERROR_ACCESS_DENIED；因此 [sti.rs](../../src/com_server/sti.rs) 改為 Initialize 成功即開啟 USB 並保留到 Release，`UnLockDevice` 只清除 STI 鎖旗標；[usb.rs](../../src/usb.rs) 的 CreateFile 改為讀寫共用（對 WinUSB 沒有差別，但不再宣稱 OS 層獨占）。DLL SHA256 `C3DD8218E3B7901C0FDB2589CFD808C546A392272AEF418691E558FFE155ACEE`，套件 0.2.9.0。
+
+結果：WIA automation 與桌面 WinRT（`FromIdAsync`、`ScanFilesToFolderAsync`）皆成功掃描；Windows 掃描 App 找到裝置但連線失敗，服務端呼叫序列與成功的 WinRT 完全相同，差異在 AppContainer 客戶端，證據與待查方向見 [delivery-status](../../delivery-status.md#current-blockers)。WinRT 回報只支援灰階、DIB 格式，彩色實際可掃（WIA automation 設 DATATYPE=3 成功），推測與 WIA_IPS_CUR_INTENT 有效旗標未含 COLOR 有關，待修。開發期限制：WIA 服務持有 WinUSB 句柄時，`wc3119 inquiry`、範例與硬體測試都會拒絕存取，須先停止 stisvc 或解除安裝套件。
+
 ### WIA 服務首次實掃（開發機）
 
 2026-09-19：依 [安裝方案](../../driver/README.md#套件安裝更新解除安裝) 在開發機信任測試憑證並安裝套件，WIA 服務以 LocalService 載入 `workcentre_3119.dll`，鎖定 WinUSB 介面並完成灰階與彩色 75 dpi 全平台掃描；屬性驗證經服務拒絕 999 dpi。DLL SHA256 `2CBCB3B37E5CC495E1557F859443C78412E4A7C84EAC637CA778BF7BA3D19C1D`，套件 0.2.6.0。證據與時間見 [delivery-status](../../delivery-status.md#verified)。

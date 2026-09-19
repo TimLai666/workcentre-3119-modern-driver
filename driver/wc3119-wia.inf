@@ -9,7 +9,7 @@ Class       = Image
 ClassGUID   = {6BDD1FC6-810F-11D0-BEC7-08002BE2092F}
 Provider    = %Provider%
 CatalogFile = wc3119-wia.cat
-DriverVer   = 09/19/2026,0.2.6.0
+DriverVer   = 09/19/2026,0.2.9.0
 PnpLockdown = 1
 
 [SourceDisksNames]
@@ -55,7 +55,10 @@ Needs   = WINUSB.NT.Services
 workcentre_3119.dll
 
 [Scanner_Interface]
-HKR,,DeviceInterfaceGUIDs,0x00010000,"{C4147E4A-9C41-4846-A53C-5E625C68021A}"
+; WinUSB registers every listed interface class. The project GUID is what the
+; driver enumerates; GUID_DEVINTERFACE_IMAGE lets WIA/WinRT scanner clients
+; (Windows Scan) discover the device, which usbscan.sys would otherwise do.
+HKR,,DeviceInterfaceGUIDs,0x00010000,"{C4147E4A-9C41-4846-A53C-5E625C68021A}","{6BDD1FC6-810F-11D0-BEC7-08002BE2092F}"
 
 [Scanner_AddReg]
 HKR,,HardwareConfig,1,4

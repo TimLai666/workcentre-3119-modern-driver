@@ -196,7 +196,8 @@ impl Drop for UsbHandle {
     }
 }
 
-/// An exclusively opened scanner interface and its validated bulk transport.
+/// An opened scanner interface and its validated bulk transport. The handle is
+/// opened with read/write sharing; exclusivity is enforced per process.
 ///
 /// `usb` is declared before `file` because struct fields are dropped in
 /// declaration order. This releases the WinUSB interface before closing the
@@ -467,14 +468,20 @@ fn select_matching_scanner_path<'a>(
 }
 
 fn open_with_path(path: &[u16]) -> io::Result<UsbSession> {
-    // GENERIC_READ | GENERIC_WRITE, exclusive sharing, OPEN_EXISTING,
-    // FILE_FLAG_OVERLAPPED (required by WinUSB even for synchronous transfers).
+    // GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+    // OPEN_EXISTING, FILE_FLAG_OVERLAPPED (required by WinUSB even for
+    // synchronous transfers). Sharing is required: once the device also
+    // exposes GUID_DEVINTERFACE_IMAGE, the WIA service keeps a notification
+    // handle open on it and an exclusive open fails with ERROR_ACCESS_DENIED
+    // (observed 2026-09-19). Serialization of actual transfers is provided by
+    // the in-process session lock and, for WIA clients, the service lock
+    // manager; no OS-level exclusivity is assumed any more.
     // SAFETY: path is owned and terminated; optional pointers are null.
     let raw_file = unsafe {
         CreateFileW(
             path.as_ptr(),
             0xc000_0000,
-            0,
+            0x0000_0003,
             ptr::null(),
             3,
             0x4000_0000,

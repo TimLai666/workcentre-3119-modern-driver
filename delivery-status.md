@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-2026-09-19：開發機已用測試憑證簽署的 WIA 套件安裝本驅動，Windows 的 WIA 服務首次成功載入、鎖定並透過既有 WIA 用戶端（WIA automation）完成灰階與彩色 75 dpi 全平台掃描，屬性驗證也經服務拒絕無效 dpi。修正過程確認服務要求 COM aggregation、傳 STI 版本 3、port name 為 AUTO、相容模式項目不能查型別。Windows 掃描 App 的操作、取消、拔插、第二台電腦與解除安裝驗收仍未完成。精確階段取消對照已加入測試建置，第一塊影像後取消並以同一 USB session 重掃通過；首塊前取消的復原缺口仍由 03 追蹤。
+2026-09-19：開發機已用測試憑證簽署的 WIA 套件安裝本驅動，Windows 的 WIA 服務首次成功載入、鎖定並透過既有 WIA 用戶端（WIA automation）完成灰階與彩色 75 dpi 全平台掃描，屬性驗證也經服務拒絕無效 dpi。修正過程確認服務要求 COM aggregation、傳 STI 版本 3、port name 為 AUTO、相容模式項目不能查型別。WinRT `Windows.Devices.Scanners` 桌面程序可列舉、連線並完成掃描（Windows 掃描 App 使用的 API）；Windows 掃描 App 本身在 AppContainer 內連線失敗，服務端呼叫序列與成功的桌面 WinRT 完全相同，原因尚未取得客戶端證據。取消、拔插、第二台電腦與解除安裝驗收仍未完成。精確階段取消對照已加入測試建置，第一塊影像後取消並以同一 USB session 重掃通過；首塊前取消的復原缺口仍由 03 追蹤。
 
 ## Stage Objective
 
@@ -29,6 +29,8 @@
 | 07 | 掃描明暗品質 | 開發者 | blocked | 已有空平台影像，缺少可對照原稿；歷史偏白仍未重現 |
 
 ## Current Blockers
+
+- Windows 掃描 App（Microsoft.WindowsScan）能找到裝置但顯示「連線到掃描器時發生問題」。同一台電腦以桌面 PowerShell 呼叫 WinRT `ImageScanner.FromIdAsync`／`ScanFilesToFolderAsync` 成功掃描，wiatrace 顯示兩者對驅動的呼叫序列與回傳值完全相同（drvInitializeWia、drvInitItemProperties×2、drvReadItemProperties 1／1／1／12 全部 S_OK），差異在 App 的 AppContainer 客戶端。嘗試以 TraceLogging 名稱推導 GUID 擷取 `Microsoft.Windows.Scan.Runtime` 沒有事件，PrintScanBrokerService 未被啟動。待查：AppContainer 對 WinUSB 裝置介面的存取政策、WinRT 只回報灰階（`IsColorModeSupported(Color)` 為 false，可能與 WIA_IPS_CUR_INTENT 有效旗標有關）。
 
 - 免費路線的限制：每台要用的電腦都得先信任專案測試憑證，不能公開分發。目前只在開發機驗證，第二台乾淨電腦、換孔、拔插、重開機與解除安裝尚未實測。
 
@@ -68,6 +70,8 @@ IWiaMiniDrv 的 `drvWriteItemProperties`、`drvAnalyzeItem` 與 `drvDeleteItem` 
 | 建立持續完成完整驅動的目標 | 使用者要求逐步完成實作、驗證與推送，需要使用者介入時提出具體需求，可獨立工作繼續推進 | 2026-09-13 | 01、02、03、05、06、07 |
 
 ## Verified
+
+2026-09-19 影像介面與句柄保留版本：178 個 lib 測試、全部整合測試及 2 個 doc-tests、fmt、Clippy、release targets、當次 release DLL 動態載入通過；DLL SHA256 `C3DD8218E3B7901C0FDB2589CFD808C546A392272AEF418691E558FFE155ACEE`，套件 0.2.9.0 以 Update 流程安裝。實機：INF 加入 `GUID_DEVINTERFACE_IMAGE` 後 `pnputil /enum-interfaces` 列出兩個介面，WinRT 選擇器（InterfaceClassGuid＋WiaDeviceType=1）找到裝置。提權探針證實 WinUSB 每台裝置只接受一個開啟中的句柄（第二次任何存取／共用模式的開啟皆回 ERROR_ACCESS_DENIED，零存取權的句柄也會阻擋），因此服務的通知句柄曾使 LockDevice 回 0x80070005；改為 Initialize 即開啟並保留句柄後，WIA automation 灰階 75 dpi 掃描 7.3 秒成功，WinRT `ScanFilesToFolderAsync` 7.3 秒產生 565486 bytes BMP。硬體測試 `actual_sti_device_lock_presence_and_release` 已改為「第一個物件 Release 前第二個物件不能鎖定」，本輪未在實機重跑（WIA 服務持有裝置時無法執行硬體測試，須先停止 stisvc）。
 
 2026-09-19 WIA 服務實掃版本：178 個 lib 測試、全部整合測試及 2 個 doc-tests、fmt、Clippy、全部 release targets、當次 release DLL 動態載入通過；DLL SHA256 `2CBCB3B37E5CC495E1557F859443C78412E4A7C84EAC637CA778BF7BA3D19C1D`。實機：套件 0.2.6.0 經 `wc3119-setup.ps1 -Action Update -Apply` 安裝，WIA automation `Connect` 70 ms，根屬性 Manufacturer／Description／Name 由服務提供，平台項目回報 75 dpi、637×877 選取、8 bpp、Item Size 562358；灰階 75 dpi 傳輸 7.3 秒得 648×871 8 bpp BMP（565486 bytes，抽樣灰階平均 255，空平台）；同一連線改彩色後 Item Size 更新為 1676878、無效 999 dpi 被服務以 0x80070057 拒絕、彩色傳輸 10.9 秒得 648×871 24 bpp BMP。wiatrace 顯示 drvGetCapabilities、drvInitializeWia、drvInitItemProperties×2、drvReadItemProperties、drvGetWiaFormatInfo、drvAcquireItemData 全部回 S_OK，END_OF_STREAM／END_OF_TRANSFER 由服務發送。逐步排除的服務端失敗：CLASS_E_NOAGGREGATION（改支援聚合）、STIERR_OLD_VERSION（接受版本 ≥2）、LockDevice E_FAIL（port name AUTO 改 GUID 列舉）、相容模式項目讀取 E_UNEXPECTED（不再對非狀態讀取查項目類型）。私人證據在 `artifacts/wia-scan-20260919T050522Z/` 與 `artifacts/wia-setup-*`。沒有 Windows 掃描 App、取消、拔插、第二台電腦或文件品質驗收。
 
