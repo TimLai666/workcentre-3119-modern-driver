@@ -231,8 +231,10 @@ fn server_locks_and_failed_creation_keep_counts_balanced() {
         );
         assert!(output.is_null());
         output = ptr::dangling_mut();
+        // Aggregation is only legal when the controlling unknown asks for
+        // IID_IUnknown; the outer pointer is never dereferenced on rejection.
         assert_eq!(
-            (methods.create)(class, ptr::dangling_mut(), &UNKNOWN, &mut output),
+            (methods.create)(class, ptr::dangling_mut(), &STI, &mut output),
             CLASS_E_NOAGGREGATION
         );
         assert!(output.is_null());
@@ -316,6 +318,99 @@ fn minidriver_and_sti_share_one_identity_and_lifetime() {
         assert_eq!(DllCanUnloadNow(), 1);
         assert_eq!((table(mini).release)(mini), 0);
     }
+    assert_eq!(DllCanUnloadNow(), 0);
+}
+
+// Synthetic controlling IUnknown standing in for the WIA service's USDWrapper.
+#[repr(C)]
+struct OuterUnknown {
+    vtable: *const UnknownTable,
+    refs: std::sync::atomic::AtomicU32,
+}
+static OUTER_TABLE: UnknownTable = UnknownTable {
+    query: outer_query,
+    add_ref: outer_add_ref,
+    release: outer_release,
+};
+unsafe extern "system" fn outer_query(
+    _this: *mut c_void,
+    _iid: *const Guid,
+    output: *mut *mut c_void,
+) -> i32 {
+    // SAFETY: the test never expects the inner object to query its outer.
+    unsafe { *output = ptr::null_mut() };
+    E_NOINTERFACE
+}
+unsafe extern "system" fn outer_add_ref(this: *mut c_void) -> u32 {
+    // SAFETY: the test owns this live OuterUnknown for the whole test.
+    unsafe {
+        (*this.cast::<OuterUnknown>())
+            .refs
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            + 1
+    }
+}
+unsafe extern "system" fn outer_release(this: *mut c_void) -> u32 {
+    // SAFETY: the test owns this live OuterUnknown for the whole test.
+    unsafe {
+        (*this.cast::<OuterUnknown>())
+            .refs
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
+            - 1
+    }
+}
+
+#[test]
+fn aggregated_instance_delegates_interface_references_to_the_outer_unknown() {
+    let _serial = SERIAL.lock().unwrap();
+    let class = factory();
+    let outer = OuterUnknown {
+        vtable: &OUTER_TABLE,
+        refs: std::sync::atomic::AtomicU32::new(1),
+    };
+    let outer_ptr = &outer as *const OuterUnknown as *mut c_void;
+    // SAFETY: the outer object outlives the inner one; every reference obtained
+    // below is released exactly once through the interface it came from.
+    unsafe {
+        let mut inner = ptr::null_mut();
+        assert_eq!(
+            (factory_table(class).create)(class, outer_ptr, &UNKNOWN, &mut inner),
+            0,
+            "WIA creates the USD as an aggregated inner object"
+        );
+        (table(class).release)(class);
+        assert!(!inner.is_null());
+        assert_eq!(outer.refs.load(std::sync::atomic::Ordering::Acquire), 1);
+
+        // The non-delegating unknown reports itself for IID_IUnknown.
+        let mut same = ptr::null_mut();
+        assert_eq!((table(inner).query)(inner, &UNKNOWN, &mut same), 0);
+        assert_eq!(same, inner);
+        assert_eq!((table(inner).release)(inner), 1);
+
+        // Other interfaces are handed out with a reference on the outer, and
+        // their IUnknown methods delegate to the outer as well.
+        let mut sti = ptr::null_mut();
+        assert_eq!((table(inner).query)(inner, &STI, &mut sti), 0);
+        assert_eq!(outer.refs.load(std::sync::atomic::Ordering::Acquire), 2);
+        assert_eq!((table(sti).add_ref)(sti), 3);
+        assert_eq!((table(sti).release)(sti), 2);
+        let mut mini = ptr::null_mut();
+        assert_eq!(
+            (table(sti).query)(sti, &MINIDRIVER, &mut mini),
+            E_NOINTERFACE
+        );
+        assert!(mini.is_null(), "delegated QI went to the synthetic outer");
+        assert_eq!((table(inner).query)(inner, &MINIDRIVER, &mut mini), 0);
+        assert_eq!(outer.refs.load(std::sync::atomic::Ordering::Acquire), 3);
+        assert_eq!((table(mini).release)(mini), 2);
+        assert_eq!((table(sti).release)(sti), 1);
+
+        // The outer owns the inner through the non-delegating unknown only.
+        assert_eq!(DllCanUnloadNow(), 1);
+        assert_eq!((table(inner).release)(inner), 0);
+    }
+    assert_eq!(outer.refs.load(std::sync::atomic::Ordering::Acquire), 1);
     assert_eq!(DllCanUnloadNow(), 0);
 }
 

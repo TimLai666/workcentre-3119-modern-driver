@@ -66,17 +66,17 @@ pub(in crate::com_server::minidrv) unsafe extern "system" fn entry(
         // SAFETY: the caller retains our live embedded COM interface.
         let interface = unsafe { &*this.cast::<super::super::Interface>() };
         if !requests_status(&requested) {
-            // Confirm the context is a real item without touching USB. The
-            // borrow blocks reentrant disconnect/lock/acquire meanwhile.
+            // Nothing requested needs the device. Only confirm this object is
+            // still connected; do not query the item type: the 2026-09-19 live
+            // service read the WIA_DIP_* set through a generated compatibility
+            // item whose driver-item flags are not available yet, and
+            // wiasGetItemType on it fails. Every other advertised property is
+            // stored by the service and updated by init/validation.
             let _connection = match super::super::locking::Borrow::take(interface) {
                 Ok(connection) => connection,
                 Err(hr) => return hr,
             };
-            // SAFETY: context was checked non-null and is live for this call.
-            return match unsafe { item_type(context) } {
-                Ok(_) => S_OK,
-                Err(hr) => hr,
-            };
+            return S_OK;
         }
         // SAFETY: the borrow keeps the COM object live and Busy through the
         // service lock, the INQUIRY on the same STI session, and the write.

@@ -60,6 +60,24 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 
 ## 測試
 
+### WIA 服務首次實掃（開發機）
+
+2026-09-19：依 [安裝方案](../../driver/README.md#套件安裝更新解除安裝) 在開發機信任測試憑證並安裝套件，WIA 服務以 LocalService 載入 `workcentre_3119.dll`，鎖定 WinUSB 介面並完成灰階與彩色 75 dpi 全平台掃描；屬性驗證經服務拒絕 999 dpi。DLL SHA256 `2CBCB3B37E5CC495E1557F859443C78412E4A7C84EAC637CA778BF7BA3D19C1D`，套件 0.2.6.0。證據與時間見 [delivery-status](../../delivery-status.md#verified)。
+
+服務行為與對應修正（皆有先失敗的 wiatrace 證據，再修正）：
+
+| wiatrace 觀察 | 修正 |
+| --- | --- |
+| `CoCreateInstance … CLASS_E_NOAGGREGATION` | [com_server.rs](../../src/com_server.rs) 支援聚合：非委派 IUnknown 供 outer 持有，IStiUSD／IWiaMiniDrv 的 IUnknown 方法轉送 controlling unknown；outer 非空時只接受 IID_IUnknown |
+| `IStiUSD::Initialize … 0x8007047E` | 服務傳 STI 版本 3；[sti.rs](../../src/com_server/sti.rs) 改接受版本 ≥ STI_VERSION_MIN_ALLOWED，不要求 Unicode 旗標（實測服務值仍被舊檢查拒絕），GetCapabilities 回 STI_VERSION_3 |
+| `IStiUSD::LockDevice … 0x80004005` | `GetMyDevicePortName` 回 `AUTO`（INF `CreateFileName=AUTO`）；LockDevice 改以專案 GUID 列舉唯一 MI_00 |
+| `drvReadItemProperties (16 properties) … 0x8000FFFF` 且服務記錄「Could not get the driver item flags for this generated item」 | 相容模式產生的應用程式項目不能 `wiasGetItemType`；[read_entry.rs](../../src/com_server/minidrv/properties/read_entry.rs) 對不含裝置狀態的讀取只確認連線即回 S_OK |
+| 更新後仍載入舊行為 | COM 快取舊 DLL；[wc3119-setup.ps1](../../driver/wc3119-setup.ps1) 在 Install／Update 後重啟 stisvc |
+
+另新增 [trace.rs](../../src/com_server/trace.rs)：`catch_hresult` 攔到 panic 時寫 `%SystemRoot%\debug\WIA\wc3119-driver.log`，本輪沒有 panic 記錄，E_UNEXPECTED 來自 `helper_failure` 對 wiasGetItemType 非 S_OK 的映射。`drvUnLockWiaDevice` 在 `drvUnInitializeWia` 之後被呼叫時回 E_UNEXPECTED，服務照常卸載，列為待改善。wiatrace 另警告 DLL 缺少版本資源（Driver version 0.0.0.0），不影響載入。
+
+尚未驗收：Windows 掃描 App 操作與取消、拔插／換孔／重開機後再掃、第二台乾淨電腦、解除安裝與移除信任、亮度／對比映射與文件品質、`WIA_DPS_DOCUMENT_HANDLING_STATUS` 目前應用程式讀到 0（服務未以該屬性觸發驅動讀取）。
+
 ### WIA 登錄方案設計
 
 2026-09-19：新增 [WIA INF 設計稿](../../driver/wc3119-wia.inf)，Class 為 Image、函式驅動維持 WinUSB、以 sti_ci 類別安裝程式登錄 StillImage 與 USDClass／CLSID，事件表與 `drvGetCapabilities` 一致。完整前提、簽署門檻、備份與復原順序見 [安裝方案](../../driver/README.md#wia-登錄方案尚未執行待授權)。本輪只讀取系統狀態：`wc3119 doctor` 三介面問題碼 0、MI_00 服務 WINUSB；`stisvc` 為 Stopped；`bcdedit` 無 testsigning；本機只有 SDK signtool，沒有 WDK InfVerif／Inf2Cat。沒有修改綁定、登錄或服務。

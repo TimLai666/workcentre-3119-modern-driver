@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-2026-09-19：IWiaMiniDrv 已接上根／平台屬性初始化、相依驗證、屬性讀取通知、裝置錯誤字串、能力列舉與同步命令，IStiUSD 宣告 STI_GENCAP_WIA；讀取根項目狀態時以同一 STI session 的 INQUIRY 回報 FLAT_READY，原生屬性發佈失敗會隔離整個 COM 物件。真正 WIA 服務與安裝整合仍未完成，Windows 掃描尚不能使用本驅動。精確階段取消對照已加入測試建置，第一塊影像後取消並以同一 USB session 重掃通過；首塊前取消的復原缺口仍由 03 追蹤。
+2026-09-19：開發機已用測試憑證簽署的 WIA 套件安裝本驅動，Windows 的 WIA 服務首次成功載入、鎖定並透過既有 WIA 用戶端（WIA automation）完成灰階與彩色 75 dpi 全平台掃描，屬性驗證也經服務拒絕無效 dpi。修正過程確認服務要求 COM aggregation、傳 STI 版本 3、port name 為 AUTO、相容模式項目不能查型別。Windows 掃描 App 的操作、取消、拔插、第二台電腦與解除安裝驗收仍未完成。精確階段取消對照已加入測試建置，第一塊影像後取消並以同一 USB session 重掃通過；首塊前取消的復原缺口仍由 03 追蹤。
 
 ## Stage Objective
 
@@ -24,13 +24,13 @@
 | 01 | 唯讀診斷完整情境 | 開發者 | in_progress | 本機問題碼 28 可重現，硬體異常情境未全部驗證 |
 | 02 | 第一張實機掃描 | 開發者 | in_progress | 空平台灰階／彩色及獨立像素比對成功；文件、色彩及精確幾何待驗收 |
 | 03 | 取消與復原 | 開發者 | in_progress | 連續工作前 4 次成功，第 5 次 RGB600 自然逾時，清理後 Gray75 成功；20 次驗收與失同步復原未完成 |
-| 05 | Windows 掃描與安裝 | 開發者 | in_progress | IWiaMiniDrv 可實作方法、STI_GENCAP_WIA、WIA INF 設計稿及打包／安裝／更新／解除安裝腳本已完成；簽署套件、服務驗收與 Windows 掃描實測未完成 |
+| 05 | Windows 掃描與安裝 | 開發者 | in_progress | 開發機測試憑證套件安裝成功，WIA 服務載入驅動並完成灰階／彩色掃描與屬性驗證；Windows 掃描 App、取消、拔插、第二台電腦、解除安裝與明暗品質未驗收 |
 | 06 | 列印 | 開發者 | not_started | 尚無 |
 | 07 | 掃描明暗品質 | 開發者 | blocked | 已有空平台影像，缺少可對照原稿；歷史偏白仍未重現 |
 
 ## Current Blockers
 
-- WIA 登錄採免費測試憑證路線（使用者 2026-09-19 決定不花錢）。仍缺：本機安裝 WDK 取得 Inf2Cat；使用者授權把測試憑證加入 LocalMachine Root／TrustedPublisher 並執行 `pnputil` 安裝。測試憑證簽署不需 testsigning 的推論尚未以實際安裝驗證。安裝、更新、解除安裝腳本已就位，見 [安裝方案](driver/README.md#套件安裝更新解除安裝)。
+- 免費路線的限制：每台要用的電腦都得先信任專案測試憑證，不能公開分發。目前只在開發機驗證，第二台乾淨電腦、換孔、拔插、重開機與解除安裝尚未實測。
 
 - 提早取消情境：已確認取消發生於首塊前的 READ metadata Busy，ABORT／RELEASE 都回成功，但立即重掃 RESERVE 收到 800 次 Busy、約 120 秒到期。保持同一 USB session 也失敗，關閉／重開連線不是必要條件。須查明首塊前取消的裝置時序，不能由成功清理回覆推論已可重掃。詳見 03 及硬體紀錄。
 
@@ -68,6 +68,8 @@ IWiaMiniDrv 的 `drvWriteItemProperties`、`drvAnalyzeItem` 與 `drvDeleteItem` 
 | 建立持續完成完整驅動的目標 | 使用者要求逐步完成實作、驗證與推送，需要使用者介入時提出具體需求，可獨立工作繼續推進 | 2026-09-13 | 01、02、03、05、06、07 |
 
 ## Verified
+
+2026-09-19 WIA 服務實掃版本：178 個 lib 測試、全部整合測試及 2 個 doc-tests、fmt、Clippy、全部 release targets、當次 release DLL 動態載入通過；DLL SHA256 `2CBCB3B37E5CC495E1557F859443C78412E4A7C84EAC637CA778BF7BA3D19C1D`。實機：套件 0.2.6.0 經 `wc3119-setup.ps1 -Action Update -Apply` 安裝，WIA automation `Connect` 70 ms，根屬性 Manufacturer／Description／Name 由服務提供，平台項目回報 75 dpi、637×877 選取、8 bpp、Item Size 562358；灰階 75 dpi 傳輸 7.3 秒得 648×871 8 bpp BMP（565486 bytes，抽樣灰階平均 255，空平台）；同一連線改彩色後 Item Size 更新為 1676878、無效 999 dpi 被服務以 0x80070057 拒絕、彩色傳輸 10.9 秒得 648×871 24 bpp BMP。wiatrace 顯示 drvGetCapabilities、drvInitializeWia、drvInitItemProperties×2、drvReadItemProperties、drvGetWiaFormatInfo、drvAcquireItemData 全部回 S_OK，END_OF_STREAM／END_OF_TRANSFER 由服務發送。逐步排除的服務端失敗：CLASS_E_NOAGGREGATION（改支援聚合）、STIERR_OLD_VERSION（接受版本 ≥2）、LockDevice E_FAIL（port name AUTO 改 GUID 列舉）、相容模式項目讀取 E_UNEXPECTED（不再對非狀態讀取查項目類型）。私人證據在 `artifacts/wia-scan-20260919T050522Z/` 與 `artifacts/wia-setup-*`。沒有 Windows 掃描 App、取消、拔插、第二台電腦或文件品質驗收。
 
 2026-09-19 能力列舉版本：176 個 lib 測試、全部整合測試及 2 個 doc-tests、fmt、Clippy（all targets，warnings 為錯誤）、全部 release targets 通過；當次 release DLL 動態載入以 ignored 模式另行通過，slot 14／x64 偏移 112 的能力列舉以 null context 回傳 2 個事件。TDD：公開 COM 測試先取得能力列舉回 E_NOTIMPL 的 RED。`tests/sti.rs` 原本斷言 GetCapabilities 旗標為 0 並註明「實作前不宣告」，前提已不成立，改為斷言 STI_GENCAP_WIA。沒有硬體、系統登錄或 Windows 掃描驗收，詳見 [05](docs/tickets/05-windows-install.md#能力列舉同步命令與-sti-wia-宣告)。
 

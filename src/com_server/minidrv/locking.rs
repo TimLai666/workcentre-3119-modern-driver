@@ -418,12 +418,16 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             let apartment = ComApartment::new();
-            let instance = Box::new(super::super::super::Instance {
+            let mut instance = Box::new(super::super::super::Instance {
                 vtable: &sti::VTABLE,
+                unknown: &super::super::super::UNKNOWN_VTABLE,
                 mini: Interface::new(),
+                outer: ptr::null_mut(),
                 refs: AtomicU32::new(1),
                 state: sti::State::new(),
             });
+            // Not aggregated: the boxed object is its own controlling unknown.
+            instance.outer = ptr::addr_of_mut!(instance.unknown).cast();
             let interface = &instance.mini as *const Interface;
             let mut device = Box::new(TestDevice {
                 vtable: &DEVICE_VTABLE,

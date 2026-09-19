@@ -36,7 +36,7 @@
 
 開發機的 [Rust 配對工具](examples/winusb_setup.rs) 要求完整實例 ID，只搜尋本機內建 `C:\Windows\INF\winusb.inf`，以 `DiInstallDevice` 綁定單一裝置。本機已獲授權並完成配對與真實 INQUIRY，結果見 [硬體紀錄](docs/hardware.md)。這次完整實例 ID 只限定被授權操作的目標，不是正式套件的匹配條件；正式套件仍需支援其他電腦的系統路徑、裝置實例及 USB 接孔。
 
-真正的 Windows 掃描整合仍需完成屬性服務驗收與安裝登錄，目前已具備部分 IWiaMiniDrv、屬性初始化及傳輸入口。WinUSB 本身不會把裝置變成 Windows 掃描器。WIA 如何發現裝置、COM 生命週期、USB 句柄交接與一般使用者權限須先完成實機小範圍驗證，再確定正式安裝架構。
+真正的 Windows 掃描整合仍需完成屬性服務驗收與安裝登錄，目前已具備部分 IWiaMiniDrv、屬性初始化及傳輸入口。WinUSB 本身不會把裝置變成 Windows 掃描器。2026-09-19 已在開發機以測試憑證簽署的 Image 類別 INF 安裝，WIA 服務（LocalService）成功載入本 DLL、鎖定 WinUSB 介面並完成灰階／彩色 75 dpi 掃描。服務行為與實作的對應：以 COM aggregation 建立物件；`IStiUSD::Initialize` 收到 STI 版本 3；`GetMyDevicePortName` 回 `AUTO`，驅動改以 GUID 列舉唯一 MI_00；相容模式產生的應用程式項目不能 `wiasGetItemType`，`drvReadItemProperties` 對不含裝置狀態的請求不再查項目類型；更新 DLL 後須重啟 stisvc 才會載入新檔。
 
 跨電腦安裝、換孔、拔插與重新開機的實機驗收集中於 [05](docs/tickets/05-windows-install.md)。單次工作可以使用目前取得的裝置路徑，重連後必須重新取得；多台候選不可任意選第一台。
 
@@ -136,7 +136,7 @@ WIA 服務實際提供的 old 值、名稱存取、應用程式可見的相依�
 
 Cargo 同時建置 Rust `rlib` 與原生 `cdylib`。Windows release 檔案為 `target/release/workcentre_3119.dll`，輸出 `DllGetClassObject` 與 `DllCanUnloadNow`，class ID 為 `{F71A8435-AA10-40A6-8334-49EEC8FE9C63}`。此 ID 識別專案的 COM 類別，不含裝置實例或 USB 孔位，也未登錄到系統。
 
-`com_server` 的 factory 支援 `IUnknown`／`IClassFactory`，建立的物件支援 `IUnknown`／`IStiUSD`／`IWiaMiniDrv`，三者共享物件身分與參考計數。未知類別回傳 `CLASS_E_CLASSNOTAVAILABLE`，不支援的介面回傳 `E_NOINTERFACE`，無效輸出指標回傳 `E_POINTER`，失敗時清空有效的輸出欄位。尚未支援 COM aggregation，非空 outer 指標回傳 `CLASS_E_NOAGGREGATION`。`IWiaMiniDrv` 的原生項目生命週期見上節，屬性相依更新已接上，服務整合仍須接續實作，不能把載入成功當成 WIA 服務已接受此 DLL。[Microsoft COM 識別要求](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-a-com-interface)、[QueryInterface 規則](https://learn.microsoft.com/en-us/windows/win32/com/rules-for-implementing-queryinterface)
+`com_server` 的 factory 支援 `IUnknown`／`IClassFactory`，建立的物件支援 `IUnknown`／`IStiUSD`／`IWiaMiniDrv`，三者共享物件身分與參考計數。未知類別回傳 `CLASS_E_CLASSNOTAVAILABLE`，不支援的介面回傳 `E_NOINTERFACE`，無效輸出指標回傳 `E_POINTER`，失敗時清空有效的輸出欄位。支援 COM aggregation：WIA 服務以 outer IUnknown 建立 USD 時只能要求 `IID_IUnknown`，否則回 `CLASS_E_NOAGGREGATION`；物件內嵌非委派 IUnknown 供 aggregator 持有，`IStiUSD`／`IWiaMiniDrv` 的 IUnknown 方法轉送給 controlling unknown，未聚合時 controlling unknown 就是自己。2026-09-19 實機 wiatrace 證實服務確以聚合建立驅動（先前回 0x80040110 導致 WIA_ERROR_OFFLINE）。`IWiaMiniDrv` 的原生項目生命週期見上節，屬性相依更新已接上，服務整合仍須接續實作，不能把載入成功當成 WIA 服務已接受此 DLL。[Microsoft COM 識別要求](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-a-com-interface)、[QueryInterface 規則](https://learn.microsoft.com/en-us/windows/win32/com/rules-for-implementing-queryinterface)
 
 `com_server::sti` 的 19 個方法位置依 SDK `stiusd.h` 宣告。Initialize 驗證 Unicode STI 2 版本，保留 helper 參考並取得有上限的 UTF-16 port name，借用的登錄句柄不使用也不關閉。helper 呼叫在狀態鎖外執行，失敗初始化可重試。LockDevice 重新列舉當下 MI_00，僅開啟與 helper 路徑相符的裝置，沒有找不到時改選其他裝置的行為。UnLockDevice 與最終 Release 釋放持有的 USB session。Diagnostic 僅在鎖定後執行既有 INQUIRY 並驗證能力回覆，不能用此結果宣稱掃描馬達已就緒。未實作的狀態、reset、raw、escape 與通知回傳不支援，GetCapabilities 目前不宣告 WIA／通知能力。[Microsoft IStiUSD](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/providing-an-istiusd-interface)
 
@@ -152,7 +152,7 @@ DLL 的動態測試獨立宣告 SDK ABI，使用 `LoadLibraryExW`／`GetProcAddr
 
 MSVC 建置由 `build.rs` 傳入 `driver/com-exports.def`，兩個 COM 入口標示 PRIVATE，保留 DLL export 並排除 import library 項目。2026-09-13 實際 exports 恰為上述兩個入口，沒有 LNK4104 警告。此建置仍依賴 `VCRUNTIME140.dll` 與 Windows 系統 runtime，正式套件須處理 runtime 前置條件，不能由開發機載入成功推論乾淨電腦可用。[Microsoft LNK4104](https://learn.microsoft.com/en-us/cpp/error-messages/tool-errors/linker-tools-warning-lnk4104?view=msvc-170)
 
-正式整合還須驗證 COM 管理的 `CoGetClassObject`／`CoFreeUnusedLibraries` 並行載入排程，以及 WIA 是否要求 aggregation。現在的直接 DLL 測試由呼叫端持有 loader reference，不涵蓋上述排程。WIA 初始化應依 SDK 的 `IStiUSD::Initialize`、`GetCapabilities` 及 `IWiaMiniDrv::drvInitializeWia` 實作；保留 WIA 提供的 COM 物件需取得參考，借用的裝置參數登錄句柄不得關閉。[Microsoft 初始化](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/stiusd/nf-stiusd-istiusd-initialize)、[WIA 載入流程](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/loading-and-unloading-a-wia-minidriver)
+正式整合還須驗證 COM 管理的 `CoGetClassObject`／`CoFreeUnusedLibraries` 並行載入排程；WIA 要求 aggregation 已由實機 wiatrace 確認並實作。現在的直接 DLL 測試由呼叫端持有 loader reference，不涵蓋上述排程。WIA 初始化應依 SDK 的 `IStiUSD::Initialize`、`GetCapabilities` 及 `IWiaMiniDrv::drvInitializeWia` 實作；保留 WIA 提供的 COM 物件需取得參考，借用的裝置參數登錄句柄不得關閉。[Microsoft 初始化](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/stiusd/nf-stiusd-istiusd-initialize)、[WIA 載入流程](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/loading-and-unloading-a-wia-minidriver)
 
 更動 COM DLL 後，除了一般檢查，另執行：
 

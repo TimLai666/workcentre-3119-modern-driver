@@ -76,8 +76,11 @@ const STIERR_GENERIC: HRESULT = 0x8000_4005u32 as HRESULT;
 
 const STI_VERSION_FLAG_MASK: DWORD = 0xff00_0000;
 const STI_VERSION_FLAG_UNICODE: DWORD = 0x0100_0000;
-const STI_VERSION_REAL: DWORD = 0x0000_0002;
-pub(super) const STI_VERSION: DWORD = STI_VERSION_REAL | STI_VERSION_FLAG_UNICODE;
+// SDK sti.h: STI_VERSION_MIN_ALLOWED and STI_VERSION_3. The Windows 11 service
+// passes STI_VERSION_3 to Initialize (wiatrace 2026-09-19); ProdScan reports
+// STI_VERSION_3 from GetCapabilities and ignores the caller's value entirely.
+const STI_VERSION_MIN_ALLOWED: DWORD = 0x0000_0002;
+pub(super) const STI_VERSION_3: DWORD = 0x0000_0003 | STI_VERSION_FLAG_UNICODE;
 
 // SDK 10.0.26100.0 sti.h: the USD also exposes IWiaMiniDrv.
 const STI_GENCAP_WIA: DWORD = 0x0000_0010;
@@ -534,10 +537,11 @@ unsafe fn initialize_impl(this: *mut c_void, helper: *mut c_void, sti_version: D
     if helper.is_null() {
         return fail(state, E_POINTER, "IStiDeviceControl is null");
     }
-    if sti_version != STI_VERSION
-        || (sti_version & STI_VERSION_FLAG_MASK) != STI_VERSION_FLAG_UNICODE
-        || (sti_version & !STI_VERSION_FLAG_MASK) != STI_VERSION_REAL
-    {
+    // Accept any caller at or above the SDK minimum. The 2026-09-19 Windows 11
+    // service call was still rejected when the Unicode flag was required, so
+    // only the version number is checked, as the ProdScan sample does. The
+    // string ABIs in this driver are the Unicode ones the NT service uses.
+    if (sti_version & !STI_VERSION_FLAG_MASK) < STI_VERSION_MIN_ALLOWED {
         return fail(state, STIERR_OLD_VERSION, "Unsupported STI version");
     }
     if state.lock().initialized {
@@ -622,7 +626,7 @@ unsafe fn get_capabilities_impl(this: *mut c_void, capabilities: *mut StiUsdCaps
 
 fn usd_capabilities() -> StiUsdCaps {
     StiUsdCaps {
-        dw_version: STI_VERSION,
+        dw_version: STI_VERSION_3,
         dw_generic_caps: STI_GENCAP_WIA,
     }
 }
@@ -873,6 +877,24 @@ fn access_error(error: AccessError) -> (HRESULT, String) {
     }
 }
 
+/// PnP WIA devices installed with `CreateFileName=AUTO` receive the literal
+/// port name `AUTO` from `GetMyDevicePortName` (observed on the 2026-09-19
+/// live service). Microsoft's INF documentation says such a driver must find
+/// its device on its own; this driver then enumerates the unique registered
+/// MI_00 interface instead of matching a device path.
+fn port_selects_unique_device(port: &[u16]) -> bool {
+    let end = port
+        .iter()
+        .position(|&unit| unit == 0)
+        .unwrap_or(port.len());
+    let name = &port[..end];
+    let upper = |unit: &u16| match *unit {
+        lower @ 0x61..=0x7a => lower - 0x20,
+        other => other,
+    };
+    name.len() == 4 && name.iter().map(upper).eq("AUTO".encode_utf16())
+}
+
 unsafe fn lock_device_impl(this: *mut c_void) -> HRESULT {
     // SAFETY: this is a live IStiUSD pointer for the COM call.
     let state = match unsafe { state_from_this(this) } {
@@ -887,10 +909,14 @@ unsafe fn lock_device_impl(this: *mut c_void) -> HRESULT {
         }
         inner.helper_port_name.clone()
     };
-    match state
-        .session
-        .open(|| usb::UsbSession::open_matching_path(&path))
-    {
+    let open = || {
+        if port_selects_unique_device(&path) {
+            usb::UsbSession::open()
+        } else {
+            usb::UsbSession::open_matching_path(&path)
+        }
+    };
+    match state.session.open(open) {
         Ok(()) => {
             state.clear_last_error();
             S_OK
@@ -1100,9 +1126,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn auto_port_name_selects_guid_enumeration_and_paths_do_not() {
+        let auto: Vec<u16> = "AUTO".encode_utf16().chain([0]).collect();
+        let lower: Vec<u16> = "auto".encode_utf16().chain([0]).collect();
+        let path: Vec<u16> = r"\\?\usb#vid_0924&pid_4265&mi_00#x#{g}"
+            .encode_utf16()
+            .chain([0])
+            .collect();
+        assert!(port_selects_unique_device(&auto));
+        assert!(port_selects_unique_device(&lower));
+        assert!(!port_selects_unique_device(&path));
+        assert!(!port_selects_unique_device(&[]));
+        let longer: Vec<u16> = "AUTOX".encode_utf16().collect();
+        assert!(!port_selects_unique_device(&longer));
+    }
+
+    #[test]
     fn usd_declares_wia_support_with_the_unicode_sti_version() {
         let caps = usd_capabilities();
-        assert_eq!(caps.dw_version, STI_VERSION);
+        assert_eq!(caps.dw_version, STI_VERSION_3);
+        assert_eq!(STI_VERSION_3, 0x0100_0003);
         assert_eq!(caps.dw_generic_caps, STI_GENCAP_WIA);
     }
 

@@ -67,7 +67,7 @@
 
 解除安裝後 MI_00 會回到沒有驅動（問題碼 28），因為內建 `winusb.inf` 不匹配這個硬體 ID。若還要以開發工具存取 USB，需重新以 [配對工具](../examples/winusb_setup.rs) 綁定內建 WinUSB。這是與 WinUSB 開發配對並存的既有限制。
 
-已實跑：`-Action Status` 唯讀通過（MI_00 WINUSB／USBDevice 類別、無套件、無 CLSID、無受信任測試憑證、stisvc Stopped、WIA 0 台）。`package.ps1 -SkipCatalog` 可以暫存未簽署套件。Inf2Cat 尚未安裝，因此完整簽署、信任、安裝、更新、解除安裝都尚未實跑。
+已實跑（2026-09-19，本開發機）：winget 安裝 WDK 10.0.26100 取得 Inf2Cat；`package.ps1 -NewTestCertificate` 產出簽署套件；`-TrustCertificate -Apply` 匯入兩個機器儲存區；`-Action Install -Apply` 安裝 0.2.0.0（pnputil 回 0、oem19.inf、MI_00 轉為 Image 類別且服務仍 WINUSB、CLSID 指向驅動存放區）；之後以 `-Action Update -Apply` 連續更新到 0.2.6.0，每次刪除前一版 oem inf。測試憑證簽署不需要 testsigning 的推論已由實際安裝證實。解除安裝與移除信任尚未實跑。第一次 Install 曾因腳本用英文解析中文版 pnputil 輸出而誤報失敗，已改成掃描 `oem*.inf` 內容判斷；Update 另加入重啟 stisvc，否則服務仍持有舊 DLL。
 
 ### 授權後的執行與復原順序
 

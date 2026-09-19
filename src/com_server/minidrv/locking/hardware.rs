@@ -159,7 +159,7 @@ fn actual_wia_lock_queries_live_capabilities_without_scan() {
             (sti::VTABLE.initialize)(
                 owner,
                 ptr::from_mut(&mut control).cast(),
-                sti::STI_VERSION,
+                sti::STI_VERSION_3,
                 ptr::null_mut(),
             ),
             0
@@ -273,7 +273,7 @@ fn exercise_mode(scan: bool, async_cancel: bool) {
             (sti::VTABLE.initialize)(
                 owner,
                 ptr::from_mut(&mut control).cast(),
-                sti::STI_VERSION,
+                sti::STI_VERSION_3,
                 ptr::null_mut()
             ),
             0

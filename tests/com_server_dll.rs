@@ -246,7 +246,18 @@ fn release_dll_exports_real_factory_and_keeps_objects_alive() {
             ((**object.raw.cast::<*const UnknownTable>()).query)(object.raw, &STI, &mut sti),
             0
         );
-        assert_eq!(sti, object.raw);
+        // IStiUSD has its own method table; only IID_IUnknown must be identical.
+        assert_ne!(sti, object.raw);
+        let mut sti_identity = ptr::null_mut();
+        assert_eq!(
+            ((**sti.cast::<*const UnknownTable>()).query)(sti, &UNKNOWN, &mut sti_identity),
+            0
+        );
+        assert_eq!(sti_identity, object.raw);
+        drop(Owned {
+            raw: sti_identity,
+            _module: &module,
+        });
         drop(Owned {
             raw: sti,
             _module: &module,

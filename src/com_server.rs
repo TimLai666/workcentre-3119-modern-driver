@@ -1,15 +1,18 @@
 //! Windows COM server identity and lifetime for the scanner integration.
 //!
-//! The instance shares `IUnknown`, `IStiUSD` and `IWiaMiniDrv` identity. Native
-//! driver items, locking and stream acquisition are implemented. Property
-//! initialization, validation, cancellation events and service integration remain.
+//! The instance exposes `IUnknown`, `IStiUSD` and `IWiaMiniDrv` and supports COM
+//! aggregation: the WIA service creates the USD as an inner object and owns it
+//! through the non-delegating `IUnknown`, while every other interface forwards
+//! its `IUnknown` methods to the controlling outer.
 
 mod minidrv;
 mod session;
 mod sti;
+mod trace;
 
 use std::{
     ffi::c_void,
+    mem::offset_of,
     panic::{AssertUnwindSafe, catch_unwind},
     ptr,
     sync::atomic::{AtomicU32, Ordering},
@@ -44,9 +47,11 @@ pub unsafe fn scan_locked_bmp<W: std::io::Write + std::io::Seek>(
             "Driver object is null",
         ));
     }
+    // SAFETY: caller owns a reference from our factory for this entire call.
+    let instance = unsafe { resolve_instance(device) }?;
     catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: caller owns a reference from our factory for this entire call.
-        unsafe { &(*device.cast::<Instance>()).state }.scan_bmp(settings, cancel, output)
+        // SAFETY: resolved above from a live factory-created object.
+        unsafe { &(*instance).state }.scan_bmp(settings, cancel, output)
     }))
     .unwrap_or_else(|_| {
         Err(std::io::Error::other(
@@ -84,10 +89,12 @@ pub unsafe fn transfer_locked_bmp(
             "Driver object is null",
         ));
     }
+    // SAFETY: caller owns a reference from our factory for this entire call.
+    let instance = unsafe { resolve_instance(device) }?;
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: both COM references and the apartment are kept alive by caller.
         unsafe {
-            (*device.cast::<Instance>())
+            (*instance)
                 .state
                 .transfer_bmp(settings, cancel, callback, item, full_item)
         }
@@ -97,6 +104,28 @@ pub unsafe fn transfer_locked_bmp(
             "WIA transfer panicked; discard destination",
         ))
     })
+}
+
+/// Map an `IStiUSD` or non-delegating `IUnknown` pointer from this factory back
+/// to its containing object by inspecting which of our method tables it uses.
+///
+/// # Safety
+/// `device` must be non-null and point to a live interface returned by this
+/// module's factory; its first word is read as a vtable pointer.
+unsafe fn resolve_instance(device: *mut c_void) -> std::io::Result<*mut Instance> {
+    // SAFETY: every interface this factory hands out starts with a vtable pointer.
+    let table = unsafe { *device.cast::<*const c_void>() };
+    if table == ptr::from_ref(&sti::VTABLE).cast() {
+        return Ok(device.cast());
+    }
+    if table == ptr::from_ref(&UNKNOWN_VTABLE).cast() {
+        // SAFETY: the pointer is the embedded `unknown` field of an Instance.
+        return Ok(unsafe { instance_from_unknown(device) });
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "Pointer is not an IStiUSD or IUnknown from this driver",
+    ))
 }
 
 /// ABI-compatible Windows GUID storage.
@@ -165,11 +194,38 @@ struct Factory {
 }
 
 #[repr(C)]
+struct UnknownVtable {
+    query_interface: QueryInterfaceFn,
+    add_ref: AddRefFn,
+    release: ReleaseFn,
+}
+
+#[repr(C)]
 struct Instance {
+    /// `IStiUSD`; its IUnknown slots delegate to `outer`.
     vtable: *const sti::Vtable,
+    /// Non-delegating `IUnknown`, the identity a controlling outer owns.
+    unknown: *const UnknownVtable,
+    /// `IWiaMiniDrv`; its IUnknown slots delegate to `outer`.
     mini: minidrv::Interface,
+    /// Controlling unknown: the aggregator, or our own `unknown` field.
+    outer: *mut c_void,
+    /// Non-delegating reference count.
     refs: AtomicU32,
     state: sti::State,
+}
+
+static UNKNOWN_VTABLE: UnknownVtable = UnknownVtable {
+    query_interface: unknown_query_interface,
+    add_ref: unknown_add_ref,
+    release: unknown_release,
+};
+
+/// # Safety
+/// `this` must point to the `unknown` field of a live `Instance`.
+unsafe fn instance_from_unknown(this: *mut c_void) -> *mut Instance {
+    // SAFETY: repr(C) field offset recovers the containing object.
+    unsafe { this.cast::<u8>().sub(offset_of!(Instance, unknown)).cast() }
 }
 
 // One hold covers every live factory/instance and every balanced LockServer
@@ -231,7 +287,11 @@ static FACTORY_VTABLE: ClassFactoryVtable = ClassFactoryVtable {
 };
 
 fn catch_hresult(f: impl FnOnce() -> i32) -> i32 {
-    catch_unwind(AssertUnwindSafe(f)).unwrap_or(E_UNEXPECTED)
+    trace::install_panic_hook();
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| {
+        trace::append("panic contained by catch_hresult; returning E_UNEXPECTED");
+        E_UNEXPECTED
+    })
 }
 
 fn increment_count(counter: &AtomicU32) -> bool {
@@ -391,23 +451,25 @@ unsafe fn factory_create_instance_impl(
     if this.is_null() {
         return E_POINTER;
     }
-    // Aggregation is deliberately unsupported. Check only pointer presence,
-    // never dereference or query the outer object.
-    if !outer.is_null() {
-        return CLASS_E_NOAGGREGATION;
-    }
     if riid.is_null() {
         return E_POINTER;
     }
     // SAFETY: riid is non-null and valid for the duration of this call under
     // the IClassFactory contract.
     let requested = unsafe { *riid };
+    // COM aggregation rule: a controlling unknown may only ask for IID_IUnknown.
+    // The outer pointer is stored, never dereferenced, during creation.
+    if !outer.is_null() && requested != IID_IUNKNOWN {
+        return CLASS_E_NOAGGREGATION;
+    }
     if requested != IID_IUNKNOWN && requested != IID_ISTIUSD && requested != IID_IWIAMINIDRV {
         return E_NOINTERFACE;
     }
     let object = Box::new(Instance {
         vtable: &sti::VTABLE,
+        unknown: &UNKNOWN_VTABLE,
         mini: minidrv::Interface::new(),
+        outer: ptr::null_mut(),
         refs: AtomicU32::new(1),
         state: sti::State::new(),
     });
@@ -417,11 +479,16 @@ unsafe fn factory_create_instance_impl(
     // SAFETY: output was checked and cleared above; the caller receives one
     // owned reference and must release it exactly once.
     let object = Box::into_raw(object);
-    // SAFETY: this stable allocation contains both COM interfaces; one initial
-    // reference is transferred regardless of which interface was requested.
+    // SAFETY: this stable allocation contains every COM interface; the one
+    // initial non-delegating reference is transferred with whichever interface
+    // was requested. Without an aggregator the object controls itself.
     unsafe {
+        let unknown: *mut c_void = ptr::addr_of_mut!((*object).unknown).cast();
+        (*object).outer = if outer.is_null() { unknown } else { outer };
         *output = if requested == IID_IWIAMINIDRV {
             ptr::addr_of_mut!((*object).mini).cast()
+        } else if requested == IID_IUNKNOWN {
+            unknown
         } else {
             object.cast()
         };
@@ -438,17 +505,19 @@ unsafe extern "system" fn factory_lock_server(this: *mut c_void, lock: i32) -> i
     })
 }
 
-unsafe extern "system" fn instance_query_interface(
+// ---- Non-delegating IUnknown (owned by the aggregator or by ourselves) ----
+
+unsafe extern "system" fn unknown_query_interface(
     this: *mut c_void,
     riid: *const Guid,
     output: *mut *mut c_void,
 ) -> i32 {
     // SAFETY: COM supplies a live interface pointer and the implementation's
     // helper validates the output and input pointers before dereferencing them.
-    catch_hresult(|| unsafe { instance_query_interface_impl(this, riid, output) })
+    catch_hresult(|| unsafe { unknown_query_interface_impl(this, riid, output) })
 }
 
-unsafe fn instance_query_interface_impl(
+unsafe fn unknown_query_interface_impl(
     this: *mut c_void,
     riid: *const Guid,
     output: *mut *mut c_void,
@@ -461,54 +530,119 @@ unsafe fn instance_query_interface_impl(
     if this.is_null() || riid.is_null() {
         return E_POINTER;
     }
-    // SAFETY: this and riid are valid for this COM call under the interface
-    // contract, and this points to an Instance object.
+    // SAFETY: riid is readable for this synchronous call.
     let requested = unsafe { *riid };
-    if requested != IID_IUNKNOWN && requested != IID_ISTIUSD && requested != IID_IWIAMINIDRV {
-        return E_NOINTERFACE;
-    }
-    // SAFETY: this is a live Instance interface pointer; successful identity
-    // queries add one owned reference.
-    let instance = unsafe { &*this.cast::<Instance>() };
-    increment_ref(&instance.refs);
-    // SAFETY: output was checked and cleared above.
+    // SAFETY: `this` is the embedded non-delegating unknown of a live Instance.
+    let instance = unsafe { instance_from_unknown(this) };
+    // SAFETY: output was checked and cleared above. Per the aggregation rules,
+    // IID_IUnknown returns this non-delegating identity with a non-delegating
+    // reference; any other interface is returned with a reference taken through
+    // its own (delegating) AddRef, so the controlling unknown is counted.
     unsafe {
-        *output = if requested == IID_IWIAMINIDRV {
-            ptr::addr_of_mut!((*this.cast::<Instance>()).mini).cast()
+        if requested == IID_IUNKNOWN {
+            increment_ref(&(*instance).refs);
+            *output = this;
+            return S_OK;
+        }
+        let interface: *mut c_void = if requested == IID_ISTIUSD {
+            instance.cast()
+        } else if requested == IID_IWIAMINIDRV {
+            ptr::addr_of_mut!((*instance).mini).cast()
         } else {
-            this
+            return E_NOINTERFACE;
         };
+        instance_add_ref(instance.cast());
+        *output = interface;
     }
     S_OK
+}
+
+unsafe extern "system" fn unknown_add_ref(this: *mut c_void) -> u32 {
+    if this.is_null() {
+        return 0;
+    }
+    // SAFETY: a non-null receiver is the embedded unknown of a live Instance.
+    // This path contains no panicking operation.
+    unsafe { increment_ref(&(*instance_from_unknown(this)).refs) }
+}
+
+unsafe extern "system" fn unknown_release(this: *mut c_void) -> u32 {
+    if this.is_null() {
+        return 0;
+    }
+    // SAFETY: a non-null receiver is the embedded unknown of a live Instance
+    // while the caller owns the reference being released. This path contains
+    // no panicking operation.
+    unsafe {
+        let instance = instance_from_unknown(this);
+        let Some(remaining) = release_ref(&(*instance).refs) else {
+            return 0;
+        };
+        if remaining == 0 {
+            // Keep the module held while the allocation is being destroyed.
+            drop(Box::from_raw(instance));
+            MODULE_STATE.release_object();
+        }
+        remaining
+    }
+}
+
+// ---- Delegating IUnknown shared by IStiUSD and IWiaMiniDrv ----
+//
+// `this` is always the containing Instance (IStiUSD lives at offset 0 and
+// the minidriver interface recovers its owner before calling these).
+
+/// # Safety
+/// `this` must be a live Instance; returns its controlling unknown and vtable.
+unsafe fn controlling_unknown(this: *mut c_void) -> (*mut c_void, &'static UnknownVtable) {
+    // SAFETY: `outer` is set at creation and never changes; it is either our
+    // own embedded unknown or the aggregator's IUnknown, both IUnknown-prefixed.
+    unsafe {
+        let outer = (*this.cast::<Instance>()).outer;
+        (outer, &**outer.cast::<*const UnknownVtable>())
+    }
+}
+
+unsafe extern "system" fn instance_query_interface(
+    this: *mut c_void,
+    riid: *const Guid,
+    output: *mut *mut c_void,
+) -> i32 {
+    if this.is_null() {
+        // SAFETY: clear_output validates the output pointer before writing.
+        return match unsafe { clear_output(output) } {
+            Ok(()) => E_POINTER,
+            Err(error) => error,
+        };
+    }
+    catch_hresult(|| {
+        // SAFETY: `this` is a live Instance; the controlling unknown outlives it.
+        let (outer, table) = unsafe { controlling_unknown(this) };
+        // SAFETY: forwarding the caller's own arguments to the controlling unknown.
+        unsafe { (table.query_interface)(outer, riid, output) }
+    })
 }
 
 unsafe extern "system" fn instance_add_ref(this: *mut c_void) -> u32 {
     if this.is_null() {
         return 0;
     }
-    // SAFETY: a non-null AddRef receiver is a live Instance pointer under the
-    // IUnknown ownership contract. This path contains no panicking operation.
-    unsafe { increment_ref(&(*this.cast::<Instance>()).refs) }
+    // SAFETY: `this` is a live Instance; AddRef is forwarded to its controller.
+    unsafe {
+        let (outer, table) = controlling_unknown(this);
+        (table.add_ref)(outer)
+    }
 }
 
 unsafe extern "system" fn instance_release(this: *mut c_void) -> u32 {
     if this.is_null() {
         return 0;
     }
-    // SAFETY: a non-null Release receiver is a live Instance pointer while the
-    // caller owns the reference being released. This path contains no
-    // panicking operation.
+    // SAFETY: `this` is live until this forwarded Release returns; the
+    // controller pointer is read before the call may destroy the object.
     unsafe {
-        let instance = &*this.cast::<Instance>();
-        let Some(remaining) = release_ref(&instance.refs) else {
-            return 0;
-        };
-        if remaining == 0 {
-            // Keep the module held while the allocation is being destroyed.
-            drop(Box::from_raw(this.cast::<Instance>()));
-            MODULE_STATE.release_object();
-        }
-        remaining
+        let (outer, table) = controlling_unknown(this);
+        (table.release)(outer)
     }
 }
 

@@ -92,17 +92,18 @@ function Get-Scanner {
     return $present[0]
 }
 function Get-ProjectPackages {
-    # pnputil prints blocks; parse Published Name / Original Name / Provider / Version.
-    $blocks = @()
-    $current = @{}
-    foreach ($line in @(& pnputil.exe /enum-drivers)) {
-        if ($line -match '^\s*Published Name:\s*(\S+)') { if ($current.Count) { $blocks += [pscustomobject]$current }; $current = @{ Published = $Matches[1] } }
-        elseif ($line -match '^\s*Original Name:\s*(\S+)') { $current.Original = $Matches[1] }
-        elseif ($line -match '^\s*Provider Name:\s*(.+?)\s*$') { $current.Provider = $Matches[1] }
-        elseif ($line -match '^\s*Driver Version:\s*(\S+)\s+(\S+)') { $current.Date = $Matches[1]; $current.Version = [version]$Matches[2] }
+    # Language-neutral: read the staged oem*.inf files instead of parsing the
+    # localized pnputil /enum-drivers text.
+    $result = @()
+    foreach ($file in @(Get-ChildItem (Join-Path $env:windir 'INF\oem*.inf') -ErrorAction SilentlyContinue)) {
+        $text = Get-Content $file.FullName -Raw -ErrorAction SilentlyContinue
+        if (-not $text) { continue }
+        if ($text -notmatch '(?m)^CatalogFile\s*=\s*wc3119-wia\.cat\s*$') { continue }
+        if ($text -notmatch [regex]::Escape($provider)) { continue }
+        if ($text -notmatch '(?m)^DriverVer\s*=\s*(\d\d/\d\d/\d{4}),(\d+\.\d+\.\d+\.\d+)\s*$') { continue }
+        $result += [pscustomobject]@{ Published = $file.Name; Original = 'wc3119-wia.inf'; Provider = $provider; Date = $Matches[1]; Version = [version]$Matches[2] }
     }
-    if ($current.Count) { $blocks += [pscustomobject]$current }
-    return @($blocks | Where-Object { $_.PSObject.Properties['Original'] -and $_.Original -eq 'wc3119-wia.inf' -and $_.Provider -eq $provider })
+    return @($result)
 }
 function Get-TrustedTestCertificates {
     @(Get-ChildItem Cert:\LocalMachine\Root, Cert:\LocalMachine\TrustedPublisher | Where-Object Subject -eq $testSubject)
@@ -187,6 +188,16 @@ function Invoke-Pnputil([string[]]$Arguments) {
     if ($code -notin @(0, 3010)) { throw "pnputil failed with $code; see $logDir\pnputil.txt" }
     return $code
 }
+function Restart-WiaService {
+    # COM keeps the previous in-process server mapped inside the WIA service,
+    # and a driver that failed to load is dropped from the service's device
+    # list until it re-enumerates. Restarting stisvc makes it load the DLL
+    # that the CLSID now points at. Applications must not be scanning.
+    Write-Log 'Restarting the Windows Image Acquisition service (stisvc)'
+    Restart-Service stisvc -Force -ErrorAction Stop
+    $deadline = (Get-Date).AddSeconds(20)
+    while ((Get-Date) -lt $deadline -and (Get-WiaDeviceCount) -lt 1) { Start-Sleep -Milliseconds 500 }
+}
 function Verify-Installed($Expected) {
     $scanner = Get-Scanner
     $properties = Get-Properties $scanner.InstanceId
@@ -247,6 +258,7 @@ try {
             $code = Invoke-Pnputil @('/add-driver', (Join-Path $info.Dir 'wc3119-wia.inf'), '/install')
             Assert-ProtectedUnchanged
             if ($code -eq 3010) { Write-Log 'Windows requests a reboot; not rebooting automatically. Re-run -Action Status after the reboot.'; exit 3010 }
+            Restart-WiaService
             Verify-Installed $info
             exit 0
         }
@@ -265,6 +277,7 @@ try {
             $code = Invoke-Pnputil @('/add-driver', (Join-Path $info.Dir 'wc3119-wia.inf'), '/install')
             Assert-ProtectedUnchanged
             if ($code -eq 3010) { Write-Log 'Windows requests a reboot before the new DLL is in use; not rebooting automatically. Re-run Update after the reboot to remove the superseded package.'; exit 3010 }
+            Restart-WiaService
             Verify-Installed $info
             foreach ($old in @(Get-ProjectPackages | Where-Object Version -lt $info.Version)) {
                 Invoke-Pnputil @('/delete-driver', $old.Published) | Out-Null

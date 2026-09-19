@@ -242,10 +242,16 @@ fn sti_identity_initialization_and_helper_ownership() {
     // SAFETY: live driver/helper, borrowed key is intentionally never used by this interface.
     unsafe {
         let m = methods(&device);
+        // IStiUSD carries its own method table; IID_IUnknown must resolve to
+        // one stable non-delegating identity, which is not the IStiUSD pointer.
         let mut alias = ptr::null_mut();
+        let mut alias_again = ptr::null_mut();
         assert_eq!((m.unknown.query)(device.0, &UNKNOWN, &mut alias), 0);
-        assert_eq!(alias, device.0);
+        assert_eq!((m.unknown.query)(device.0, &UNKNOWN, &mut alias_again), 0);
+        assert_eq!(alias, alias_again);
+        assert_ne!(alias, device.0);
         drop(Owned(alias));
+        drop(Owned(alias_again));
         assert!((m.initialize)(device.0, ptr::null_mut(), VERSION, ptr::dangling_mut()) < 0);
         assert!((m.initialize)(device.0, helper.raw(), 1, ptr::dangling_mut()) < 0);
         assert_eq!(helper.refs.load(Ordering::SeqCst), 1);
@@ -264,10 +270,45 @@ fn sti_identity_initialization_and_helper_ownership() {
             flags: u32::MAX,
         };
         assert_eq!((m.capabilities)(device.0, &mut caps), 0);
-        assert_eq!(caps.version, VERSION);
+        // ProdScan reports STI_VERSION_3 (0x01000003); Windows 11 passes it.
+        assert_eq!(caps.version, 0x0100_0003);
         // SDK sti.h STI_GENCAP_WIA: the USD now exposes a full IWiaMiniDrv.
         // Notifications remain undeclared; the driver signals no events.
         assert_eq!(caps.flags, 0x10, "advertise WIA only, no STI notifications");
+    }
+    drop(device);
+    assert_eq!(helper.refs.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn initialize_accepts_sti_version_3_and_rejects_too_old_callers() {
+    // 2026-09-19 wiatrace: the WIA service's IStiUSD::Initialize call was
+    // rejected with STIERR_OLD_VERSION (0x8007047E) when only the exact
+    // STI_VERSION (0x01000002) was accepted. sti.h defines STI_VERSION_3 and
+    // STI_VERSION_MIN_ALLOWED; accept any caller at or above the minimum (the
+    // Unicode flag is not required either: the live service call lacked it).
+    let mut helper = Helper::new();
+    let device = object();
+    // SAFETY: live driver/helper; the borrowed key is never used by this interface.
+    unsafe {
+        let m = methods(&device);
+        let old_version = 0x8007047eu32 as i32;
+        assert_eq!(
+            (m.initialize)(device.0, helper.raw(), 0x0100_0001, ptr::dangling_mut()),
+            old_version,
+            "below STI_VERSION_MIN_ALLOWED is rejected"
+        );
+        assert_eq!(
+            (m.initialize)(device.0, helper.raw(), 0x0000_0001, ptr::dangling_mut()),
+            old_version
+        );
+        assert_eq!(helper.refs.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            (m.initialize)(device.0, helper.raw(), 0x0100_0003, ptr::dangling_mut()),
+            0,
+            "STI_VERSION_3 from the Windows 11 service is accepted"
+        );
+        assert_eq!(helper.refs.load(Ordering::SeqCst), 2);
     }
     drop(device);
     assert_eq!(helper.refs.load(Ordering::SeqCst), 1);
