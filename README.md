@@ -13,7 +13,7 @@ Xerox WorkCentre 3119 在 Windows 11 x64 上的開源掃描驅動，以 Rust 開
 
 ## 安裝（一般使用者）
 
-1. 取得套件目錄 `wia-package-<版本>-<時間>`（由開發者依下方步驟打包），整個目錄複製到要用的電腦。
+1. 到 [Releases](https://github.com/TimLai666/workcentre-3119-modern-driver/releases) 下載最新的 `wc3119-scanner-driver-<版本>.zip`，解壓縮到任一資料夾（整個資料夾都要留著）。
 2. 用 USB 線接上 WorkCentre 3119 並開機（沒接也可以先裝）。
 3. 對 `install.cmd` 按兩下，在「使用者帳戶控制」按「是」。視窗顯示 `Done` 就可以掃描了。
 
