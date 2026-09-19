@@ -30,7 +30,7 @@
 
 ## Current Blockers
 
-- Windows 掃描 App（Microsoft.WindowsScan）能找到裝置但顯示「連線到掃描器時發生問題」。同一台電腦以桌面 PowerShell 呼叫 WinRT `ImageScanner.FromIdAsync`／`ScanFilesToFolderAsync` 成功掃描，wiatrace 顯示兩者對驅動的呼叫序列與回傳值完全相同（drvInitializeWia、drvInitItemProperties×2、drvReadItemProperties 1／1／1／12 全部 S_OK），差異在 App 的 AppContainer 客戶端。嘗試以 TraceLogging 名稱推導 GUID 擷取 `Microsoft.Windows.Scan.Runtime` 沒有事件，PrintScanBrokerService 未被啟動。待查：AppContainer 對 WinUSB 裝置介面的存取政策。WinRT 灰階問題已修（DEPTH 有效清單需含 24），修後 Windows 掃描 App 仍連線失敗。
+- Windows 掃描 App（Microsoft.WindowsScan）能找到裝置但顯示「連線到掃描器時發生問題」。同一台電腦以桌面 PowerShell 呼叫 WinRT `ImageScanner.FromIdAsync`／`ScanFilesToFolderAsync` 成功掃描，wiatrace 顯示兩者對驅動的呼叫序列與回傳值完全相同（drvInitializeWia、drvInitItemProperties×2、drvReadItemProperties 1／1／1／12 全部 S_OK），差異在 App 的 AppContainer 客戶端。嘗試以 TraceLogging 名稱推導 GUID 擷取 `Microsoft.Windows.Scan.Runtime` 沒有事件，PrintScanBrokerService 未被啟動。WinRT 灰階問題已修（DEPTH 有效清單需含 24），修後 Windows 掃描 App 仍連線失敗。2026-09-19 以 Process Monitor（winget 安裝，使用者授權）擷取 App 連線過程：App 只讀取 DeviceClasses／Enum 登錄與 INF，對掃描器相關路徑沒有任何 ACCESS DENIED，也沒有嘗試開啟裝置檔案；失敗發生在 COM／RPC 層，Process Monitor 看不到。下一步需要 WIA 服務對 AppContainer 客戶端的 RPC 追蹤或改用 Windows 傳真和掃描（選用功能）等桌面用戶端驗收。
 
 - 免費路線的限制：每台要用的電腦都得先信任專案測試憑證，不能公開分發。目前只在開發機驗證，第二台乾淨電腦、換孔、拔插、重開機與解除安裝尚未實測。
 
