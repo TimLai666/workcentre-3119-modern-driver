@@ -8,7 +8,7 @@ use super::{
 };
 use std::{ffi::c_void, ptr, slice};
 
-const MAX_PROPERTY_SPECS: u32 = 128;
+pub(super) const MAX_PROPERTY_SPECS: u32 = 128;
 const SETTING_LONGS: [u32; 11] = [
     WIA_IPS_XRES,
     WIA_IPS_YRES,
@@ -113,7 +113,7 @@ pub(in crate::com_server::minidrv) unsafe extern "system" fn entry(
     unsafe { super::super::report(error, result) }
 }
 
-unsafe fn read_requested(
+pub(super) unsafe fn read_requested(
     specs: *const native::PropSpec,
     count: u32,
 ) -> Result<Vec<RequestedProperty>, i32> {
@@ -239,7 +239,7 @@ unsafe extern "system" {
     ) -> i32;
 }
 
-enum RequestedProperty {
+pub(super) enum RequestedProperty {
     Id(u32),
     Name(String),
 }

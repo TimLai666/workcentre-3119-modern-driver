@@ -9,6 +9,7 @@ use std::{
 };
 mod acquire;
 mod cancel;
+mod errors;
 mod formats;
 mod locking;
 mod properties;
@@ -334,17 +335,6 @@ unsafe extern "system" fn unsupported_item(
     // SAFETY: error is the method's writable output, checked by report.
     unsafe { report(error, E_NOTIMPL) }
 }
-unsafe extern "system" fn unsupported_properties(
-    _this: *mut c_void,
-    _context: *mut u8,
-    _flags: i32,
-    _count: u32,
-    _properties: *const c_void,
-    error: *mut i32,
-) -> i32 {
-    // SAFETY: error is the method's writable output, checked by report.
-    unsafe { report(error, E_NOTIMPL) }
-}
 unsafe extern "system" fn unsupported_transfer(
     _this: *mut c_void,
     _context: *mut u8,
@@ -354,21 +344,6 @@ unsafe extern "system" fn unsupported_transfer(
 ) -> i32 {
     // SAFETY: error is the method's writable output, checked by report.
     unsafe { report(error, E_NOTIMPL) }
-}
-unsafe extern "system" fn error_string(
-    _this: *mut c_void,
-    _flags: i32,
-    _code: i32,
-    text: *mut *mut u16,
-    error: *mut i32,
-) -> i32 {
-    // SAFETY: optional writable string output belongs to caller.
-    unsafe {
-        if !text.is_null() {
-            *text = ptr::null_mut();
-        }
-        report(error, E_NOTIMPL)
-    }
 }
 unsafe extern "system" fn command(
     _this: *mut c_void,
@@ -432,11 +407,11 @@ static VTABLE: Vtable = Vtable {
     init_properties: properties::init_entry,
     validate_properties: properties::validate_entry,
     write_properties: unsupported_transfer,
-    read_properties: unsupported_properties,
+    read_properties: properties::read_entry,
     lock: locking::lock,
     unlock: locking::unlock,
     analyze: unsupported_item,
-    error_string,
+    error_string: errors::entry,
     command,
     capabilities: unsupported_list,
     delete: unsupported_item,

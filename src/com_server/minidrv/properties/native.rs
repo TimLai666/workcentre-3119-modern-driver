@@ -190,6 +190,25 @@ where
     update_with(before, after, &mut writer, finalize)
 }
 
+/// Write one LONG property on an already initialized item.
+///
+/// # Safety
+/// `context` must be a live WIA service item context supplied by Windows for
+/// this synchronous minidriver callback.
+pub(super) unsafe fn write_long(context: *mut u8, propid: u32, value: i32) -> Result<(), i32> {
+    if context.is_null() {
+        return Err(E_INVALIDARG);
+    }
+    let mut writer = NativeWriter { context };
+    write_long_with(propid, value, &mut writer)
+}
+
+fn write_long_with(propid: u32, value: i32, writer: &mut dyn ServiceWriter) -> Result<(), i32> {
+    let spec = PropSpec::from_id(propid);
+    let storage = PropVariantStorage::new(&PropertyValue::Long(value))?;
+    ensure_s_ok(writer.write_values(&spec, &storage.raw, 1))
+}
+
 struct DeltaPlan {
     value_specs: Vec<PropSpec>,
     value_storage: Vec<PropVariantStorage>,
@@ -717,6 +736,24 @@ mod tests {
         assert_ne!(variants[1].raw.data[0], 0);
         assert_eq!(variants[2].raw.vt, VT_BSTR);
         assert_ne!(variants[2].raw.data[0], 0);
+    }
+
+    #[test]
+    fn single_long_write_uses_one_propid_spec_and_requires_s_ok() {
+        let mut writer = RecordingWriter::default();
+        assert_eq!(write_long_with(3087, 2, &mut writer), Ok(()));
+        assert_eq!(writer.steps, vec!["values"]);
+        for failure in [E_INVALIDARG, 1] {
+            let mut writer = RecordingWriter {
+                values_result: failure,
+                ..RecordingWriter::default()
+            };
+            let expected = if failure < 0 { failure } else { E_UNEXPECTED };
+            assert_eq!(write_long_with(3087, 2, &mut writer), Err(expected));
+        }
+        // SAFETY: null is rejected before any native helper is reached.
+        let rejected = unsafe { write_long(ptr::null_mut(), 3087, 2) };
+        assert_eq!(rejected, Err(E_INVALIDARG));
     }
 
     #[derive(Default)]

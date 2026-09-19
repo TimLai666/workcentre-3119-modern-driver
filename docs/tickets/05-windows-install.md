@@ -60,6 +60,16 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 
 ## 測試
 
+### 屬性讀取通知與裝置錯誤字串
+
+2026-09-19：171 個 lib 測試、全部整合測試與 2 個 doc-tests、fmt、Clippy（all targets，warnings 為錯誤）、全部 release targets 通過。另指定當次 release DLL 執行 ignored 動態載入測試通過，DLL SHA256 `976033154F7B6CA1C72EC2664B1B0D296D90EF0B005FFC9C869E21B98D8CBA5C`。這些測試沒有偽造 WIA context、沒有操作 USB 或系統登錄。
+
+`drvReadItemProperties` 依 [Microsoft 契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamindr_lh/nf-wiamindr_lh-iwiaminidrv-drvreaditemproperties) 只在讀取需要由裝置更新的屬性時存取硬體。[讀取入口](../../src/com_server/minidrv/properties/read_entry.rs) 界定 PROPSPEC 數量與名稱後，若要求的屬性不含 `WIA_DPS_DOCUMENT_HANDLING_STATUS`（ID 或本驅動登錄的名稱），只借用連線並以 `wiasGetItemType` 確認項目存在即回 S_OK，不碰 USB；若包含且項目為根，沿用初始化相同的服務鎖定 → 同一 STI session INQUIRY → 解鎖流程，成功才以單一 `wiasWriteMultiple` 寫入 `FLAT_READY`（SDK wiadef.h 0x02）。INQUIRY 失敗回傳原始 HRESULT、不改寫既有狀態；寫入失敗依既有政策隔離整個 COM 物件。平台項目沒有須由裝置更新的屬性，直接成功。[ProdScan 範例](https://github.com/microsoft/Windows-driver-samples/blob/main/wia/ProdScan/MiniDrv.cpp) 同樣只在根項目更新執行期狀態。INQUIRY 成功只代表裝置可通訊，協定沒有蓋板或紙張狀態欄位，因此不宣告 COVER_UP 等旗標。
+
+`drvGetDeviceErrorStr` 依 [Microsoft 契約](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamindr_lh/nf-wiamindr_lh-iwiaminidrv-drvgetdeviceerrorstr)：本驅動的 `plDevErrVal` 一律是失敗 HRESULT，因此 [錯誤字串模組](../../src/com_server/minidrv/errors.rs) 把 0、FACILITY_WIA 1–16、常見 COM 錯誤對應成英文說明，`0x8007xxxx` 由 `FormatMessageW` 取得 Windows 本地化文字，無文字時回代碼；不認得的值回 E_INVALIDARG，保留 flags 非零亦拒絕。字串以 `CoTaskMemAlloc` 配置、由服務或應用程式釋放；`ppszDevErrStr` 可省略。尚未做的：WIA 錯誤說明只有英文，未依 Microsoft 建議放進資源檔做多語系。
+
+TDD：`tests/com_server.rs` 先把 vtable 的 read／error_string slot 命名並斷言缺少 context 回 E_INVALIDARG，實跑取得 E_NOTIMPL 的 RED，再實作至 GREEN。單元測試涵蓋只有狀態屬性觸發裝置查詢、入口前置檢查、單值寫入僅一次 `values` 且非 S_OK 即失敗、錯誤字串配置／釋放往返與未知代碼拒絕。待服務驗收：服務實際傳入的 PROPSPEC 內容、每次應用程式讀取根屬性造成的 INQUIRY 頻率是否可接受、以及狀態值是否被 Windows 掃描消費。
+
 ### 屬性初始化與即時能力
 
 2026-09-14：207 個 all-targets 測試、一般測試及 2 個 doc-tests、fmt、Clippy、全部 release targets 通過。當次 DLL 動態載入另以 ignored 模式通過，確認 slot 40 的初始化入口拒絕缺少服務 context 並正確填入錯誤，沒有以假 context 呼叫 SDK。SDK C11 編譯斷言與 Rust 測試核對 PROPSPEC、PROPVARIANT、WIA_PROPERTY_INFO 大小及 union／方法偏移。新實機鎖定／INQUIRY 測試另通過 0.02 秒，詳見 [硬體紀錄](../hardware.md#wia-屬性初始化的能力查詢)。私人 SDK 與測試輸出在 `artifacts/wia-properties-validation-20260914-a/`。

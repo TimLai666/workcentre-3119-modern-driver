@@ -49,6 +49,10 @@ unsafe extern "system" {
     fn SysAllocStringLen(value: *const u16, length: u32) -> *mut u16;
     fn SysFreeString(value: *mut u16);
 }
+#[link(name = "Ole32")]
+unsafe extern "system" {
+    fn CoTaskMemFree(block: *mut c_void);
+}
 
 // Independent declarations follow SDK unknwnbase.h rather than implementation structs.
 #[repr(C)]
@@ -84,11 +88,17 @@ struct MiniPrefix {
     init_properties: unsafe extern "system" fn(*mut c_void, *mut u8, i32, *mut i32) -> i32,
     validate_properties:
         unsafe extern "system" fn(*mut c_void, *mut u8, i32, u32, *const c_void, *mut i32) -> i32,
-    unused: [usize; 2],
+    write_properties:
+        unsafe extern "system" fn(*mut c_void, *mut u8, i32, *mut c_void, *mut i32) -> i32,
+    read_properties:
+        unsafe extern "system" fn(*mut c_void, *mut u8, i32, u32, *const c_void, *mut i32) -> i32,
     lock: unsafe extern "system" fn(*mut c_void, *mut u8, i32, *mut i32) -> i32,
     unlock: unsafe extern "system" fn(*mut c_void, *mut u8, i32, *mut i32) -> i32,
-    // SDK 10.0.26100.0 wiamindr_lh.h slots 11-17 precede drvNotifyPnpEvent.
-    unused_after_unlock: [usize; 7],
+    analyze: unsafe extern "system" fn(*mut c_void, *mut u8, i32, *mut i32) -> i32,
+    // SDK 10.0.26100.0 wiamindr_lh.h slot 12 is drvGetDeviceErrorStr.
+    error_string: unsafe extern "system" fn(*mut c_void, i32, i32, *mut *mut u16, *mut i32) -> i32,
+    // Slots 13-17 precede drvNotifyPnpEvent.
+    unused_after_error_string: [usize; 5],
     notify: unsafe extern "system" fn(*mut c_void, *const Guid, *mut u16, u32) -> i32,
     uninitialize: unsafe extern "system" fn(*mut c_void, *mut u8) -> i32,
 }
@@ -304,8 +314,10 @@ fn minidriver_rejects_absent_service_context_and_clears_outputs() {
         assert_eq!(std::mem::offset_of!(MiniPrefix, acquire), 32);
         assert_eq!(std::mem::offset_of!(MiniPrefix, init_properties), 40);
         assert_eq!(std::mem::offset_of!(MiniPrefix, validate_properties), 48);
+        assert_eq!(std::mem::offset_of!(MiniPrefix, read_properties), 64);
         assert_eq!(std::mem::offset_of!(MiniPrefix, lock), 72);
         assert_eq!(std::mem::offset_of!(MiniPrefix, unlock), 80);
+        assert_eq!(std::mem::offset_of!(MiniPrefix, error_string), 96);
         let mut root = ptr::dangling_mut();
         let mut inner = ptr::dangling_mut();
         let mut error = 123;
@@ -342,21 +354,52 @@ fn minidriver_rejects_absent_service_context_and_clears_outputs() {
             assert_eq!(error, invalid);
             assert_eq!(method(mini, ptr::null_mut(), 0, ptr::null_mut()), E_POINTER);
         }
+        for method in [methods.validate_properties, methods.read_properties] {
+            error = 123;
+            assert_eq!(
+                method(mini, ptr::null_mut(), 0, 0, ptr::null(), &mut error),
+                invalid,
+                "absent service context is rejected before any WIA helper"
+            );
+            assert_eq!(error, invalid);
+            assert_eq!(
+                method(mini, ptr::null_mut(), 0, 0, ptr::null(), ptr::null_mut()),
+                E_POINTER
+            );
+        }
+        // drvGetDeviceErrorStr maps this driver's own device-error values (the
+        // HRESULTs it reports through plDevErrVal) to caller-freed OLE strings.
+        let mut text = ptr::dangling_mut();
         error = 123;
-        assert_eq!(
-            (methods.validate_properties)(mini, ptr::null_mut(), 0, 0, ptr::null(), &mut error),
-            invalid
+        assert_eq!((methods.error_string)(mini, 0, 0, &mut text, &mut error), 0);
+        assert_eq!(error, 0);
+        assert!(
+            !text.is_null(),
+            "code 0 still yields a readable description"
         );
+        CoTaskMemFree(text.cast());
+        text = ptr::dangling_mut();
+        assert_eq!(
+            (methods.error_string)(mini, 0, 0x80210006u32 as i32, &mut text, &mut error),
+            0
+        );
+        assert!(!text.is_null());
+        CoTaskMemFree(text.cast());
+        text = ptr::dangling_mut();
+        assert_eq!(
+            (methods.error_string)(mini, 0, 0x7fff_1234, &mut text, &mut error),
+            invalid,
+            "unrecognized device error values are rejected per the SDK contract"
+        );
+        assert!(text.is_null());
         assert_eq!(error, invalid);
         assert_eq!(
-            (methods.validate_properties)(
-                mini,
-                ptr::null_mut(),
-                0,
-                0,
-                ptr::null(),
-                ptr::null_mut()
-            ),
+            (methods.error_string)(mini, 1, 0, &mut text, &mut error),
+            invalid,
+            "reserved flags are rejected"
+        );
+        assert_eq!(
+            (methods.error_string)(mini, 0, 0, &mut text, ptr::null_mut()),
             E_POINTER
         );
         assert_eq!(

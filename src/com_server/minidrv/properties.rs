@@ -5,8 +5,10 @@ use super::{E_INVALIDARG, E_POINTER};
 
 mod catalog;
 mod native;
+mod read_entry;
 mod validation;
 mod validation_entry;
+pub(super) use read_entry::entry as read_entry;
 pub(super) use validation_entry::entry as validate_entry;
 
 const S_OK: i32 = 0;

@@ -129,6 +129,10 @@ unsafe extern "system" {
     fn SysAllocStringLen(value: *const u16, length: u32) -> *mut u16;
     fn SysFreeString(value: *mut u16);
 }
+#[link(name = "Ole32")]
+unsafe extern "system" {
+    fn CoTaskMemFree(block: *mut c_void);
+}
 struct Module(*mut c_void);
 impl Drop for Module {
     fn drop(&mut self) {
@@ -262,6 +266,8 @@ fn release_dll_exports_real_factory_and_keeps_objects_alive() {
         assert_eq!(std::mem::offset_of!(MiniTable, notify), 144);
         assert_eq!(std::mem::offset_of!(MiniTable, init_properties), 40);
         assert_eq!(std::mem::offset_of!(MiniTable, validate_properties), 48);
+        assert_eq!(std::mem::offset_of!(MiniTable, read_properties), 64);
+        assert_eq!(std::mem::offset_of!(MiniTable, error_string), 96);
         let mut property_error = 123;
         // A real COM object with absent service context must fail before USB
         // or WIA property helpers. Never fabricate a service-owned context.
@@ -298,6 +304,33 @@ fn release_dll_exports_real_factory_and_keeps_objects_alive() {
             ),
             0x80004003u32 as i32
         );
+        property_error = 123;
+        assert_eq!(
+            (methods.read_properties)(
+                mini.raw,
+                ptr::null_mut(),
+                0,
+                0,
+                ptr::null(),
+                &mut property_error
+            ),
+            0x80070057u32 as i32
+        );
+        assert_eq!(property_error, 0x80070057u32 as i32);
+        let mut text = ptr::dangling_mut();
+        assert_eq!(
+            (methods.error_string)(
+                mini.raw,
+                0,
+                0x80210005u32 as i32,
+                &mut text,
+                &mut property_error
+            ),
+            0
+        );
+        assert_eq!(property_error, 0);
+        assert!(!text.is_null());
+        CoTaskMemFree(text.cast());
         let device_name: Vec<u16> = "synthetic-device".encode_utf16().collect();
         let device = Bstr(SysAllocStringLen(
             device_name.as_ptr(),
