@@ -4,6 +4,7 @@ Xerox WorkCentre 3119 掃描器驅動（Windows 11 x64）
   1. 用 USB 線接上 WorkCentre 3119 並開機（沒接也可以先裝，接上後 Windows 會自動載入）。
   2. 對 install.cmd 按兩下，同意「使用者帳戶控制」提示。
   3. 視窗顯示 Done 就完成，可以直接用 Windows 掃描 App、Windows 傳真和掃描或任何 WIA 掃描軟體。
+  4. 驅動已複製進 Windows 驅動存放區，這個資料夾可以刪掉；要解除安裝時再下載一次。
 
 install.cmd 會做的事
   - 信任本套件的測試憑證（因為沒有付費簽章，Windows 才會接受這個驅動）。

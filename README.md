@@ -13,11 +13,11 @@ Xerox WorkCentre 3119 在 Windows 11 x64 上的開源掃描驅動，以 Rust 開
 
 ## 安裝（一般使用者）
 
-1. 到 [Releases](https://github.com/TimLai666/workcentre-3119-modern-driver/releases) 下載最新的 `wc3119-scanner-driver-<版本>.zip`，解壓縮到任一資料夾（整個資料夾都要留著）。
+1. 到 [Releases](https://github.com/TimLai666/workcentre-3119-modern-driver/releases) 下載最新的 `wc3119-scanner-driver-<版本>.zip`，解壓縮到任一資料夾（安裝時要保留整個資料夾，不要只拉出 `install.cmd`）。
 2. 用 USB 線接上 WorkCentre 3119 並開機（沒接也可以先裝）。
 3. 對 `install.cmd` 按兩下，在「使用者帳戶控制」按「是」。視窗顯示 `Done` 就可以掃描了。
 
-`install.cmd` 會信任套件的測試憑證、安裝或更新驅動、重啟 Windows 影像擷取服務並確認掃描器可用；同版本重跑只做檢查，舊版自動更新。`uninstall.cmd` 反向移除驅動與憑證信任。說明與疑難排解見套件內的 `INSTALL.txt`，紀錄在 `%ProgramData%\WorkCentre3119Driver\setup-logs`。
+`install.cmd` 會信任套件的測試憑證、安裝或更新驅動、重啟 Windows 影像擷取服務並確認掃描器可用；同版本重跑只做檢查，舊版自動更新。驅動會複製進 Windows 驅動存放區，裝完後可以刪掉解壓縮的資料夾；要解除安裝時再下載一次並執行 `uninstall.cmd`（反向移除驅動與憑證信任）。說明與疑難排解見套件內的 `INSTALL.txt`，紀錄在 `%ProgramData%\WorkCentre3119Driver\setup-logs`。
 
 沒有花錢買程式碼簽章，所以每台電腦第一次安裝都要按一次 UAC，套件只適合自用或少數信任的電腦，不能公開散布為「免確認」安裝。細節見 [driver/README.md](driver/README.md)。
 
