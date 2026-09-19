@@ -64,7 +64,7 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 
 2026-09-19：新增 [WIA INF 設計稿](../../driver/wc3119-wia.inf)，Class 為 Image、函式驅動維持 WinUSB、以 sti_ci 類別安裝程式登錄 StillImage 與 USDClass／CLSID，事件表與 `drvGetCapabilities` 一致。完整前提、簽署門檻、備份與復原順序見 [安裝方案](../../driver/README.md#wia-登錄方案尚未執行待授權)。本輪只讀取系統狀態：`wc3119 doctor` 三介面問題碼 0、MI_00 服務 WINUSB；`stisvc` 為 Stopped；`bcdedit` 無 testsigning；本機只有 SDK signtool，沒有 WDK InfVerif／Inf2Cat。沒有修改綁定、登錄或服務。
 
-阻礙：Windows 11 x64 安裝第三方 INF 需要簽署 catalog。開發機測試簽署要啟用 testsigning 並安裝測試憑證，屬於安全設定變更；正式簽署要付費與送審。兩者都需要使用者決定，尚未授權。本專案不以停用簽章驗證替代。
+2026-09-19 使用者決定不花錢：採測試憑證簽署 catalog、不啟用 testsigning（套件無自有核心驅動）、每台電腦需明確授權信任憑證。已新增 [package.ps1](../../driver/package.ps1)（打包＋Inf2Cat＋signtool，不改系統）與 [wc3119-setup.ps1](../../driver/wc3119-setup.ps1)（Status／Install／Update／Uninstall，預設預檢，`-Apply` 才改系統，含備份、父裝置／MI_01 比對、CLSID 清理、版本檢查與 3010 停止）。兩支腳本通過 PowerShell 語法解析；`Status` 與 `-SkipCatalog` 已實跑，其餘因本機尚無 WDK Inf2Cat 且未取得安裝授權而未實跑。完整流程見 [安裝方案](../../driver/README.md#套件安裝更新解除安裝)。
 
 ### 能力列舉、同步命令與 STI WIA 宣告
 

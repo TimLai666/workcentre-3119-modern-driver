@@ -41,23 +41,42 @@
 
 尚未查證、必須以實測確認的前提：`Image` 類別搭配 WinUSB 函式驅動是否被類別安裝程式接受並建立 StillImage 裝置介面；WIA 服務帳號 `NT Authority\LocalService` 能否開啟 WinUSB 裝置介面；DLL 目前仍匯入 `VCRUNTIME140.dll` 與 UCRT，服務帳號載入時的 runtime 前置條件；`stisvc` 目前為 Stopped，實測時服務會由 PnP 事件啟動。
 
-### 簽署門檻
+### 簽署（免費路線）
 
-Windows 11 x64 安裝第三方 INF 需要簽署的 catalog。本機只有 Windows SDK 的 signtool，沒有 WDK 的 InfVerif／Inf2Cat，`bcdedit` 也未開啟 testsigning。可行路徑只有兩條，皆須使用者另行決定與授權：
+使用者已決定不花錢，因此不走 EV 憑證與 attestation。依 [PnP 裝置安裝簽署要求](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/pnp-device-installation-signing-requirements--windows-vista-and-later-)，開發與測試階段的套件可用測試憑證簽署 catalog；`bcdedit testsigning` 只影響核心模式二進位檔的載入，本套件沒有自己的核心驅動（函式驅動是 Microsoft 簽署的 WinUSB，本專案只有使用者模式 DLL），因此不啟用 testsigning，也不停用 Secure Boot。這個推論尚未以實際 `pnputil` 安裝驗證：若 PnP 仍拒絕，錯誤會停在 `/add-driver`，不會留下半套狀態。[Test-signing 說明](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/the-testsigning-boot-configuration-option)、[測試簽署套件](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/test-signing-driver-packages)
 
-1. 開發機測試簽署：安裝 WDK 工具，產生 catalog 並以自簽測試憑證簽署，把測試憑證放入本機受信任的根與 Trusted Publishers，並啟用 `bcdedit /set testsigning on` 後重開機。這是系統安全設定變更，只限開發機，不能寫進一般安裝步驟。
-2. 正式簽署：經 Hardware Dev Center 取得 attestation 簽署。需要 EV 憑證與付費，須另行授權。
+需要的免費工具：Windows SDK 的 `signtool`（本機已有）、WDK 的 `Inf2Cat`（本機尚未安裝，需另外下載 WDK），以及 PowerShell `New-SelfSignedCertificate` 產生的自簽程式碼簽署憑證。
 
-沒有這兩者之一，`pnputil /add-driver … /install` 會因缺少簽章而失敗；本專案不會以停用簽章驗證、Secure Boot 或記憶體完整性作為替代。
+代價是每台要安裝的電腦都必須先把這張測試憑證放進 LocalMachine 的 Trusted Root 與 Trusted Publishers，這是機器層級的安全設定變更，每台都要使用者明確授權。套件因此只適合自用或少數信任的電腦，不能公開分發。
+
+### 套件、安裝、更新、解除安裝
+
+兩支腳本都在本目錄，預設只做預檢，加 `-Apply` 才會改系統，且需要提升權限的 PowerShell。每次執行都在 Git 排除的 `artifacts/wia-setup-*` 留下日誌與備份。
+
+| 步驟 | 指令 | 改動範圍 |
+| --- | --- | --- |
+| 打包簽署 | `driver/package.ps1 -NewTestCertificate`（之後用 `-CertificateThumbprint`） | 只寫 `artifacts/wia-package-<版本>-<時間>/`；憑證只進 CurrentUser\My |
+| 查看狀態 | `driver/wc3119-setup.ps1 -Action Status` | 唯讀 |
+| 信任憑證 | `driver/wc3119-setup.ps1 -Package <dir> -TrustCertificate -Apply` | LocalMachine Root＋TrustedPublisher 各加一張憑證，只接受本專案主體名稱 |
+| 安裝 | `driver/wc3119-setup.ps1 -Package <dir> -Action Install -Apply` | 備份 → `pnputil /add-driver … /install` → 驗證 MI_00 為 Image 類別、服務仍 WINUSB、CLSID 已登錄、WIA 看得到裝置 |
+| 更新 | 改 INF `DriverVer` 版本 → 重新打包 → `-Action Update -Apply` | 要求版本比已安裝新；安裝新套件後刪除舊的 `oem*.inf`；要求重開機時先停下回報 |
+| 解除安裝 | `driver/wc3119-setup.ps1 -Action Uninstall -Apply` | `pnputil /delete-driver oemN.inf /uninstall /force` → 移除 HKCR CLSID 鍵（INF 的 HKCR AddReg 不會自動清） → 核對父裝置與 MI_01 未變 |
+| 移除信任 | `-UntrustCertificate -Apply` | 只在沒有本專案套件時允許，移除兩個機器儲存區的測試憑證 |
+
+安裝腳本的保護：只認 `wc3119-wia.inf` 且 Provider 為本專案的套件；MI_00 必須是唯一在線介面且目前為 WinUSB 或無驅動；父裝置與 MI_01 的 Service、INF、問題碼、ClassGuid、Parent 在每次操作後與備份比對，不同就報錯；`pnputil` 回 3010 時不自動重開機。腳本本身不會自動重試安裝。
+
+解除安裝後 MI_00 會回到沒有驅動（問題碼 28），因為內建 `winusb.inf` 不匹配這個硬體 ID。若還要以開發工具存取 USB，需重新以 [配對工具](../examples/winusb_setup.rs) 綁定內建 WinUSB。這是與 WinUSB 開發配對並存的既有限制。
+
+已實跑：`-Action Status` 唯讀通過（MI_00 WINUSB／USBDevice 類別、無套件、無 CLSID、無受信任測試憑證、stisvc Stopped、WIA 0 台）。`package.ps1 -SkipCatalog` 可以暫存未簽署套件。Inf2Cat 尚未安裝，因此完整簽署、信任、安裝、更新、解除安裝都尚未實跑。
 
 ### 授權後的執行與復原順序
 
-1. 重新列舉唯一 MI_00，核對目前仍是 WinUSB、問題碼 0，父裝置與 MI_01 未變。狀態不同就停止。
-2. 備份到 Git 排除的 `artifacts/` 新目錄：MI_00 devnode 屬性與 `Device Parameters`、目前 `oem*.inf` 清單（`pnputil /enum-drivers`）、HKCR `CLSID\{F71A8435-…}` 是否存在、`HKLM\SYSTEM\CurrentControlSet\Control\Class\{6BDD1FC6-…}` 子鍵清單、`stisvc` 狀態。備份可能含序號，不提交。
-3. 建置 release DLL，記錄 SHA256，與 INF、catalog 放入同一套件目錄；以 InfVerif 檢查 INF。
-4. `pnputil /add-driver wc3119-wia.inf /install`，記錄回傳碼與新增的 `oem*.inf` 名稱。要求重開機時不自動重開，先回報。
-5. 驗證：`wc3119 doctor` 三個介面問題碼 0；MI_00 的 Class 為 Image、服務仍為 WINUSB；`Get-CimInstance Win32_PnPEntity` 出現 Image 類別裝置；WIA automation `DeviceInfos.Count` 由 0 變 1；Windows 掃描可列出裝置並完成一次 75 dpi 掃描與取消。任何一步失敗就停在該步，依既有日誌診斷，不重試安裝。
-6. 復原：`pnputil /delete-driver oem<N>.inf /uninstall /force` 只移除本套件，再以備份核對 MI_00 回到 WinUSB＋USBDevice 類別、CLSID 鍵消失、父裝置與 MI_01 未變。若 pnputil 移除後 devnode 仍綁 Image 類別，改用開發機配對工具重新綁定內建 WinUSB。測試簽署模式與測試憑證另有獨立的關閉／移除步驟，不併入套件復原。
+1. 安裝 WDK（免費）取得 Inf2Cat，執行 `package.ps1 -NewTestCertificate`，記錄套件目錄、DLL／catalog SHA256 與憑證指紋。
+2. `wc3119-setup.ps1 -Action Status` 確認 MI_00 仍是 WinUSB、問題碼 0。
+3. 取得授權後 `-TrustCertificate -Apply`，再 `-Action Install`（先預檢，再 `-Apply`）。
+4. 驗證：腳本內建檢查通過後，用 Windows 掃描做一次 75 dpi 掃描、一次取消、再掃一次；同時看 Windows Image Acquisition 事件紀錄有沒有載入錯誤。
+5. 失敗時不重試安裝：先 `-Action Uninstall -Apply` 復原，再依日誌調整 INF 或 DLL，重新打包並提高 `DriverVer`。
+6. 完全不需要時：`Uninstall` → `-UntrustCertificate -Apply` → 需要 USB 開發存取再重新配對 WinUSB。
 
 ## 正式安裝套件
 
