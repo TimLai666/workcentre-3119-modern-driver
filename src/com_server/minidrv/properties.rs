@@ -637,8 +637,9 @@ mod tests {
     #[test]
     fn invalid_settings_are_rejected_after_the_snapshot_is_read() {
         let mut reader = SyntheticReader::valid();
+        // Brightness beyond the WIA -1000..=1000 range is invalid.
         reader.longs.retain(|(id, _)| *id != 6154);
-        reader.longs.push((6154, 1));
+        reader.longs.push((6154, 1001));
 
         assert_eq!(read_values(&mut reader).map(|_| ()), Err(E_INVALIDARG));
         assert_eq!(reader.calls.len(), 15);

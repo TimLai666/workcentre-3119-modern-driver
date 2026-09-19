@@ -49,6 +49,69 @@ pub struct FlatbedSettings {
     pub format: [u8; 16],
 }
 
+/// WIA brightness/contrast (each −1000..=1000, 0 neutral) applied by the
+/// driver as one 8-bit lookup after decoding, because the SANE-documented
+/// protocol exposes no hardware brightness or contrast command.
+///
+/// `out = clamp(round((in − 128) · (contrast + 1000) / 1000 + 128 + brightness · 255 / 1000))`.
+/// Neutral settings produce no lookup at all, so unmodified scans keep their
+/// exact device values. The mapping is monotonic, so tone order is preserved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tone {
+    pub brightness: i32,
+    pub contrast: i32,
+}
+
+impl Tone {
+    pub const NEUTRAL: Tone = Tone {
+        brightness: 0,
+        contrast: 0,
+    };
+
+    pub fn validate(self) -> io::Result<Self> {
+        if !(-1000..=1000).contains(&self.brightness) || !(-1000..=1000).contains(&self.contrast) {
+            return Err(invalid(
+                "WIA brightness and contrast must lie within -1000..=1000",
+            ));
+        }
+        Ok(self)
+    }
+
+    /// The 256-entry lookup, or `None` when the settings are neutral.
+    pub fn lut(self) -> Option<[u8; 256]> {
+        if self == Self::NEUTRAL {
+            return None;
+        }
+        let gain = i64::from(self.contrast) + 1000;
+        let offset = i64::from(self.brightness) * 255;
+        let mut table = [0u8; 256];
+        for (input, slot) in table.iter_mut().enumerate() {
+            let centred = (input as i64 - 128) * gain + 128 * 1000 + offset;
+            // Round to nearest before clamping so neutral-adjacent settings
+            // stay symmetric around mid-grey.
+            let rounded = (centred + 500).div_euclid(1000);
+            *slot = rounded.clamp(0, 255) as u8;
+        }
+        Some(table)
+    }
+
+    /// Apply the lookup to a decoded band, leaving the device bytes untouched.
+    pub fn adjust(self, band: &crate::scan::ImageBand) -> Option<crate::scan::ImageBand> {
+        let lut = self.lut()?;
+        Some(crate::scan::ImageBand {
+            width: band.width,
+            rows: band.rows,
+            mode: band.mode,
+            pixels: band
+                .pixels
+                .iter()
+                .map(|&value| lut[value as usize])
+                .collect(),
+            wire_data: band.wire_data.clone(),
+        })
+    }
+}
+
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
 }
@@ -100,6 +163,15 @@ fn validate_end(start: u32, extent: u32, name: &str) -> io::Result<()> {
 }
 
 impl FlatbedSettings {
+    /// The driver-side tone mapping requested through WIA_IPS_BRIGHTNESS and
+    /// WIA_IPS_CONTRAST.
+    pub fn tone(self) -> Tone {
+        Tone {
+            brightness: self.brightness,
+            contrast: self.contrast,
+        }
+    }
+
     /// Validate these scalar properties and map them to a scan request.
     ///
     /// This operation does not open USB or inspect live capabilities. A later
@@ -120,11 +192,7 @@ impl FlatbedSettings {
                 ));
             }
         };
-        if self.brightness != 0 || self.contrast != 0 {
-            return Err(invalid(
-                "WIA brightness and contrast must remain at neutral value 0",
-            ));
-        }
+        self.tone().validate()?;
         if self.compression != 0 {
             return Err(invalid(
                 "WIA compression is unsupported; use uncompressed data",
@@ -175,7 +243,22 @@ pub fn scan_bmp<W: io::Write + io::Seek>(
         return Err(io::Error::new(io::ErrorKind::Interrupted, "Scan cancelled"));
     }
 
-    encode_bmp(request, output, |sink| scan_to(request, cancel, sink))
+    let tone = settings.tone();
+    encode_bmp(request, output, |sink| {
+        scan_to(request, cancel, &mut toned_sink(tone, sink))
+    })
+}
+
+/// Wrap a band sink so every band passes through the requested tone lookup
+/// exactly once before encoding. Neutral tone forwards the band unchanged.
+pub(crate) fn toned_sink<'a>(
+    tone: Tone,
+    sink: &'a mut dyn FnMut(&crate::scan::ImageBand) -> io::Result<()>,
+) -> impl FnMut(&crate::scan::ImageBand) -> io::Result<()> + 'a {
+    move |band| match tone.adjust(band) {
+        Some(adjusted) => sink(&adjusted),
+        None => sink(band),
+    }
 }
 
 fn encode_bmp<W: io::Write + io::Seek>(
@@ -196,12 +279,14 @@ fn encode_bmp<W: io::Write + io::Seek>(
 pub(crate) fn scan_request_bmp_in_session<W: io::Write + io::Seek>(
     usb: &mut crate::usb::UsbSession,
     request: ScanRequest,
+    tone: Tone,
     cancel: &AtomicBool,
     output: &mut W,
 ) -> (io::Result<ScanSummary>, crate::scan::SessionHealth) {
     let mut health = crate::scan::SessionHealth::Ready;
     let result = encode_bmp(request, output, |sink| {
-        let (result, current) = crate::scan::scan_in_session(usb, request, cancel, sink);
+        let (result, current) =
+            crate::scan::scan_in_session(usb, request, cancel, &mut toned_sink(tone, sink));
         health = current;
         result
     });

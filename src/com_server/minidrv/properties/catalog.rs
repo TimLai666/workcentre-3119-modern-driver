@@ -24,6 +24,20 @@ const WIA_ITEM_READ: i32 = 0x01;
 
 const WIA_DPS_DOCUMENT_HANDLING_CAPABILITIES: u32 = 3086;
 const WIA_DPS_DOCUMENT_HANDLING_STATUS: u32 = 3087;
+// Read by the WIA common UI (Windows Fax and Scan) and the WinRT scan runtime
+// even though Microsoft marks the DPS forms obsolete; both came back VT_EMPTY
+// in the 2026-09-19 traces before the UIs gave up. Same numeric IDs as the
+// WIA_IPS_* item forms in wiadef.h.
+const WIA_DPS_DOCUMENT_HANDLING_SELECT: u32 = 3088;
+const WIA_SHOW_PREVIEW_CONTROL_ID: u32 = 3103;
+const WIA_IPS_SEGMENTATION: u32 = 6164;
+// Windows Fax and Scan writes WIA_IPS_ROTATION (PORTRAIT) before every scan
+// and aborts with E_INVALIDARG when the item does not have it (2026-09-19).
+const WIA_IPS_ROTATION: u32 = 6157;
+const WIA_ROTATION_PORTRAIT: i32 = 0;
+const DOCUMENT_HANDLING_FLATBED: i32 = 0x0002;
+const WIA_DONT_SHOW_PREVIEW_CONTROL: i32 = 1;
+const WIA_DONT_USE_SEGMENTATION_FILTER: i32 = 1;
 const WIA_IPA_ITEM_NAME: u32 = 4098;
 const WIA_IPA_FULL_ITEM_NAME: u32 = 4099;
 const WIA_IPA_ACCESS_RIGHTS: u32 = 4102;
@@ -209,6 +223,27 @@ impl PropertyCatalog {
             WIA_DPS_DOCUMENT_HANDLING_STATUS,
             "Document Handling Status",
             PropertyValue::Long(status),
+            PropertyAttribute::None {
+                access: WIA_PROP_READ | WIA_PROP_NONE,
+                vt: VT_I4,
+            },
+        );
+        // Flatbed only: the legacy selector is fixed and read-only.
+        catalog.push(
+            WIA_DPS_DOCUMENT_HANDLING_SELECT,
+            "Document Handling Select",
+            PropertyValue::Long(DOCUMENT_HANDLING_FLATBED),
+            PropertyAttribute::FlagLong {
+                access: WIA_PROP_READ | WIA_PROP_FLAG,
+                nominal: DOCUMENT_HANDLING_FLATBED,
+                valid_bits: DOCUMENT_HANDLING_FLATBED,
+            },
+        );
+        // No preview scan mode is offered (WIA_IPS_PREVIEW lists FINAL only).
+        catalog.push(
+            WIA_SHOW_PREVIEW_CONTROL_ID,
+            "Show preview control",
+            PropertyValue::Long(WIA_DONT_SHOW_PREVIEW_CONTROL),
             PropertyAttribute::None {
                 access: WIA_PROP_READ | WIA_PROP_NONE,
                 vt: VT_I4,
@@ -481,14 +516,14 @@ impl PropertyCatalog {
             WIA_IPS_BRIGHTNESS,
             "Brightness",
             0,
-            rw_range(0, 0, 0),
+            rw_range(-1000, 0, 1000),
         );
         add_long(
             &mut catalog,
             WIA_IPS_CONTRAST,
             "Contrast",
             0,
-            rw_range(0, 0, 0),
+            rw_range(-1000, 0, 1000),
         );
         // WinRT Windows.Devices.Scanners derives colour support from these
         // valid flags (2026-09-19: with 0 it reported grayscale only although
@@ -535,6 +570,29 @@ impl PropertyCatalog {
             "Preview",
             WIA_FINAL_SCAN,
             rw_list(vec![WIA_FINAL_SCAN], WIA_FINAL_SCAN),
+        );
+        add_long(
+            &mut catalog,
+            WIA_SHOW_PREVIEW_CONTROL_ID,
+            "Show preview control",
+            WIA_DONT_SHOW_PREVIEW_CONTROL,
+            ro_none(VT_I4),
+        );
+        // The driver never rotates; only the unrotated value is accepted.
+        add_long(
+            &mut catalog,
+            WIA_IPS_ROTATION,
+            "Rotation",
+            WIA_ROTATION_PORTRAIT,
+            rw_list(vec![WIA_ROTATION_PORTRAIT], WIA_ROTATION_PORTRAIT),
+        );
+        // Single fixed region; no segmentation filter and no child items.
+        add_long(
+            &mut catalog,
+            WIA_IPS_SEGMENTATION,
+            "Segmentation",
+            WIA_DONT_USE_SEGMENTATION_FILTER,
+            ro_none(VT_I4),
         );
         let position = PropertyAttribute::RangeLong {
             access: WIA_PROP_RW | WIA_PROP_RANGE,
@@ -989,7 +1047,7 @@ mod tests {
                 ..good
             },
             crate::wia::FlatbedSettings {
-                brightness: 1,
+                brightness: 1001, // outside the WIA -1000..=1000 range
                 ..good
             },
             crate::wia::FlatbedSettings {
@@ -1109,15 +1167,18 @@ mod tests {
     }
 
     #[test]
-    fn tone_ranges_advertise_only_the_neutral_values_the_core_accepts() {
+    fn tone_ranges_follow_the_wia_contract_with_neutral_default() {
+        // Microsoft: WIA_IPS_BRIGHTNESS/CONTRAST are WIA_PROP_RANGE −1000..1000,
+        // 0 neutral. A degenerate 0..0 range stopped Windows Fax and Scan and
+        // the Windows Scan app right after reading these (2026-09-19 traces).
         let catalog = PropertyCatalog::flatbed(&caps(), "Flatbed", "Root\\Flatbed").unwrap();
         for id in [WIA_IPS_BRIGHTNESS, WIA_IPS_CONTRAST] {
             assert!(matches!(
                 property(&catalog, id).1,
                 PropertyAttribute::RangeLong {
-                    min: 0,
+                    min: -1000,
                     nominal: 0,
-                    max: 0,
+                    max: 1000,
                     step: 1,
                     ..
                 }
@@ -1155,6 +1216,31 @@ mod tests {
             property(&catalog, WIA_DPS_DOCUMENT_HANDLING_STATUS).0,
             &PropertyValue::Long(0)
         );
+        assert_eq!(
+            property(&catalog, WIA_DPS_DOCUMENT_HANDLING_SELECT).0,
+            &PropertyValue::Long(DOCUMENT_HANDLING_FLATBED)
+        );
+        assert_eq!(
+            property(&catalog, WIA_SHOW_PREVIEW_CONTROL_ID).0,
+            &PropertyValue::Long(WIA_DONT_SHOW_PREVIEW_CONTROL)
+        );
+    }
+
+    #[test]
+    fn flatbed_publishes_the_ui_hint_properties_read_by_windows_clients() {
+        let catalog = PropertyCatalog::flatbed(&caps(), "Flatbed", "Root\\Flatbed").unwrap();
+        assert_eq!(
+            property(&catalog, WIA_SHOW_PREVIEW_CONTROL_ID).0,
+            &PropertyValue::Long(WIA_DONT_SHOW_PREVIEW_CONTROL)
+        );
+        assert_eq!(
+            property(&catalog, WIA_IPS_SEGMENTATION).0,
+            &PropertyValue::Long(WIA_DONT_USE_SEGMENTATION_FILTER)
+        );
+        assert!(matches!(
+            property(&catalog, WIA_IPS_ROTATION).1,
+            PropertyAttribute::ListLong { values, nominal: 0, .. } if values == &[0]
+        ));
     }
 
     #[test]

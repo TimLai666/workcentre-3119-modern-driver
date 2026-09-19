@@ -291,8 +291,9 @@ impl State {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(io::Error::new(io::ErrorKind::Interrupted, "Scan cancelled"));
         }
+        let tone = settings.tone();
         self.with_scan_session(|usb| {
-            crate::wia::scan_request_bmp_in_session(usb, request, cancel, output)
+            crate::wia::scan_request_bmp_in_session(usb, request, tone, cancel, output)
         })
     }
 
@@ -315,6 +316,7 @@ impl State {
                 crate::wia_transfer::transfer_in_session(
                     usb,
                     request,
+                    settings.tone(),
                     settings.y_extent as u32,
                     cancel,
                     callback,

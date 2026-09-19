@@ -44,9 +44,11 @@ impl std::error::Error for TransferError {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // mirrors the SDK transfer inputs plus the tone lookup
 pub(crate) unsafe fn transfer_in_session(
     usb: &mut crate::usb::UsbSession,
     request: ScanRequest,
+    tone: crate::wia::Tone,
     expected_rows: u32,
     cancel: &AtomicBool,
     raw_callback: *mut c_void,
@@ -66,7 +68,14 @@ pub(crate) unsafe fn transfer_in_session(
         cancel,
         item,
         full_item,
-        |sink| crate::scan::scan_in_session(usb, request, cancel, sink),
+        |sink| {
+            crate::scan::scan_in_session(
+                usb,
+                request,
+                cancel,
+                &mut crate::wia::toned_sink(tone, sink),
+            )
+        },
     )
 }
 

@@ -129,11 +129,11 @@ fn invalid_settings() -> Vec<FlatbedSettings> {
             ..settings()
         },
         FlatbedSettings {
-            brightness: 1,
+            brightness: 1001,
             ..settings()
         },
         FlatbedSettings {
-            contrast: -1,
+            contrast: -1001,
             ..settings()
         },
         FlatbedSettings {
@@ -218,4 +218,99 @@ fn invalid_settings_and_pre_cancelled_jobs_do_not_touch_output() {
     }
     let error = scan_bmp(settings(), &AtomicBool::new(true), &mut UntouchedOutput).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+}
+
+#[test]
+fn tone_lookup_is_neutral_at_zero_monotonic_and_clamped() {
+    use workcentre_3119::scan::{ColorMode, ImageBand};
+    use workcentre_3119::wia::Tone;
+    assert_eq!(Tone::NEUTRAL.lut(), None);
+    assert!(
+        Tone {
+            brightness: 1000,
+            contrast: 0
+        }
+        .validate()
+        .is_ok()
+    );
+    assert!(
+        Tone {
+            brightness: 1001,
+            contrast: 0
+        }
+        .validate()
+        .is_err()
+    );
+    assert!(
+        Tone {
+            brightness: 0,
+            contrast: -1001
+        }
+        .validate()
+        .is_err()
+    );
+
+    let brighter = Tone {
+        brightness: 200,
+        contrast: 0,
+    }
+    .lut()
+    .unwrap();
+    assert_eq!(
+        brighter[0], 51,
+        "brightness 200 lifts black by 200*255/1000"
+    );
+    assert_eq!(brighter[255], 255, "white stays clamped at 255");
+    assert!(brighter.windows(2).all(|pair| pair[0] <= pair[1]));
+
+    let flat = Tone {
+        brightness: 0,
+        contrast: -1000,
+    }
+    .lut()
+    .unwrap();
+    assert!(
+        flat.iter().all(|&value| value == 128),
+        "zero contrast collapses to mid-grey"
+    );
+
+    let steep = Tone {
+        brightness: 0,
+        contrast: 1000,
+    }
+    .lut()
+    .unwrap();
+    assert_eq!(steep[128], 128, "mid-grey is the contrast pivot");
+    assert_eq!(steep[0], 0);
+    assert_eq!(steep[255], 255);
+    assert_eq!(steep[64], 0, "gain 2 pushes dark quarter to black");
+    assert!(steep.windows(2).all(|pair| pair[0] <= pair[1]));
+
+    let darker = Tone {
+        brightness: -1000,
+        contrast: 0,
+    }
+    .lut()
+    .unwrap();
+    assert!(darker.iter().all(|&value| value == 0));
+
+    let band = ImageBand {
+        width: 2,
+        rows: 1,
+        mode: ColorMode::Gray,
+        pixels: vec![0, 255],
+        wire_data: vec![0, 255],
+    };
+    let adjusted = Tone {
+        brightness: 200,
+        contrast: 0,
+    }
+    .adjust(&band)
+    .unwrap();
+    assert_eq!(adjusted.pixels, vec![51, 255]);
+    assert_eq!(
+        adjusted.wire_data, band.wire_data,
+        "device bytes are never rewritten"
+    );
+    assert!(Tone::NEUTRAL.adjust(&band).is_none());
 }
