@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-2026-09-19：開發機已用測試憑證簽署的 WIA 套件安裝本驅動，Windows 的 WIA 服務首次成功載入、鎖定並透過既有 WIA 用戶端（WIA automation）完成灰階與彩色 75 dpi 全平台掃描，屬性驗證也經服務拒絕無效 dpi。修正過程確認服務要求 COM aggregation、傳 STI 版本 3、port name 為 AUTO、相容模式項目不能查型別。WinRT `Windows.Devices.Scanners` 桌面程序可列舉、連線並完成掃描（Windows 掃描 App 使用的 API）；Windows 掃描 App 本身在 AppContainer 內連線失敗，服務端呼叫序列與成功的桌面 WinRT 完全相同，原因尚未取得客戶端證據。取消、拔插、第二台電腦與解除安裝驗收仍未完成。精確階段取消對照已加入測試建置，第一塊影像後取消並以同一 USB session 重掃通過；首塊前取消的復原缺口仍由 03 追蹤。
+2026-09-19：開發機已用測試憑證簽署的 WIA 套件安裝本驅動，Windows 的 WIA 服務首次成功載入、鎖定並透過既有 WIA 用戶端（WIA automation）完成灰階與彩色 75 dpi 全平台掃描，屬性驗證也經服務拒絕無效 dpi。修正過程確認服務要求 COM aggregation、傳 STI 版本 3、port name 為 AUTO、相容模式項目不能查型別。WinRT `Windows.Devices.Scanners` 桌面程序可列舉、連線並完成掃描（Windows 掃描 App 使用的 API）。Windows 掃描 App 曾在 AppContainer 內連線失敗，2026-09-19 以 cdb 附加 RuntimeBroker 追到 App 連線後把 DesiredResolution 設為 100×100 dpi，而 WIA_IPS_YRES 有效清單只列目前值，WinRT 在客戶端就回 E_INVALIDARG；改為 X／Y 都列完整清單後，Windows 掃描 App 已連線並完成掃描（套件 0.2.15.0）。取消、拔插、第二台電腦與解除安裝驗收仍未完成。精確階段取消對照已加入測試建置，第一塊影像後取消並以同一 USB session 重掃通過；首塊前取消的復原缺口仍由 03 追蹤。
 
 ## Stage Objective
 
@@ -24,13 +24,11 @@
 | 01 | 唯讀診斷完整情境 | 開發者 | in_progress | 本機問題碼 28 可重現，硬體異常情境未全部驗證 |
 | 02 | 第一張實機掃描 | 開發者 | in_progress | 空平台灰階／彩色及獨立像素比對成功；文件、色彩及精確幾何待驗收 |
 | 03 | 取消與復原 | 開發者 | in_progress | 連續工作前 4 次成功，第 5 次 RGB600 自然逾時，清理後 Gray75 成功；20 次驗收與失同步復原未完成 |
-| 05 | Windows 掃描與安裝 | 開發者 | in_progress | 開發機測試憑證套件安裝／更新／解除安裝流程可用；WIA 服務載入驅動，Windows 傳真和掃描完成彩色掃描；Windows 掃描 App、取消、拔插、第二台電腦與明暗品質未驗收 |
+| 05 | Windows 掃描與安裝 | 開發者 | in_progress | 開發機測試憑證套件安裝／更新／解除安裝流程可用；WIA 服務載入驅動，Windows 傳真和掃描完成彩色掃描，Windows 掃描 App 完成灰階掃描；取消、拔插、第二台電腦與明暗品質未驗收 |
 | 06 | 列印 | 開發者 | not_started | 尚無 |
 | 07 | 掃描明暗品質 | 開發者 | blocked | 已有空平台影像，缺少可對照原稿；歷史偏白仍未重現 |
 
 ## Current Blockers
-
-- Windows 掃描 App（Microsoft.WindowsScan）能找到裝置但顯示「連線到掃描器時發生問題」。同一台電腦以桌面 PowerShell 呼叫 WinRT `ImageScanner.FromIdAsync`／`ScanFilesToFolderAsync` 成功掃描，wiatrace 顯示兩者對驅動的呼叫序列與回傳值完全相同（drvInitializeWia、drvInitItemProperties×2、drvReadItemProperties 1／1／1／12 全部 S_OK），差異在 App 的 AppContainer 客戶端。嘗試以 TraceLogging 名稱推導 GUID 擷取 `Microsoft.Windows.Scan.Runtime` 沒有事件，PrintScanBrokerService 未被啟動。WinRT 灰階問題已修（DEPTH 有效清單需含 24），修後 Windows 掃描 App 仍連線失敗。2026-09-19 以 Process Monitor（winget 安裝，使用者授權）擷取 App 連線過程：App 只讀取 DeviceClasses／Enum 登錄與 INF，對掃描器相關路徑沒有任何 ACCESS DENIED，也沒有嘗試開啟裝置檔案；失敗發生在 COM／RPC 層，Process Monitor 看不到。下一步需要 WIA 服務對 AppContainer 客戶端的 RPC 追蹤或改用 Windows 傳真和掃描（選用功能）等桌面用戶端驗收。
 
 - 免費路線的限制：每台要用的電腦都得先信任專案測試憑證，不能公開分發。目前只在開發機驗證，第二台乾淨電腦、換孔、拔插、重開機與解除安裝尚未實測。
 
@@ -70,6 +68,8 @@ IWiaMiniDrv 的 `drvWriteItemProperties`、`drvAnalyzeItem` 與 `drvDeleteItem` 
 | 建立持續完成完整驅動的目標 | 使用者要求逐步完成實作、驗證與推送，需要使用者介入時提出具體需求，可獨立工作繼續推進 | 2026-09-13 | 01、02、03、05、06、07 |
 
 ## Verified
+
+2026-09-19 Windows 掃描 App 實掃版本：182 個 lib 測試、整合測試、doc-tests、fmt、Clippy、release、DLL 動態載入通過；DLL SHA256 `9363EB564DD10CE0E094103A430E5F117A42D6249B9781379FB34F4EF7DDD041`，套件 0.2.15.0 以 Update 流程安裝（自動移除 0.2.14.0）。根因追查：ETW WinRT-Error 與 Process Monitor 都看不到 App 的失敗，改以 WDK cdb 附加載有 Windows.Devices.Scanners.dll 的 RuntimeBroker，對所有 `Windows::Devices::Scanners::*Server::*` 下中斷點並在返回位址讀 HRESULT，再以停止 stisvc→remove-device→scan-devices 讓 App 重新連線。結果：`FromIdAsync`、`FlatbedConfiguration` 初始化全部 S_OK；App 讀 Min／Max／Optical 解析度後呼叫 `put_DesiredResolution(100, 100)`，`RegularInputSource::SetDesiredResolution` 在 RuntimeBroker 內回 0x80070057 並 RoOriginateError，wiatrace 沒有任何 WriteMultiple。原因是 WIA_IPS_YRES 有效清單只列目前值（[75]），WinRT 以初始化時快取的 X／Y 清單在客戶端驗證。修正：X／Y 都列完整清單、選定後只移動 nominal，y-only 寫入改為兩軸一起跟隨（[catalog.rs](src/com_server/minidrv/properties/catalog.rs)、[validation.rs](src/com_server/minidrv/properties/validation.rs)），先以失敗測試確認再改。實機：Windows 掃描 App 啟動即列出「WorkCentre 3119 Series」，按「掃描」後 wiatrace 顯示寫入 Format／Media Type、75×75 dpi、Data Type 2／8 bpp、637×877、Preview 0，drvAcquireItemData 回 S_OK，產生 `Pictures\掃描\掃描_20260919.png` 648×871（3796 bytes，空平台）。除錯過程 `pnputil /disable-device` 在服務持有句柄時回 3010 並把 ConfigFlags 設為 DISABLED，已用同一套 remove-device／scan-devices 流程復原，不需重開機。
 
 2026-09-19 Windows 傳真和掃描實掃版本：181 個 lib 測試、整合測試、doc-tests、fmt、Clippy、release、DLL 動態載入通過；DLL SHA256 `C18D711611811B7B09EC0A6852E7BCD7E4B56ECDDA35CC7BD37AE273C07838C7`，套件 0.2.14.0。使用者授權啟用「Windows 傳真和掃描」選用功能後，以其「新增掃描」對話框（來源平台、色彩、75 dpi）完成掃描，產生 `Documents\Scanned Documents\影像.jpg` 648×871 24 bpp（9800 bytes，空平台），wiatrace 無錯誤。過程中依實際失敗逐一修正：WIA_IPS_BRIGHTNESS／CONTRAST 由 0..0 改為 Microsoft 規定的 −1000..1000（0 中性），驅動以一次 8 位元查表實作，中性時不改任何像素；補上根項目 WIA_DPS_DOCUMENT_HANDLING_SELECT＝FLATBED、WIA_DPS_SHOW_PREVIEW_CONTROL 與平台項目 WIA_IPS_SHOW_PREVIEW_CONTROL、WIA_IPS_SEGMENTATION、WIA_IPS_ROTATION（只接受 0）。Windows 掃描 App（AppContainer）仍在同一步驗證後回報無法連線，服務端無錯誤。
 

@@ -1279,7 +1279,8 @@ mod tests {
                 WIA_IPS_YRES
             ]
         );
-        assert_eq!(writer.list_values, vec![(WIA_IPS_YRES, vec![300])]);
+        // The Y list stays complete; the rewrite only moves its nominal to 300.
+        assert_eq!(writer.list_values, vec![(WIA_IPS_YRES, vec![75, 300])]);
         assert_eq!(
             writer.range_values,
             vec![

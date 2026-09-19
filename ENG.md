@@ -126,7 +126,7 @@ WIA 選取範圍 `XEXTENT/YEXTENT` 與輸出尺寸屬性用途不同。正式屬
 
 `drvValidateItemProperties` 已接到 `properties/validation_entry.rs`。入口限制 PROPSPEC 數量、UTF-16 名稱長度及可寫權限，以初始化時登錄的屬性名稱轉成 ID，拒絕未知及唯讀屬性。使用 SDK `wiasReadPropLong`／`wiasReadPropGuid` 的 current／old 輸出讀取明確改寫的設定，未寫入欄位沿用當前值；不建立假的服務 context。驗證沿用初始化的服務鎖定與當次能力查詢，但不送掃描啟動命令。[Microsoft 驗證流程](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/writing-wia-item-properties-by-an-application)
 
-`properties/validation.rs` 先在 Rust 內處理模式、色深、解析度及選取區，再交給 `catalog.with_settings` 驗證實機能力並建立相依範圍。DATATYPE 決定 DEPTH，XRES 決定 YRES；只寫不相容的 DEPTH／YRES 會拒絕，不反向改變模式／XRES。解析度改變時只縮放及量化未明確寫入的座標，明確指定卻無法表示的位置直接拒絕。位置／範圍共同超界亦拒絕；只有未寫入的相依欄位可調整。這是設定的像素座標轉換，不是影像縮放或明暗處理。[相依解析度](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ips-xres)、[位置](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ips-xpos)
+`properties/validation.rs` 先在 Rust 內處理模式、色深、解析度及選取區，再交給 `catalog.with_settings` 驗證實機能力並建立相依範圍。DATATYPE 決定 DEPTH；XRES／YRES 兩個清單都列出全部解析度（WinRT 以初始化時快取的清單在客戶端驗證），只寫其中一軸時另一軸跟隨，兩軸同時寫入且不同才拒絕。只寫不相容的 DEPTH 會拒絕，不反向改變模式。解析度改變時只縮放及量化未明確寫入的座標，明確指定卻無法表示的位置直接拒絕。位置／範圍共同超界亦拒絕；只有未寫入的相依欄位可調整。這是設定的像素座標轉換，不是影像縮放或明暗處理。[相依解析度](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ips-xres)、[位置](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-ips-xpos)
 
 原生更新沿用 `native.rs` 的 ABI 與暫存所有權，只發佈改變的數值／有效範圍，最後呼叫 `wiasValidateItemProperties`。固定選項先驗證，格式 GUID 另由核心檢查。SDK 寫入沒有已確認的整批回復保證，因此初始化或相依更新開始發佈後若失敗，會在同一次借用結束前隔離 COM 物件，保留原始錯誤。此 Failed 狀態不能在同一物件重新初始化，須由服務釋放並建立新物件；實際服務復原流程尚待驗收。一般無效輸入在發佈前拒絕，不隔離連線。設定仍由 WIA 服務儲存。[SDK 最終驗證](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamdef/nf-wiamdef-wiasvalidateitemproperties)
 

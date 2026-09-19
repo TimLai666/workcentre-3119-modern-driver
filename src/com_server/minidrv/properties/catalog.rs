@@ -616,8 +616,13 @@ impl PropertyCatalog {
             0,
             position.clone(),
         );
+        // Both axes advertise the full list. WinRT (Windows.Devices.Scanners)
+        // caches the X and Y lists once and validates DesiredResolution
+        // client-side, so a Y list holding only the current value made the
+        // Windows Scan app fail before any WIA write. The validator still keeps
+        // X == Y (see validation::resolve_resolutions).
         let x_resolutions = catalog.resolutions.clone();
-        let y_resolutions = vec![default_resolution];
+        let y_resolutions = catalog.resolutions.clone();
         add_long(
             &mut catalog,
             WIA_IPS_XRES,
@@ -702,7 +707,7 @@ impl PropertyCatalog {
             let index = selected.index(WIA_IPS_YRES)?;
             selected.attributes[index] = PropertyAttribute::ListLong {
                 access: WIA_PROP_RW | WIA_PROP_LIST,
-                values: vec![settings.y_resolution],
+                values: self.resolutions.clone(),
                 nominal: settings.y_resolution,
             };
             let index = selected.index(WIA_IPA_DEPTH)?;
@@ -989,8 +994,10 @@ mod tests {
         // the selection (WinRT reads colour support from this list).
         assert!(matches!(property(&selected, WIA_IPA_DEPTH).1,
             PropertyAttribute::ListLong { values, nominal: 24, .. } if values == &[8, 24]));
+        // The Y list also stays complete after a selection; only the nominal
+        // follows the current resolution.
         assert!(matches!(property(&selected, WIA_IPS_YRES).1,
-            PropertyAttribute::ListLong { values, .. } if values == &[300]));
+            PropertyAttribute::ListLong { values, nominal: 300, .. } if values == &[75, 300, 600]));
         for (id, expected_max, expected_step) in [
             (WIA_IPS_XPOS, 1947, 3),
             (WIA_IPS_YPOS, 2709, 3),
@@ -1131,8 +1138,15 @@ mod tests {
         );
         assert!(matches!(property(&catalog, WIA_IPA_DEPTH).1,
             PropertyAttribute::ListLong { values, nominal: 8, .. } if values == &[8, 24]));
+        // WIA_IPS_YRES advertises every resolution, not only the current one:
+        // Windows.Devices.Scanners caches both lists at initialisation and
+        // rejects DesiredResolution client-side when DpiY is missing (the
+        // Windows Scan app sets 100x100 dpi right after connecting, 2026-09-19
+        // cdb trace, E_INVALIDARG without any WIA write).
+        assert!(matches!(property(&catalog, WIA_IPS_XRES).1,
+            PropertyAttribute::ListLong { values, nominal: 75, .. } if values == &[75, 300, 600]));
         assert!(matches!(property(&catalog, WIA_IPS_YRES).1,
-            PropertyAttribute::ListLong { values, nominal: 75, .. } if values == &[75]));
+            PropertyAttribute::ListLong { values, nominal: 75, .. } if values == &[75, 300, 600]));
     }
 
     #[test]

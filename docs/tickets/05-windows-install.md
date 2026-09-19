@@ -60,6 +60,16 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 
 ## 測試
 
+### Windows 掃描 App 實掃與 YRES 清單
+
+2026-09-19：Windows 掃描 App（Microsoft.WindowsScan 6.3.9654）完成一次平台灰階 75 dpi 掃描（`掃描_20260919.png` 648×871）。此前 App 一直顯示「連線到掃描器時發生問題」，而 wiatrace、ETW WinRT-Error、Process Monitor 都沒有失敗證據。最後以 WDK cdb 附加載有 `Windows.Devices.Scanners.dll` 的 RuntimeBroker（`tasklist /m` 找出），用 `bm` 對 `Windows::Devices::Scanners::*Server::*` 記錄呼叫、在返回位址一次性中斷讀 HRESULT，並以停止 stisvc→`pnputil /remove-device`→`/scan-devices` 觸發 App 重新連線：
+
+| 觀察 | 原因 | 修正 |
+| --- | --- | --- |
+| `FromIdAsync`、`get_FlatbedConfiguration`、`RegularInputSource::Initialize` 全部 S_OK；App 讀 Min／Max／Optical 後 `put_DesiredResolution(100,100)` 在 broker 內回 0x80070057 並 RoOriginateError，服務端沒有 WriteMultiple | WIA_IPS_YRES 有效清單只列目前值 [75]，WinRT 以初始化時快取的 X／Y 清單在客戶端驗證 DesiredResolution | [catalog.rs](../../src/com_server/minidrv/properties/catalog.rs) X／Y 都列完整清單，`with_settings` 只移動 nominal；[validation.rs](../../src/com_server/minidrv/properties/validation.rs) y-only 寫入改為兩軸跟隨，X／Y 同時寫入且不同仍拒絕 |
+
+注意：服務持有 WinUSB 句柄時 `pnputil /disable-device` 會回 3010 並把 ConfigFlags 設為 DISABLED（下次重開機才生效），須用上述 remove／scan 流程復原。DLL SHA256 `9363EB564DD10CE0E094103A430E5F117A42D6249B9781379FB34F4EF7DDD041`，套件 0.2.15.0。App 的預覽、彩色與取消尚未驗收。
+
 ### Windows 傳真和掃描實掃
 
 2026-09-19：啟用 Windows 選用功能 Print.Fax.Scan 後，以「Windows 傳真和掃描」完成一次平台彩色 75 dpi 掃描（`影像.jpg` 648×871 24 bpp）。這是第一個非本專案、非程式碼呼叫的既有掃描軟體驗收。逐步修正（皆有先失敗的 wiatrace／UI 證據）：
@@ -76,7 +86,7 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 
 2026-09-19：為了讓 WinRT `Windows.Devices.Scanners`（Windows 掃描 App 的 API）找到裝置，INF `DeviceInterfaceGUIDs` 加入 `GUID_DEVINTERFACE_IMAGE`，WIA 服務因此能寫入 `DEVPKEY_WIA_DeviceType`，WinRT 選擇器可列舉並連線。副作用：服務會在該介面開啟通知句柄，而提權探針（停止 stisvc 後以 P/Invoke 開啟）證實 WinUSB 每台裝置只允許一個開啟中的句柄，任何第二次開啟都回 ERROR_ACCESS_DENIED；因此 [sti.rs](../../src/com_server/sti.rs) 改為 Initialize 成功即開啟 USB 並保留到 Release，`UnLockDevice` 只清除 STI 鎖旗標；[usb.rs](../../src/usb.rs) 的 CreateFile 改為讀寫共用（對 WinUSB 沒有差別，但不再宣稱 OS 層獨占）。DLL SHA256 `C3DD8218E3B7901C0FDB2589CFD808C546A392272AEF418691E558FFE155ACEE`，套件 0.2.9.0。
 
-結果：WIA automation 與桌面 WinRT（`FromIdAsync`、`ScanFilesToFolderAsync`）皆成功掃描；Windows 掃描 App 找到裝置但連線失敗，服務端呼叫序列與成功的 WinRT 完全相同，差異在 AppContainer 客戶端，證據與待查方向見 [delivery-status](../../delivery-status.md#current-blockers)。WinRT 回報只支援灰階、DIB 格式，彩色實際可掃（WIA automation 設 DATATYPE=3 成功），推測與 WIA_IPS_CUR_INTENT 有效旗標未含 COLOR 有關，待修。開發期限制：WIA 服務持有 WinUSB 句柄時，`wc3119 inquiry`、範例與硬體測試都會拒絕存取，須先停止 stisvc 或解除安裝套件。
+結果：WIA automation 與桌面 WinRT（`FromIdAsync`、`ScanFilesToFolderAsync`）皆成功掃描；Windows 掃描 App 當時找到裝置但連線失敗，服務端呼叫序列與成功的 WinRT 完全相同；根因與修正見上方「Windows 掃描 App 實掃與 YRES 清單」。WinRT 回報只支援灰階、DIB 格式，彩色實際可掃（WIA automation 設 DATATYPE=3 成功），推測與 WIA_IPS_CUR_INTENT 有效旗標未含 COLOR 有關，待修。開發期限制：WIA 服務持有 WinUSB 句柄時，`wc3119 inquiry`、範例與硬體測試都會拒絕存取，須先停止 stisvc 或解除安裝套件。
 
 ### WIA 服務首次實掃（開發機）
 
@@ -94,7 +104,7 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 
 另新增 [trace.rs](../../src/com_server/trace.rs)：`catch_hresult` 攔到 panic 時寫 `%SystemRoot%\debug\WIA\wc3119-driver.log`，本輪沒有 panic 記錄，E_UNEXPECTED 來自 `helper_failure` 對 wiasGetItemType 非 S_OK 的映射。`drvUnLockWiaDevice` 在 `drvUnInitializeWia` 之後被呼叫時回 E_UNEXPECTED，服務照常卸載，列為待改善。wiatrace 另警告 DLL 缺少版本資源（Driver version 0.0.0.0），不影響載入。
 
-尚未驗收：Windows 掃描 App 操作與取消、拔插／換孔／重開機後再掃、第二台乾淨電腦、解除安裝與移除信任、亮度／對比映射與文件品質、`WIA_DPS_DOCUMENT_HANDLING_STATUS` 目前應用程式讀到 0（服務未以該屬性觸發驅動讀取）。
+尚未驗收：Windows 掃描 App 預覽／彩色與取消、拔插／換孔／重開機後再掃、第二台乾淨電腦、解除安裝與移除信任、亮度／對比映射與文件品質、`WIA_DPS_DOCUMENT_HANDLING_STATUS` 目前應用程式讀到 0（服務未以該屬性觸發驅動讀取）。
 
 ### WIA 登錄方案設計
 

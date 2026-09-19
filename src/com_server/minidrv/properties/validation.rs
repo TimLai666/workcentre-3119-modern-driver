@@ -156,17 +156,13 @@ fn resolve_resolutions(settings: &FlatbedSettings, written: &[u32]) -> Result<(i
         return Err(E_INVALIDARG);
     }
 
-    // XRES precedes YRES in Microsoft's documented WIA conflict order.  A
-    // non-explicit axis can therefore follow the explicit (or current X) axis.
+    // XRES precedes YRES in Microsoft's documented WIA conflict order, so an
+    // explicit X (or the current X when neither is written) drives both axes.
+    // Both lists advertise every resolution, so a y-only write to a listed
+    // value must also be honoured: the other axis follows it.
     if x_written || !y_written {
         Ok((settings.x_resolution, settings.x_resolution))
     } else {
-        if settings.x_resolution != settings.y_resolution {
-            // YRES is dependent on XRES in the advertised catalog.  A
-            // y-only request cannot silently replace the explicit/current X
-            // resolution and create an unsupported asymmetric scan request.
-            return Err(E_INVALIDARG);
-        }
         Ok((settings.y_resolution, settings.y_resolution))
     }
 }
@@ -457,15 +453,31 @@ mod tests {
     }
 
     #[test]
-    fn y_resolution_only_conflict_is_rejected_instead_of_switching_x_resolution() {
+    fn y_resolution_only_write_moves_both_axes_like_an_x_write() {
+        // Every advertised WIA_IPS_YRES value must be writable on its own; the
+        // hardware has one resolution, so the X axis follows.
         let old = settings();
         let current = FlatbedSettings {
             y_resolution: 75,
             ..old
         };
 
+        let resolved = resolve(&catalog(), old, current, &[WIA_IPS_YRES]).unwrap();
+        assert_eq!((resolved.x_resolution, resolved.y_resolution), (75, 75));
+        assert_eq!((resolved.x_extent, resolved.y_extent), (150, 225));
+    }
+
+    #[test]
+    fn conflicting_explicit_x_and_y_resolutions_are_rejected() {
+        let old = settings();
+        let current = FlatbedSettings {
+            x_resolution: 75,
+            y_resolution: 300,
+            ..old
+        };
+
         assert!(matches!(
-            resolve(&catalog(), old, current, &[WIA_IPS_YRES]),
+            resolve(&catalog(), old, current, &[WIA_IPS_XRES, WIA_IPS_YRES]),
             Err(E_INVALIDARG)
         ));
     }
