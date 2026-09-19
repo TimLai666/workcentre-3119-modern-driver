@@ -179,14 +179,51 @@ function Show-Status {
     Write-Log ("Elevated: {0}" -f (Test-Admin))
 }
 function Invoke-Pnputil([string[]]$Arguments) {
-    Write-Log ("pnputil {0}" -f ($Arguments -join ' '))
+    Write-Log ("pnputil {0}" -f ($Arguments -join ' ')) | Out-Null
     $output = & pnputil.exe @Arguments 2>&1
     $code = $LASTEXITCODE
     $output | Add-Content (Join-Path $logDir 'pnputil.txt') -Encoding UTF8
-    Write-Log "pnputil exit code $code"
+    Write-Log "pnputil exit code $code" | Out-Null
     # 0 = success, 259 (ERROR_NO_MORE_ITEMS) = nothing matched, 3010 = reboot required
     if ($code -notin @(0, 3010)) { throw "pnputil failed with $code; see $logDir\pnputil.txt" }
     return $code
+}
+function Stop-WiaService {
+    # The loaded driver holds the single WinUSB handle; while it is open PnP
+    # cannot restart the devnode and pnputil answers 3010 (reboot required).
+    Write-Log 'Stopping the Windows Image Acquisition service (stisvc) before the driver change'
+    Stop-Service stisvc -Force -ErrorAction Stop
+}
+function Complete-PendingDeviceChange {
+    # pnputil answered 3010: the devnode could not be restarted in place.
+    # Removing the interface devnode and rescanning re-enumerates it with the
+    # new binding without a reboot (verified 2026-09-19). Returns $true when the
+    # device is back without a pending operation.
+    $scanner = Get-Scanner
+    $parent = (Get-Properties $scanner.InstanceId)['DEVPKEY_Device_Parent']
+    # Write-Log emits to the pipeline; discard it so the boolean result stays clean.
+    Write-Log "Re-enumerating $($scanner.InstanceId) to complete the pending change" | Out-Null
+    Invoke-Pnputil @('/remove-device', $scanner.InstanceId) | Out-Null
+    Start-Sleep -Seconds 2
+    Invoke-Pnputil @('/scan-devices') | Out-Null
+    Start-Sleep -Seconds 4
+    if (@(Get-PnpDevice -PresentOnly | Where-Object InstanceId -match $scannerPattern).Count -eq 0 -and $parent) {
+        # A removed interface devnode of a composite device only reappears
+        # when the usbccgp parent re-enumerates its interfaces (2026-09-19).
+        # MI_01 restarts with it; Assert-ProtectedUnchanged verifies it after.
+        Write-Log 'MI_00 did not reappear after the scan; restarting the composite parent' | Out-Null
+        Invoke-Pnputil @('/restart-device', "$parent") | Out-Null
+    }
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 500
+        $present = @(Get-PnpDevice -PresentOnly | Where-Object InstanceId -match $scannerPattern)
+        if ($present.Count -eq 1 -and $present[0].Status -eq 'OK') {
+            $properties = Get-Properties $present[0].InstanceId
+            if ("$($properties['DEVPKEY_Device_Service'])" -eq 'WINUSB') { return $true }
+        }
+    }
+    return $false
 }
 function Restart-WiaService {
     # COM keeps the previous in-process server mapped inside the WIA service,
@@ -259,9 +296,10 @@ try {
             if (-not $Apply) { Write-Log "Preflight passed. Would run pnputil /add-driver $($info.Dir)\wc3119-wia.inf /install"; exit 0 }
             if (-not (Test-Admin)) { throw 'Elevation is required' }
             Save-Backup
+            Stop-WiaService
             $code = Invoke-Pnputil @('/add-driver', (Join-Path $info.Dir 'wc3119-wia.inf'), '/install')
             Assert-ProtectedUnchanged
-            if ($code -eq 3010) { Write-Log 'Windows requests a reboot; not rebooting automatically. Re-run -Action Status after the reboot.'; exit 3010 }
+            if ($code -eq 3010 -and -not (Complete-PendingDeviceChange)) { Start-Service stisvc -ErrorAction SilentlyContinue; Write-Log 'Windows still requests a reboot; not rebooting automatically. Re-run -Action Status after the reboot.'; exit 3010 }
             Restart-WiaService
             Verify-Installed $info
             exit 0
@@ -278,9 +316,10 @@ try {
             if (-not $Apply) { Write-Log "Preflight passed. Would install $($info.Version) over $($newest.Version) and delete $($newest.Published)"; exit 0 }
             if (-not (Test-Admin)) { throw 'Elevation is required' }
             Save-Backup
+            Stop-WiaService
             $code = Invoke-Pnputil @('/add-driver', (Join-Path $info.Dir 'wc3119-wia.inf'), '/install')
             Assert-ProtectedUnchanged
-            if ($code -eq 3010) { Write-Log 'Windows requests a reboot before the new DLL is in use; not rebooting automatically. Re-run Update after the reboot to remove the superseded package.'; exit 3010 }
+            if ($code -eq 3010 -and -not (Complete-PendingDeviceChange)) { Start-Service stisvc -ErrorAction SilentlyContinue; Write-Log 'Windows still requests a reboot before the new DLL is in use; not rebooting automatically. Re-run Update after the reboot to remove the superseded package.'; exit 3010 }
             Restart-WiaService
             Verify-Installed $info
             foreach ($old in @(Get-ProjectPackages | Where-Object Version -lt $info.Version)) {
@@ -305,8 +344,11 @@ try {
             # Re-enumerate so the devnode leaves the transient no-driver state
             # without a reboot when Windows allows it.
             Invoke-Pnputil @('/scan-devices') | Out-Null
+            if ($codes -contains 3010) {
+                $scanner = @(Get-PnpDevice -PresentOnly | Where-Object InstanceId -match $scannerPattern)
+                if ($scanner.Count -eq 1) { Invoke-Pnputil @('/remove-device', $scanner[0].InstanceId) | Out-Null; Start-Sleep -Seconds 2; Invoke-Pnputil @('/scan-devices') | Out-Null }
+            }
             Start-Service stisvc -ErrorAction SilentlyContinue
-            if ($codes -contains 3010) { Write-Log 'Windows reported that a reboot completes the removal; the device may keep the old binding until then.' }
             # INF AddReg entries under HKCR are not removed by device uninstall.
             if (Test-Path "Registry::HKEY_CLASSES_ROOT\CLSID\$driverClsid") {
                 Remove-Item "Registry::HKEY_CLASSES_ROOT\CLSID\$driverClsid" -Recurse

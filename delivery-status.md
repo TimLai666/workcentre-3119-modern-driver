@@ -30,7 +30,7 @@
 
 ## Current Blockers
 
-- Windows 掃描 App（Microsoft.WindowsScan）能找到裝置但顯示「連線到掃描器時發生問題」。同一台電腦以桌面 PowerShell 呼叫 WinRT `ImageScanner.FromIdAsync`／`ScanFilesToFolderAsync` 成功掃描，wiatrace 顯示兩者對驅動的呼叫序列與回傳值完全相同（drvInitializeWia、drvInitItemProperties×2、drvReadItemProperties 1／1／1／12 全部 S_OK），差異在 App 的 AppContainer 客戶端。嘗試以 TraceLogging 名稱推導 GUID 擷取 `Microsoft.Windows.Scan.Runtime` 沒有事件，PrintScanBrokerService 未被啟動。待查：AppContainer 對 WinUSB 裝置介面的存取政策、WinRT 只回報灰階（`IsColorModeSupported(Color)` 為 false，可能與 WIA_IPS_CUR_INTENT 有效旗標有關）。
+- Windows 掃描 App（Microsoft.WindowsScan）能找到裝置但顯示「連線到掃描器時發生問題」。同一台電腦以桌面 PowerShell 呼叫 WinRT `ImageScanner.FromIdAsync`／`ScanFilesToFolderAsync` 成功掃描，wiatrace 顯示兩者對驅動的呼叫序列與回傳值完全相同（drvInitializeWia、drvInitItemProperties×2、drvReadItemProperties 1／1／1／12 全部 S_OK），差異在 App 的 AppContainer 客戶端。嘗試以 TraceLogging 名稱推導 GUID 擷取 `Microsoft.Windows.Scan.Runtime` 沒有事件，PrintScanBrokerService 未被啟動。待查：AppContainer 對 WinUSB 裝置介面的存取政策。WinRT 灰階問題已修（DEPTH 有效清單需含 24），修後 Windows 掃描 App 仍連線失敗。
 
 - 免費路線的限制：每台要用的電腦都得先信任專案測試憑證，不能公開分發。目前只在開發機驗證，第二台乾淨電腦、換孔、拔插、重開機與解除安裝尚未實測。
 
@@ -70,6 +70,8 @@ IWiaMiniDrv 的 `drvWriteItemProperties`、`drvAnalyzeItem` 與 `drvDeleteItem` 
 | 建立持續完成完整驅動的目標 | 使用者要求逐步完成實作、驗證與推送，需要使用者介入時提出具體需求，可獨立工作繼續推進 | 2026-09-13 | 01、02、03、05、06、07 |
 
 ## Verified
+
+2026-09-19 彩色支援與腳本復原版本：180 個 lib 測試、整合測試、doc-tests、fmt、Clippy、release、DLL 動態載入通過；DLL SHA256 `7D0476273CB7BEA7DF6391CB79EE1B8B966E353B230C6038CF8633399692F3DC`，套件 0.2.11.0。WIA_IPS_CUR_INTENT 有效旗標改為 COLOR｜GRAYSCALE｜MINIMIZE_SIZE｜MAXIMIZE_QUALITY，寫入 intent 會選定 DATATYPE；WIA_IPA_DEPTH 有效清單固定保留 [8, 24]，只移動 nominal，depth-only 寫入選定對應 DATATYPE。實機：WIA automation 寫 intent=1 → DATATYPE 3／DEPTH 24；WinRT `IsColorModeSupported` 由只有 Grayscale 變為 Color＋Grayscale，`ScanFilesToFolderAsync` 彩色 10.5 秒得 648×871 24 bpp（1693278 bytes）。安裝腳本：`Install`／`Update` 改為先停止 stisvc 再 pnputil；pnputil 回 3010 時以 `/remove-device` → `/scan-devices`，MI_00 未回來則重啟 usbccgp 父裝置，實測可在不重開機下完成更新；Update 中斷遺留的 oem19／oem22 已手動刪除。
 
 2026-09-19 重開機後：使用者重開機，`wc3119-setup.ps1 -Action Status` 顯示 MI_00 服務 WINUSB、oem19.inf 0.2.9.0、Image 類別、問題碼 0，兩個裝置介面 Enabled，stisvc Running，WIA 1 台；WIA automation 連線 75 ms、灰階 75 dpi 傳輸 7.4 秒成功。這證明「解除安裝→重新安裝→重開機」的循環可以復原，也是第一次重開機後的自動載入驗收。
 

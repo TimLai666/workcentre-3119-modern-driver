@@ -1222,7 +1222,8 @@ mod tests {
             ]
         );
         assert_eq!(writer.attribute_ids, vec![WIA_IPA_DEPTH]);
-        assert_eq!(writer.list_values, vec![(WIA_IPA_DEPTH, vec![24])]);
+        // The depth list stays complete; the rewrite only moves the nominal.
+        assert_eq!(writer.list_values, vec![(WIA_IPA_DEPTH, vec![8, 24])]);
         assert_eq!(&*events.borrow(), &["values", "attributes", "finalize"]);
     }
 

@@ -16,6 +16,32 @@ use crate::wia::FlatbedSettings;
 /// numeric `PROPID`s from the original application request.  Unknown IDs are
 /// intentionally ignored here so the WIA service's catch-all validator can
 /// handle properties outside this dependency graph.
+/// Translate a written WIA_IPS_CUR_INTENT into the data type it implies.
+/// `Ok(None)` means the intent carries no image-type request (size/quality
+/// hints only). Contradictory or unsupported image types are rejected.
+pub(super) fn data_type_for_intent(intent: i32) -> Result<Option<i32>, i32> {
+    use super::catalog::{
+        WIA_INTENT_IMAGE_TYPE_COLOR, WIA_INTENT_IMAGE_TYPE_GRAYSCALE, WIA_INTENT_MAXIMIZE_QUALITY,
+        WIA_INTENT_MINIMIZE_SIZE,
+    };
+    let known = WIA_INTENT_IMAGE_TYPE_COLOR
+        | WIA_INTENT_IMAGE_TYPE_GRAYSCALE
+        | WIA_INTENT_MINIMIZE_SIZE
+        | WIA_INTENT_MAXIMIZE_QUALITY;
+    if intent & !known != 0 {
+        return Err(E_INVALIDARG);
+    }
+    match (
+        intent & WIA_INTENT_IMAGE_TYPE_COLOR != 0,
+        intent & WIA_INTENT_IMAGE_TYPE_GRAYSCALE != 0,
+    ) {
+        (true, true) => Err(E_INVALIDARG),
+        (true, false) => Ok(Some(3)),
+        (false, true) => Ok(Some(2)),
+        (false, false) => Ok(None),
+    }
+}
+
 pub(super) fn resolve(
     catalog: &PropertyCatalog,
     old: FlatbedSettings,
@@ -101,12 +127,14 @@ fn resolve_mode_and_depth(settings: &mut FlatbedSettings, written: &[u32]) -> Re
             settings.depth = depth_for(settings.data_type).ok_or(E_INVALIDARG)?;
         }
         (false, true) => {
-            // DEPTH is dependent on DATATYPE in the advertised catalog.  A
-            // depth-only request may keep the current datatype, but may not
-            // silently switch it to make an explicit contradictory value fit.
-            if depth_for(settings.data_type) != Some(settings.depth) {
-                return Err(E_INVALIDARG);
-            }
+            // Each advertised depth belongs to exactly one data type, so a
+            // depth-only request selects that data type (WinRT clients write
+            // WIA_IPA_DEPTH when switching colour modes).
+            settings.data_type = match settings.depth {
+                8 => 2,
+                24 => 3,
+                _ => return Err(E_INVALIDARG),
+            };
         }
         (false, false) => {
             // If a service-side dependent update left the pair inconsistent,
@@ -291,6 +319,21 @@ fn floor_to_step(value: i32, step: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn intent_maps_to_a_single_data_type_or_nothing() {
+        assert_eq!(data_type_for_intent(0), Ok(None));
+        assert_eq!(data_type_for_intent(0x1), Ok(Some(3)));
+        assert_eq!(data_type_for_intent(0x2 | 0x10000), Ok(Some(2)));
+        assert_eq!(data_type_for_intent(0x20000), Ok(None));
+        assert_eq!(data_type_for_intent(0x3), Err(E_INVALIDARG));
+        assert_eq!(
+            data_type_for_intent(0x4),
+            Err(E_INVALIDARG),
+            "text is not offered"
+        );
+        assert_eq!(data_type_for_intent(0x8), Err(E_INVALIDARG));
+    }
     use crate::{protocol::Capabilities, wia::BMP_FORMAT};
 
     const WIA_IPA_DATATYPE: u32 = 4103;
@@ -398,10 +441,15 @@ mod tests {
     }
 
     #[test]
-    fn depth_only_conflict_is_rejected_instead_of_switching_datatype() {
+    fn depth_only_write_selects_the_matching_datatype_and_rejects_unknown_depths() {
+        // Each advertised depth belongs to one data type, so WinRT's depth-only
+        // colour switch is honoured instead of rejected.
         let old = settings();
         let current = FlatbedSettings { depth: 24, ..old };
+        let resolved = resolve(&catalog(), old, current, &[WIA_IPA_DEPTH]).unwrap();
+        assert_eq!((resolved.data_type, resolved.depth), (3, 24));
 
+        let current = FlatbedSettings { depth: 16, ..old };
         assert!(matches!(
             resolve(&catalog(), old, current, &[WIA_IPA_DEPTH]),
             Err(E_INVALIDARG)

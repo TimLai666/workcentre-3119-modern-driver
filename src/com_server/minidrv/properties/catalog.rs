@@ -62,6 +62,12 @@ const WIA_IPS_PREVIEW: u32 = 3100;
 
 const WIA_DATA_GRAYSCALE: i32 = 2;
 const WIA_DATA_COLOR: i32 = 3;
+// SDK wiadef.h WIA_IPS_CUR_INTENT flags. The two size/quality hints are
+// accepted without changing settings; TEXT (1 bpp) is not offered.
+pub(super) const WIA_INTENT_IMAGE_TYPE_COLOR: i32 = 0x0000_0001;
+pub(super) const WIA_INTENT_IMAGE_TYPE_GRAYSCALE: i32 = 0x0000_0002;
+pub(super) const WIA_INTENT_MINIMIZE_SIZE: i32 = 0x0001_0000;
+pub(super) const WIA_INTENT_MAXIMIZE_QUALITY: i32 = 0x0002_0000;
 const WIA_COMPRESSION_NONE: i32 = 0;
 const TYMED_FILE: i32 = 2;
 const WIA_PACKED_PIXEL: i32 = 0;
@@ -341,10 +347,11 @@ impl PropertyCatalog {
             rw_list(vec![WIA_COMPRESSION_NONE], WIA_COMPRESSION_NONE),
         );
         let data_type_values = catalog.data_types.clone();
-        // Depth and Y resolution describe the current datatype and X
-        // resolution. drvValidateItemProperties must update these lists when
-        // their controlling properties change.
-        let depth_values = vec![default_depth];
+        // Every depth reachable through the advertised data types stays in the
+        // valid list; WinRT Windows.Devices.Scanners decides colour support from
+        // it (2026-09-19: a single-entry list made it report grayscale only).
+        // Y resolution still tracks the X resolution list.
+        let depth_values = catalog.all_depths();
         add_long(
             &mut catalog,
             WIA_IPA_DATATYPE,
@@ -483,6 +490,16 @@ impl PropertyCatalog {
             0,
             rw_range(0, 0, 0),
         );
+        // WinRT Windows.Devices.Scanners derives colour support from these
+        // valid flags (2026-09-19: with 0 it reported grayscale only although
+        // WIA_IPA_DATATYPE already listed colour).
+        let mut intent_bits = WIA_INTENT_MINIMIZE_SIZE | WIA_INTENT_MAXIMIZE_QUALITY;
+        if catalog.data_types.contains(&WIA_DATA_COLOR) {
+            intent_bits |= WIA_INTENT_IMAGE_TYPE_COLOR;
+        }
+        if catalog.data_types.contains(&WIA_DATA_GRAYSCALE) {
+            intent_bits |= WIA_INTENT_IMAGE_TYPE_GRAYSCALE;
+        }
         add_long(
             &mut catalog,
             WIA_IPS_CUR_INTENT,
@@ -491,7 +508,7 @@ impl PropertyCatalog {
             PropertyAttribute::FlagLong {
                 access: WIA_PROP_RW | WIA_PROP_FLAG,
                 nominal: 0,
-                valid_bits: 0,
+                valid_bits: intent_bits,
             },
         );
         // WorkCentre 3119 model optics, from Xerox W31BR-01.PDF. These are
@@ -623,15 +640,18 @@ impl PropertyCatalog {
             let index = selected.index(id)?;
             selected.initial_values[index] = PropertyValue::Long(value);
         }
-        for (id, value) in [
-            (WIA_IPA_DEPTH, settings.depth),
-            (WIA_IPS_YRES, settings.y_resolution),
-        ] {
-            let index = selected.index(id)?;
+        {
+            let index = selected.index(WIA_IPS_YRES)?;
             selected.attributes[index] = PropertyAttribute::ListLong {
                 access: WIA_PROP_RW | WIA_PROP_LIST,
-                values: vec![value],
-                nominal: value,
+                values: vec![settings.y_resolution],
+                nominal: settings.y_resolution,
+            };
+            let index = selected.index(WIA_IPA_DEPTH)?;
+            selected.attributes[index] = PropertyAttribute::ListLong {
+                access: WIA_PROP_RW | WIA_PROP_LIST,
+                values: self.all_depths(),
+                nominal: settings.depth,
             };
         }
         for (id, min, nominal, max, increment) in [
@@ -725,6 +745,15 @@ impl PropertyCatalog {
     #[cfg(test)]
     pub(super) fn data_types(&self) -> &[i32] {
         &self.data_types
+    }
+
+    /// Depths reachable through the advertised data types, in list order.
+    pub(super) fn all_depths(&self) -> Vec<i32> {
+        self.data_types
+            .iter()
+            .map(|data_type| depth_for(*data_type))
+            .filter(|depth| *depth > 0)
+            .collect()
     }
 
     #[cfg(test)]
@@ -898,8 +927,10 @@ mod tests {
                 "property {id}"
             );
         }
+        // The depth list keeps every reachable depth; only the nominal follows
+        // the selection (WinRT reads colour support from this list).
         assert!(matches!(property(&selected, WIA_IPA_DEPTH).1,
-            PropertyAttribute::ListLong { values, .. } if values == &[24]));
+            PropertyAttribute::ListLong { values, nominal: 24, .. } if values == &[8, 24]));
         assert!(matches!(property(&selected, WIA_IPS_YRES).1,
             PropertyAttribute::ListLong { values, .. } if values == &[300]));
         for (id, expected_max, expected_step) in [
@@ -1041,7 +1072,7 @@ mod tests {
             &PropertyValue::Long(14)
         );
         assert!(matches!(property(&catalog, WIA_IPA_DEPTH).1,
-            PropertyAttribute::ListLong { values, nominal: 8, .. } if values == &[8]));
+            PropertyAttribute::ListLong { values, nominal: 8, .. } if values == &[8, 24]));
         assert!(matches!(property(&catalog, WIA_IPS_YRES).1,
             PropertyAttribute::ListLong { values, nominal: 75, .. } if values == &[75]));
     }
@@ -1091,6 +1122,21 @@ mod tests {
                     ..
                 }
             ));
+        }
+    }
+
+    #[test]
+    fn current_intent_advertises_the_colour_modes_the_device_offers() {
+        let catalog = PropertyCatalog::flatbed(&caps(), "Flatbed", "Root\\Flatbed").unwrap();
+        let (value, attribute) = property(&catalog, WIA_IPS_CUR_INTENT);
+        assert_eq!(value, &PropertyValue::Long(0));
+        match attribute {
+            PropertyAttribute::FlagLong { valid_bits, .. } => {
+                assert_ne!(valid_bits & WIA_INTENT_IMAGE_TYPE_COLOR, 0);
+                assert_ne!(valid_bits & WIA_INTENT_IMAGE_TYPE_GRAYSCALE, 0);
+                assert_eq!(valid_bits & 0x4, 0, "text intent is not offered");
+            }
+            other => panic!("unexpected attribute {other:?}"),
         }
     }
 

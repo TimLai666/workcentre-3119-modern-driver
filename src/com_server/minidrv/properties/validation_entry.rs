@@ -92,7 +92,20 @@ pub(in crate::com_server::minidrv) unsafe extern "system" fn entry(
                     .map(native::PropSpec::from_id)
                     .collect();
                 validate_specs(context, &fixed)?;
-                let (old, current) = read_settings_pair(context, &ids)?;
+                let mut ids = ids;
+                let (old, mut current) = read_settings_pair(context, &ids)?;
+                // A written intent selects the data type on the application's
+                // behalf; the dependent depth/size then follow as for an
+                // explicit WIA_IPA_DATATYPE write.
+                if ids.contains(&super::WIA_IPS_CUR_INTENT) {
+                    let intent = read_long(context, super::WIA_IPS_CUR_INTENT)?;
+                    if let Some(data_type) = super::validation::data_type_for_intent(intent)? {
+                        current.data_type = data_type;
+                        if !ids.contains(&WIA_IPA_DATATYPE) {
+                            ids.push(WIA_IPA_DATATYPE);
+                        }
+                    }
+                }
                 let resolved = super::validation::resolve(&catalog, old, current, &ids)?;
                 let before = catalog.with_settings(old)?;
                 let after = catalog.with_settings(resolved)?;
@@ -214,6 +227,18 @@ fn read_settings_pair(
         format: guid_bytes(format),
     };
     Ok((settings(old, old_format), settings(current, format)))
+}
+
+fn read_long(context: *mut u8, propid: u32) -> Result<i32, i32> {
+    let mut value = 0;
+    // SAFETY: entry retains a real WIA context; the output is initialized local
+    // LONG storage and no previous-value output is requested.
+    let hr =
+        unsafe { super::wiasReadPropLong(context, propid, &mut value, ptr::null_mut(), BOOL_TRUE) };
+    if hr != S_OK {
+        return Err(helper_failure(hr));
+    }
+    Ok(value)
 }
 
 fn validate_specs(context: *mut u8, specs: &[native::PropSpec]) -> Result<(), i32> {
