@@ -1,6 +1,8 @@
 # 掃描介面安裝方案
 
-目前只有 INF 設計稿及開發機配對工具，沒有簽署完成的安裝套件。不要把此目錄當成可安裝版本。2026-09-13 使用者已核准本機已備份 MI_00 綁定內建 WinUSB、登錄下列裝置介面 GUID 及重新啟動該介面，以進行實機通訊測試。
+本目錄是可安裝套件的來源：`wc3119-wia.inf`（Image 類別、WinUSB 函式驅動、WIA minidriver 登錄）、`package.ps1`（打包＋Inf2Cat＋測試憑證簽署）、`wc3119-setup.ps1` 與 `install.cmd`／`uninstall.cmd`（一鍵安裝）。一般使用流程見 [README](../README.md#安裝一般使用者)；本文件記錄授權範圍、系統變更細節與實跑證據。`wc3119-winusb.inf` 與 `examples/winusb_setup.rs` 是開發機首次配對 WinUSB 用的舊路徑，正式套件不需要。
+
+2026-09-13 使用者已核准本機已備份 MI_00 綁定內建 WinUSB、登錄下列裝置介面 GUID 及重新啟動該介面，以進行實機通訊測試。
 
 ## 可核對的變更範圍
 
@@ -30,7 +32,7 @@
 
 配對後出現錯誤、目標不符或使用者要求還原時，只移除這次對 MI_00 的綁定與新增 GUID，依備份恢復原值。不得刪除 Windows 共用的 WinUSB 套件、父裝置、MI_01 或其他 USB 裝置。重新偵測後核對基準狀態。此復原流程尚未實測，執行前必須完成精確命令與備份檢查。
 
-## WIA 登錄方案（尚未執行，待授權）
+## WIA 登錄方案（已於開發機實裝）
 
 2026-09-19 依本機 `C:\Windows\INF\sti.inf`、`winusb.inf` 與 [Microsoft WIA INF 規則](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/inf-files-for-wia-devices) 完成 [WIA INF 設計稿](wc3119-wia.inf)。它與現有 WinUSB 設計稿的差異：
 

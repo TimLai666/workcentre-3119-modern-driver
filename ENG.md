@@ -2,7 +2,7 @@
 
 ## 目標與現況
 
-目標是在 Windows 11 x64 用 Rust 完成可以長期使用的純驅動，掃描優先，列印接續。不開發 GUI 或掃描 App，操作由 Windows 掃描等既有軟體提供。現有實作包含裝置診斷、能力查詢及分塊掃描；2026-09-13 已取得本機灰階／彩色空平台影像。這只代表單一開發機／裝置實例的部分掃描行為已驗證，文件品質、異常復原、跨電腦安裝、USB 換孔／拔插／重開機及 WIA 尚未驗收。功能的驗收條件與失敗情境由 [工作項目](docs/tickets/) 管理，進度由 [delivery-status.md](delivery-status.md) 管理。
+目標是在 Windows 11 x64 用 Rust 完成可以長期使用的純驅動，掃描優先，列印接續。不開發 GUI 或掃描 App，操作由 Windows 掃描等既有軟體提供。現有實作包含裝置診斷、能力查詢、分塊掃描、完整的 IStiUSD／IWiaMiniDrv COM 伺服器與一鍵安裝套件；2026-09-19 起 Windows 掃描 App 與 Windows 傳真和掃描已在開發機實掃通過（灰階／彩色、75–600 dpi、整版與選區）。文件品質、提早取消後的復原、跨電腦安裝、USB 換孔／拔插及列印尚未驗收。功能的驗收條件與失敗情境由 [工作項目](docs/tickets/) 管理，進度由 [delivery-status.md](delivery-status.md) 管理。
 
 ## 使用流程與架構
 
@@ -32,7 +32,7 @@
 
 能力欄位依 [SANE 1.4.0 INQUIRY](https://gitlab.com/sane-project/backends/-/blob/1.4.0/backend/xerox_mfp.c#L775) 與 [解析度位元定義](https://gitlab.com/sane-project/backends/-/blob/1.4.0/backend/xerox_mfp.c#L403) 獨立實作。能力位元與設定命令的解析度代碼不同，不可互換。幾何值保留 1/1200 英吋單位，尚未依未驗證的機型補償轉成有效掃描範圍。
 
-[INF 設計稿](driver/wc3119-winusb.inf) 以型號／功能介面 `USB\VID_0924&PID_4265&MI_00` 配對並登錄固定 GUID，不含特定實例或孔位。它仍缺少 WDK 驗證與簽署 catalog，尚不能作為可分發的套件。
+正式套件的 [WIA INF](driver/wc3119-wia.inf) 以型號／功能介面 `USB\VID_0924&PID_4265&MI_00` 配對並登錄固定 GUID，不含特定實例或孔位；`package.ps1` 以 Inf2Cat 產生 catalog 並用測試憑證簽署，安裝流程見 [driver/README.md](driver/README.md)。舊的 [WinUSB INF 設計稿](driver/wc3119-winusb.inf) 只用於開發機配對。
 
 開發機的 [Rust 配對工具](examples/winusb_setup.rs) 要求完整實例 ID，只搜尋本機內建 `C:\Windows\INF\winusb.inf`，以 `DiInstallDevice` 綁定單一裝置。本機已獲授權並完成配對與真實 INQUIRY，結果見 [硬體紀錄](docs/hardware.md)。這次完整實例 ID 只限定被授權操作的目標，不是正式套件的匹配條件；正式套件仍需支援其他電腦的系統路徑、裝置實例及 USB 接孔。
 

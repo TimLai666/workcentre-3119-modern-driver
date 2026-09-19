@@ -1,95 +1,81 @@
 # WorkCentre 3119 Modern Driver
 
-以 Rust 開發 Xerox WorkCentre 3119 的 Windows 11 x64 純驅動，優先支援掃描。使用 Windows 掃描等既有軟體操作，不另外開發 GUI 或掃描 App。
+Xerox WorkCentre 3119 在 Windows 11 x64 上的開源掃描驅動，以 Rust 開發，純驅動、不附 GUI。裝好之後用 Windows 內建的掃描軟體（Windows 掃描 App、Windows 傳真和掃描）或任何 WIA 掃描軟體直接掃描。這是獨立開發專案，不是 Xerox 官方驅動，採 MIT 授權。
 
-**Rust 核心已取得實機灰階／彩色影像，目前仍不是完整可安裝的驅動。** 已驗證空平台掃描、取消後重掃及跨行程互斥；文字、色彩、精確幾何與偏白問題尚未驗收。Windows 掃描整合、正式安裝套件、跨電腦／換孔及列印仍未完成。
+## 目前能做什麼
 
-Windows 整合已具備 BMP、原生 COM 串流、WIA 設定映射及根／平台項目樹。IWiaMiniDrv 已接上裝置鎖定、屬性初始化／讀取、串流掃描、BMP 格式列舉與取消事件，能力查詢及傳輸重用 IStiUSD 持有的 USB 連線。影像回呼取消後重掃已有實機證據，提早取消後重掃則尚未通過。屬性相依驗證已接上，實際服務驗收及安裝整合仍未完成，Windows 掃描目前不能使用本核心，詳見 [整合進度](docs/tickets/05-windows-install.md)。
+- 平台掃描：灰階 8 位元、彩色 24 位元；75／100／150／200／300／600 dpi；整版或任意選區。
+- Windows 掃描 App（Microsoft Store）與 Windows 傳真和掃描實掃通過，WinRT `Windows.Devices.Scanners` 與 WIA automation 也可用。
+- WIA 亮度／對比（−1000～1000，0 為中性）由驅動套用，中性時不改任何像素。
+- 一鍵安裝／更新／解除安裝套件，不需付費簽章。
 
-`MI_00` 表示複合式 USB 裝置的第 0 個功能介面，數字取自裝置描述，與電腦上的 USB 接孔編號無關。3119 的 MI_00 已回覆掃描能力，MI_01 使用列印傳輸服務。正式套件會依型號與功能介面辨識，不以開發機的孔位或完整實例路徑限定使用。[Microsoft USB 識別碼定義](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/standard-usb-identifiers)
+尚未完成：取消中途掃描後立即重掃的復原、拔插／換 USB 孔／第二台電腦的實測、列印、掃描明暗品質對照（需要有內容的原稿）。進度與證據見 [delivery-status.md](delivery-status.md)。
 
-## 解析度與模式
+## 安裝（一般使用者）
 
-[Xerox 官方規格](https://www.office.xerox.com/latest/W31BR-01.PDF)標示光學最高 600 × 2400 dpi、插值最高 4800 dpi，模式含 1-bit 黑白線稿／半色調、8-bit 灰階及 24-bit 彩色。插值會增加輸出像素，不能當成新增的光學細節。
+1. 取得套件目錄 `wia-package-<版本>-<時間>`（由開發者依下方步驟打包），整個目錄複製到要用的電腦。
+2. 用 USB 線接上 WorkCentre 3119 並開機（沒接也可以先裝）。
+3. 對 `install.cmd` 按兩下，在「使用者帳戶控制」按「是」。視窗顯示 `Done` 就可以掃描了。
 
-目前此機器的 INQUIRY 已辨識回報為 75、100、150、200、300、600 dpi，本核心以相同 X／Y 解析度設定，僅開放灰階與彩色。兩者皆已完成 600 dpi 空平台傳輸；黑白線稿、半色調與非對稱 600 × 2400 dpi 尚未實作／驗證。不能以當前協定回報推論整台機器的完整上限。
+`install.cmd` 會信任套件的測試憑證、安裝或更新驅動、重啟 Windows 影像擷取服務並確認掃描器可用；同版本重跑只做檢查，舊版自動更新。`uninstall.cmd` 反向移除驅動與憑證信任。說明與疑難排解見套件內的 `INSTALL.txt`，紀錄在 `%ProgramData%\WorkCentre3119Driver\setup-logs`。
 
-## 執行診斷
+沒有花錢買程式碼簽章，所以每台電腦第一次安裝都要按一次 UAC，套件只適合自用或少數信任的電腦，不能公開散布為「免確認」安裝。細節見 [driver/README.md](driver/README.md)。
 
-需要 Rust stable MSVC 工具鏈及 Visual Studio C++ 建置工具。診斷程式沒有第三方 Rust 依賴。
+## 怎麼運作
 
-```powershell
-cargo run --offline -- doctor
+```text
+Windows 掃描 App／傳真和掃描／WIA 軟體
+        ↓ WIA 服務（stisvc）
+workcentre_3119.dll   IStiUSD + IWiaMiniDrv（WIA 2.0 串流）
+        ↓ WinUSB
+USB\VID_0924&PID_4265&MI_00   掃描功能介面（MI_01 列印介面不動）
 ```
 
-也可執行 `cargo build --offline --release` 後使用 `target\release\wc3119.exe doctor`。它不會安裝驅動、修改登錄或啟動掃描。
+- INF 把 MI_00 登錄為 Image 類別、函式驅動維持 Microsoft WinUSB，WIA 服務以 COM 載入本 DLL。
+- 掃描協定依 SANE `xerox_mfp` 的文件化行為獨立實作，未複製 SANE 程式碼。
+- 驅動只輸出無壓縮 BMP；PNG／JPEG／PDF 等格式與預覽、編輯、存檔都由呼叫端軟體負責。
+- 設計說明見 [ENG.md](ENG.md)，實機紀錄見 [docs/hardware.md](docs/hardware.md)。
 
-`doctor` 結束碼：0 表示唯一掃描介面的 WinUSB 驅動已啟動，2 表示裝置未就緒，1 表示查詢失敗，64 表示參數錯誤。0 不代表已驗證掃描功能。`--help` 成功也回傳 0。
+## 打包（開發者）
 
-## 開發用能力查詢
-
-依 [安裝方案](driver/README.md) 完成 MI_00 的 WinUSB 配對及裝置介面登錄後，可執行：
-
-```powershell
-cargo run --offline -- inquiry
-```
-
-程式核對唯一裝置、USB 描述與端點後，只送出 INQUIRY 能力查詢，不啟動掃描。成功時列出機器回報的型號、解析度、模式及範圍，回傳 0。找不到已登錄介面、存取失敗、逾時或回覆不合法時回傳 1，不會安裝驅動或自動重試。能力回報不代表掃描及影像品質已驗證。
-
-## 開發用影像擷取
-
-本機已配對的 MI_00 可透過 Rust `scan::scan_to` 回傳無壓縮影像。以下範例會啟動完整平台掃描，輸出目錄必須不存在：
+需要 Rust stable MSVC 工具鏈、Visual Studio C++ 建置工具、Windows SDK（signtool）與 WDK（Inf2Cat，可用 winget 免費安裝）。
 
 ```powershell
-cargo run --offline --release --example capture_scan -- artifacts/my-scan gray 75
+cargo build --offline --release
+./driver/package.ps1 -NewTestCertificate      # 第一次；之後用 -CertificateThumbprint <指紋>
 ```
 
-可選 `gray`／`rgb`，解析度接受 75、100、150、200、300、600，並以機器當次回報再次限制。已實機驗證的組合見 [硬體紀錄](docs/hardware.md)，不能把可接受參數都當成已驗證。加 `--cancel-after-band` 可測第一塊傳輸後取消，或用 `--cancel-after-ms N` 在 1–120000 毫秒後提出取消；兩者不可同時使用。取消預期回傳失敗且不產生完成標記。詳見範例的 `--help`。
-
-目錄保存 USB 原文、解碼像素、PGM／PPM 及分塊產生的 `image.bmp`，供獨立格式比對。只有掃描釋放與檔案同步成功才有 `complete.txt`，其餘目錄視為中斷資料。影像依 READ 實際尺寸保存，沒有自動提亮、gamma、裁切或幾何補償。BMP 只改 RGB 通道排列及每列補齊，不改樣本值。檔案可能包含私人文件，`artifacts/` 不提交至 Git。這是開發驗證範例，Windows 掃描尚不能使用此核心。
-
-## 開發用連續掃描驗證
-
-```powershell
-cargo run --offline --release --example scan_stability -- artifacts/stability 20
-```
-
-會在同一程序依序重複「600 dpi 彩色、600 dpi 彩色、300 dpi 彩色、600 dpi 灰階」，每次重新取得裝置能力。次數預設 20，接受 1–20；輸出目錄必須不存在。逐塊核對 USB 資料與解碼像素，只保存進度及錯誤的 `diagnostics.log`，不保存影像。任一錯誤立即停止，所有工作成功才有 `complete.txt`。這是開發測試，不提供自動復原或 Windows 掃描整合；記憶體使用須另外從同一程序量測。詳見範例 `--help`。
-
-可加 `--read-poll-ms N`，以 1–1000 毫秒測試 READ 忙碌回覆的詢問間隔，預設 100。例如 `scan_stability artifacts/poll500 1 --read-poll-ms 500`。`--read-buffer-kib N` 可測試每次影像讀取的緩衝區大小，接受 1–1024 KiB，預設 64，另以當下 WinUSB 回報上限限制。範例：`scan_stability artifacts/buffer256 1 --read-buffer-kib 256`。兩個選項接在目錄及可選次數之後，順序不限，各只能使用一次。
-
-這些是開發用對照參數，建議一次只改一個。較長的詢問間隔或較大讀取量可能增加取消等待。其他命令、120 秒工作期限、USB 政策及影像設定不變，尚未證實的設定不作為正式加速預設。
-
-每次成功或失敗都記錄階段耗時、USB 呼叫耗時及 Busy 等待。USB／Busy 時間已包含在階段時間中，不可相加；USB 呼叫包含等待機器產生資料，不能拿它當純 USB 頻寬。呼叫端耗時在此包含獨立像素核對與寫入診斷，沒有 WIA 或影像檔案輸出。
-
-## 完整交付目標
-
-- 真實平台掃描，依機器能力提供灰階、彩色與解析度設定。
-- 調查並修正使用者回報的偏亮偏白問題，以保留淺色細節及正確的亮度／對比映射驗收，目前尚未確認原因或完成修復。
-- 透過 Windows 掃描介面提供影像傳輸、取消、重掃、進度與錯誤回報。
-- Windows 掃描整合與可在其他 Windows 11 x64 電腦安裝、更新、解除安裝的套件，支援 USB 換孔、拔插與重新開機。
-- 掃描穩定後完成列印協定與 Windows 列印整合。
-
-所有項目需要實機驗證，進度見 [delivery-status.md](delivery-status.md)。本機已確認的裝置資訊見 [硬體紀錄](docs/hardware.md)，系統變更提案見 [掃描介面安裝方案](driver/README.md)。
-
-預覽畫面、影像編輯、PDF 組頁與檔案儲存由呼叫端軟體負責。專案內的 CLI 僅用於開發、診斷及測試。
+套件輸出在 `artifacts/wia-package-<版本>-<時間>/`，內含 INF、簽署 catalog、DLL、憑證、`wc3119-setup.ps1`、`install.cmd`、`uninstall.cmd` 與 `INSTALL.txt`。改版時先提高 INF 的 `DriverVer`。
 
 ## 開發
 
-先讀 [AGENTS.md](AGENTS.md) 與 [ENG.md](ENG.md)。
+先讀 [AGENTS.md](AGENTS.md)（專案契約）與 [ENG.md](ENG.md)。每次交付前：
 
 ```powershell
 cargo fmt --all -- --check
 cargo clippy --offline --all-targets -- -D warnings
 cargo test --offline
-cargo test --offline --example winusb_setup
-cargo test --offline --example capture_scan
-cargo test --offline --example scan_stability
 cargo build --offline --release
-cargo build --offline --release --example capture_scan
-cargo build --offline --release --example scan_stability
 ```
 
-開發機的 WinUSB 候選預檢可執行 `cargo run --offline --example winusb_setup`。不帶參數時不安裝驅動。實際配對需另外依 [安裝方案](driver/README.md)備份及取得系統變更授權，這個工具不是正式安裝套件。
+改到 DLL 時另跑 `cargo test --offline --test com_server_dll -- --ignored`，並設定 `WC3119_TEST_DLL` 指向剛建好的 release DLL。
 
-本專案目前的原創程式採 MIT。SANE 上游的授權不同，尚未把其實作移植進本專案。這是獨立開發專案，並非 Xerox 官方驅動。
+開發工具（不安裝驅動、不改登錄）：
+
+| 指令 | 用途 |
+| --- | --- |
+| `cargo run --offline -- doctor` | 檢查 MI_00 的驅動狀態，結束碼 0 表示 WinUSB 已啟動 |
+| `cargo run --offline -- inquiry` | 送出 INQUIRY，列出機器回報的解析度、模式與範圍 |
+| `cargo run --offline --release --example capture_scan -- <目錄> gray 75` | 直接經 WinUSB 掃描並保存 USB 原文、像素與 BMP |
+| `cargo run --offline --release --example scan_stability -- <目錄> 20` | 連續掃描穩定度測試，只記錄診斷 |
+
+這些工具需要獨占 USB：WIA 服務載入驅動時會持有裝置，先停止 `stisvc` 或解除安裝套件再用。開發機首次配對 WinUSB 的工具與授權流程見 [driver/README.md](driver/README.md)。
+
+`MI_00` 是複合式 USB 裝置的第 0 個功能介面，與電腦上的 USB 接孔無關；套件依型號與功能介面辨識，不綁特定電腦或孔位。[Microsoft USB 識別碼定義](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/standard-usb-identifiers)
+
+## 已知限制
+
+- 黑白線稿／半色調與非對稱 600 × 2400 dpi 尚未實作；[Xerox 規格](https://www.office.xerox.com/latest/W31BR-01.PDF)標示的插值解析度不提供。
+- 整版掃描實際回傳約 11.6 英寸（要求 11.7），選區寬度會補齊到裝置單位；精確幾何驗收見 [02](docs/tickets/02-first-scan.md)。
+- 掃描中途取消後，裝置可能需要約兩分鐘才接受下一次掃描，見 [03](docs/tickets/03-recover-scan.md)。
+- 掃描器的燈光與曝光無法由驅動控制；明暗只能透過 WIA 亮度／對比調整。
