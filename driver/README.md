@@ -30,6 +30,35 @@
 
 配對後出現錯誤、目標不符或使用者要求還原時，只移除這次對 MI_00 的綁定與新增 GUID，依備份恢復原值。不得刪除 Windows 共用的 WinUSB 套件、父裝置、MI_01 或其他 USB 裝置。重新偵測後核對基準狀態。此復原流程尚未實測，執行前必須完成精確命令與備份檢查。
 
+## WIA 登錄方案（尚未執行，待授權）
+
+2026-09-19 依本機 `C:\Windows\INF\sti.inf`、`winusb.inf` 與 [Microsoft WIA INF 規則](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/inf-files-for-wia-devices) 完成 [WIA INF 設計稿](wc3119-wia.inf)。它與現有 WinUSB 設計稿的差異：
+
+- Class 改為 `Image`，讓 still-image 類別安裝程式（sti_ci）處理 `SubClass=StillImage`、`DeviceType=1`、`Capabilities=0x10`（STI_GENCAP_WIA）、`Events` 與 `DeviceData`。
+- 函式驅動仍是 `Include=winusb.inf` 的 WinUSB，並沿用同一裝置介面 GUID。不引用 `STI.USBSection`，因為它會加入 `usbscan.sys` 服務並改變傳輸方式。
+- `AddReg` 寫入 `HardwareConfig=1,4`、`CreateFileName=AUTO`、`USDClass` 與 HKCR `CLSID\{F71A8435-…}\InProcServer32` 指向驅動存放區（`%13%`）內的 `workcentre_3119.dll`，ThreadingModel 為 Both。minidriver 不使用 port name，自行以 GUID 列舉介面，因此 AUTO 與現有實作一致。
+- 事件只宣告連線／斷線，與 `drvGetCapabilities` 相同；驅動不自行發送事件。
+
+尚未查證、必須以實測確認的前提：`Image` 類別搭配 WinUSB 函式驅動是否被類別安裝程式接受並建立 StillImage 裝置介面；WIA 服務帳號 `NT Authority\LocalService` 能否開啟 WinUSB 裝置介面；DLL 目前仍匯入 `VCRUNTIME140.dll` 與 UCRT，服務帳號載入時的 runtime 前置條件；`stisvc` 目前為 Stopped，實測時服務會由 PnP 事件啟動。
+
+### 簽署門檻
+
+Windows 11 x64 安裝第三方 INF 需要簽署的 catalog。本機只有 Windows SDK 的 signtool，沒有 WDK 的 InfVerif／Inf2Cat，`bcdedit` 也未開啟 testsigning。可行路徑只有兩條，皆須使用者另行決定與授權：
+
+1. 開發機測試簽署：安裝 WDK 工具，產生 catalog 並以自簽測試憑證簽署，把測試憑證放入本機受信任的根與 Trusted Publishers，並啟用 `bcdedit /set testsigning on` 後重開機。這是系統安全設定變更，只限開發機，不能寫進一般安裝步驟。
+2. 正式簽署：經 Hardware Dev Center 取得 attestation 簽署。需要 EV 憑證與付費，須另行授權。
+
+沒有這兩者之一，`pnputil /add-driver … /install` 會因缺少簽章而失敗；本專案不會以停用簽章驗證、Secure Boot 或記憶體完整性作為替代。
+
+### 授權後的執行與復原順序
+
+1. 重新列舉唯一 MI_00，核對目前仍是 WinUSB、問題碼 0，父裝置與 MI_01 未變。狀態不同就停止。
+2. 備份到 Git 排除的 `artifacts/` 新目錄：MI_00 devnode 屬性與 `Device Parameters`、目前 `oem*.inf` 清單（`pnputil /enum-drivers`）、HKCR `CLSID\{F71A8435-…}` 是否存在、`HKLM\SYSTEM\CurrentControlSet\Control\Class\{6BDD1FC6-…}` 子鍵清單、`stisvc` 狀態。備份可能含序號，不提交。
+3. 建置 release DLL，記錄 SHA256，與 INF、catalog 放入同一套件目錄；以 InfVerif 檢查 INF。
+4. `pnputil /add-driver wc3119-wia.inf /install`，記錄回傳碼與新增的 `oem*.inf` 名稱。要求重開機時不自動重開，先回報。
+5. 驗證：`wc3119 doctor` 三個介面問題碼 0；MI_00 的 Class 為 Image、服務仍為 WINUSB；`Get-CimInstance Win32_PnPEntity` 出現 Image 類別裝置；WIA automation `DeviceInfos.Count` 由 0 變 1；Windows 掃描可列出裝置並完成一次 75 dpi 掃描與取消。任何一步失敗就停在該步，依既有日誌診斷，不重試安裝。
+6. 復原：`pnputil /delete-driver oem<N>.inf /uninstall /force` 只移除本套件，再以備份核對 MI_00 回到 WinUSB＋USBDevice 類別、CLSID 鍵消失、父裝置與 MI_01 未變。若 pnputil 移除後 devnode 仍綁 Image 類別，改用開發機配對工具重新綁定內建 WinUSB。測試簽署模式與測試憑證另有獨立的關閉／移除步驟，不併入套件復原。
+
 ## 正式安裝套件
 
 ### 程式化配對的已知限制

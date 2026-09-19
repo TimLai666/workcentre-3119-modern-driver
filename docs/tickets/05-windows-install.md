@@ -60,6 +60,12 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 
 ## 測試
 
+### WIA 登錄方案設計
+
+2026-09-19：新增 [WIA INF 設計稿](../../driver/wc3119-wia.inf)，Class 為 Image、函式驅動維持 WinUSB、以 sti_ci 類別安裝程式登錄 StillImage 與 USDClass／CLSID，事件表與 `drvGetCapabilities` 一致。完整前提、簽署門檻、備份與復原順序見 [安裝方案](../../driver/README.md#wia-登錄方案尚未執行待授權)。本輪只讀取系統狀態：`wc3119 doctor` 三介面問題碼 0、MI_00 服務 WINUSB；`stisvc` 為 Stopped；`bcdedit` 無 testsigning；本機只有 SDK signtool，沒有 WDK InfVerif／Inf2Cat。沒有修改綁定、登錄或服務。
+
+阻礙：Windows 11 x64 安裝第三方 INF 需要簽署 catalog。開發機測試簽署要啟用 testsigning 並安裝測試憑證，屬於安全設定變更；正式簽署要付費與送審。兩者都需要使用者決定，尚未授權。本專案不以停用簽章驗證替代。
+
 ### 能力列舉、同步命令與 STI WIA 宣告
 
 2026-09-19：176 個 lib 測試、全部整合測試與 2 個 doc-tests、fmt、Clippy（all targets，warnings 為錯誤）、全部 release targets 通過。另指定當次 release DLL 執行 ignored 動態載入測試通過，DLL SHA256 `A56CFCC5743FC12ACBC947421F02D0EB7C9338577C4967EB1F2C88D7F43D23F6`。沒有偽造 WIA context、沒有 USB 或系統登錄操作。

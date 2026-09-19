@@ -1,0 +1,82 @@
+; WIA design draft only. No signed catalog is provided and nothing here has
+; been installed. It keeps WinUSB as the MI_00 function driver and adds the
+; still-image class installer entries that let the WIA service load the
+; project's IStiUSD/IWiaMiniDrv COM server. Never binds the composite parent
+; or the MI_01 printer interface.
+[Version]
+Signature   = "$Windows NT$"
+Class       = Image
+ClassGUID   = {6BDD1FC6-810F-11D0-BEC7-08002BE2092F}
+Provider    = %Provider%
+CatalogFile = wc3119-wia.cat
+DriverVer   = 09/19/2026,0.2.0.0
+PnpLockdown = 1
+
+[SourceDisksNames]
+1 = %DiskName%,,,
+
+[SourceDisksFiles]
+workcentre_3119.dll = 1
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+[Manufacturer]
+%Provider% = Scanner,NTamd64.10.0
+
+[Scanner.NTamd64.10.0]
+%DeviceName% = Scanner_Install,USB\VID_0924&PID_4265&MI_00
+
+; The function driver stays Microsoft WinUSB, exactly as the paired
+; development machine runs today. sti.inf's STI.USBSection is deliberately
+; not included: it would add usbscan.sys and change the transport.
+[Scanner_Install.NT]
+Include      = winusb.inf
+Needs        = WINUSB.NT
+CopyFiles    = Scanner_CopyFiles
+AddReg       = Scanner_AddReg
+SubClass     = StillImage
+DeviceType   = 1
+Capabilities = 0x10
+DeviceData   = Scanner_DeviceData
+Events       = Scanner_Events
+ICMProfiles  = "sRGB Color Space Profile.icm"
+
+[Scanner_Install.NT.HW]
+Include = winusb.inf
+Needs   = WINUSB.NT.HW
+AddReg  = Scanner_Interface
+
+[Scanner_Install.NT.Services]
+Include = winusb.inf
+Needs   = WINUSB.NT.Services
+
+[Scanner_CopyFiles]
+workcentre_3119.dll
+
+[Scanner_Interface]
+HKR,,DeviceInterfaceGUIDs,0x00010000,"{C4147E4A-9C41-4846-A53C-5E625C68021A}"
+
+[Scanner_AddReg]
+HKR,,HardwareConfig,1,4
+; PnP WIA devices need CreateFileName=AUTO for the service to load them. The
+; minidriver ignores the port name and enumerates the interface GUID itself.
+HKR,,CreateFileName,,"AUTO"
+HKR,,USDClass,,"{F71A8435-AA10-40A6-8334-49EEC8FE9C63}"
+HKCR,CLSID\{F71A8435-AA10-40A6-8334-49EEC8FE9C63},,,"WorkCentre 3119 Scanner Driver"
+HKCR,CLSID\{F71A8435-AA10-40A6-8334-49EEC8FE9C63}\InProcServer32,,0x00020000,%13%\workcentre_3119.dll
+HKCR,CLSID\{F71A8435-AA10-40A6-8334-49EEC8FE9C63}\InProcServer32,ThreadingModel,,"Both"
+
+[Scanner_DeviceData]
+Server = local
+
+[Scanner_Events]
+Connected    = %Connected%,{A28BBADE-64B6-11D2-A231-00C04FA31809},*
+Disconnected = %Disconnected%,{143E4E83-6497-11D2-A231-00C04FA31809},*
+
+[Strings]
+Provider     = "WorkCentre 3119 Modern Driver Project"
+DiskName     = "WorkCentre 3119 Scanner Driver Installation Source"
+DeviceName   = "Xerox WorkCentre 3119 Scanner"
+Connected    = "Scanner connected"
+Disconnected = "Scanner disconnected"
