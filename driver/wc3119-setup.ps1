@@ -251,7 +251,11 @@ try {
             if ($trusted.Count -lt 2) { throw 'The catalog signer is not trusted in both LocalMachine\Root and TrustedPublisher; run -TrustCertificate -Apply first' }
             $scanner = Get-Scanner
             $properties = Get-Properties $scanner.InstanceId
-            if ($properties['DEVPKEY_Device_Service'] -ne 'WINUSB' -and $properties['DEVPKEY_Device_ProblemCode'] -ne 28) { throw "MI_00 is bound to $($properties['DEVPKEY_Device_Service']); needs separate review" }
+            $service = "$($properties['DEVPKEY_Device_Service'])"
+            # Acceptable starting points: paired WinUSB, or no driver at all
+            # (problem 28, or the transient no-service state right after an
+            # uninstall). Anything else is bound to a foreign driver.
+            if ($service -ne 'WINUSB' -and $service -ne '') { throw "MI_00 is bound to $service; needs separate review" }
             if (-not $Apply) { Write-Log "Preflight passed. Would run pnputil /add-driver $($info.Dir)\wc3119-wia.inf /install"; exit 0 }
             if (-not (Test-Admin)) { throw 'Elevation is required' }
             Save-Backup
@@ -292,7 +296,17 @@ try {
             if (-not $Apply) { Write-Log ("Preflight passed. Would delete {0} and the CLSID key; MI_00 returns to no driver (problem 28) until re-paired" -f (($installed | ForEach-Object Published) -join ', ')); exit 0 }
             if (-not (Test-Admin)) { throw 'Elevation is required' }
             Save-Backup
-            foreach ($item in $installed) { Invoke-Pnputil @('/delete-driver', $item.Published, '/uninstall', '/force') | Out-Null }
+            # The WIA service keeps the driver DLL and the WinUSB handle open;
+            # stop it first so pnputil can unload the device cleanly.
+            Write-Log 'Stopping the Windows Image Acquisition service (stisvc)'
+            Stop-Service stisvc -Force -ErrorAction Stop
+            $codes = @()
+            foreach ($item in $installed) { $codes += Invoke-Pnputil @('/delete-driver', $item.Published, '/uninstall', '/force') }
+            # Re-enumerate so the devnode leaves the transient no-driver state
+            # without a reboot when Windows allows it.
+            Invoke-Pnputil @('/scan-devices') | Out-Null
+            Start-Service stisvc -ErrorAction SilentlyContinue
+            if ($codes -contains 3010) { Write-Log 'Windows reported that a reboot completes the removal; the device may keep the old binding until then.' }
             # INF AddReg entries under HKCR are not removed by device uninstall.
             if (Test-Path "Registry::HKEY_CLASSES_ROOT\CLSID\$driverClsid") {
                 Remove-Item "Registry::HKEY_CLASSES_ROOT\CLSID\$driverClsid" -Recurse

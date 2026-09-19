@@ -30,6 +30,8 @@
 
 ## Current Blockers
 
+- 2026-09-19 17:05 開發機的 MI_00 處於「等待重開機完成先前操作」狀態：解除安裝時 WIA 服務仍持有 DLL／句柄導致 pnputil 回 3010，之後重新安裝 0.2.9.0 也回 3010，`pnputil /restart-device` 被拒，WIA 連線回 E_FAIL。需要使用者重開機後再執行 `driver/wc3119-setup.ps1 -Action Status` 與一次 WIA 掃描確認復原。解除安裝腳本已補「先停止 stisvc、再 /scan-devices」，尚未重驗。
+
 - Windows 掃描 App（Microsoft.WindowsScan）能找到裝置但顯示「連線到掃描器時發生問題」。同一台電腦以桌面 PowerShell 呼叫 WinRT `ImageScanner.FromIdAsync`／`ScanFilesToFolderAsync` 成功掃描，wiatrace 顯示兩者對驅動的呼叫序列與回傳值完全相同（drvInitializeWia、drvInitItemProperties×2、drvReadItemProperties 1／1／1／12 全部 S_OK），差異在 App 的 AppContainer 客戶端。嘗試以 TraceLogging 名稱推導 GUID 擷取 `Microsoft.Windows.Scan.Runtime` 沒有事件，PrintScanBrokerService 未被啟動。待查：AppContainer 對 WinUSB 裝置介面的存取政策、WinRT 只回報灰階（`IsColorModeSupported(Color)` 為 false，可能與 WIA_IPS_CUR_INTENT 有效旗標有關）。
 
 - 免費路線的限制：每台要用的電腦都得先信任專案測試憑證，不能公開分發。目前只在開發機驗證，第二台乾淨電腦、換孔、拔插、重開機與解除安裝尚未實測。
