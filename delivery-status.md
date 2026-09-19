@@ -24,7 +24,7 @@
 | 01 | 唯讀診斷完整情境 | 開發者 | in_progress | 本機問題碼 28 可重現，硬體異常情境未全部驗證 |
 | 02 | 第一張實機掃描 | 開發者 | in_progress | 空平台灰階／彩色及獨立像素比對成功；文件、色彩及精確幾何待驗收 |
 | 03 | 取消與復原 | 開發者 | in_progress | 連續工作前 4 次成功，第 5 次 RGB600 自然逾時，清理後 Gray75 成功；20 次驗收與失同步復原未完成 |
-| 05 | Windows 掃描與安裝 | 開發者 | in_progress | 開發機測試憑證套件安裝／更新／解除安裝流程可用；WIA 服務載入驅動，Windows 傳真和掃描完成彩色掃描，Windows 掃描 App 完成灰階掃描；取消、拔插、第二台電腦與明暗品質未驗收 |
+| 05 | Windows 掃描與安裝 | 開發者 | in_progress | 開發機測試憑證套件安裝／更新／解除安裝流程可用；WIA 服務載入驅動，Windows 傳真和掃描完成彩色掃描，Windows 掃描 App 完成灰階 75 dpi 與彩色 600 dpi 掃描，套件一鍵安裝／解除安裝實跑；取消、拔插、第二台電腦與明暗品質未驗收 |
 | 06 | 列印 | 開發者 | not_started | 尚無 |
 | 07 | 掃描明暗品質 | 開發者 | blocked | 已有空平台影像，缺少可對照原稿；歷史偏白仍未重現 |
 
@@ -68,6 +68,8 @@ IWiaMiniDrv 的 `drvWriteItemProperties`、`drvAnalyzeItem` 與 `drvDeleteItem` 
 | 建立持續完成完整驅動的目標 | 使用者要求逐步完成實作、驗證與推送，需要使用者介入時提出具體需求，可獨立工作繼續推進 | 2026-09-13 | 01、02、03、05、06、07 |
 
 ## Verified
+
+2026-09-19 起點貼齊版本：183 個 lib 測試、整合測試、doc-tests、fmt、Clippy、release、DLL 動態載入通過；DLL SHA256 `D4C7D9854C1004388B2C5F6E27D7829707DD36642269BA8068E849A8D4E61D3D`，套件 0.2.16.0 以套件內 `Install` 自動更新。使用者回報 Windows 掃描 App 600 dpi PNG 失敗：wiatrace 顯示 App 寫 XPOS=7（600 dpi，步進 6）被驅動以 E_INVALIDARG 拒絕；明確起點改為貼齊最近步進後，App 彩色 600 dpi 整版掃描成功（5100×6961 24 bpp，約 93 秒）。詳見 [05](docs/tickets/05-windows-install.md#windows-掃描-app-600-dpi-彩色與起點貼齊)。
 
 2026-09-19 一鍵安裝套件：套件目錄自帶 `install.cmd`／`uninstall.cmd`／`wc3119-setup.ps1`／`INSTALL.txt`，兩支腳本 PSParser 無錯誤。開發機把套件複製到 `%TEMP%` 模擬新電腦：`uninstall.cmd` 移除套件、CLSID 與憑證信任（Status：未安裝、信任 0、WIA 0 台）；`install.cmd` 匯入憑證、安裝 0.2.15.0、重啟 stisvc、WIA 1 台、exit 0；重跑走同版驗證路徑；Windows 掃描 App 隨後直接連線並掃描成功。詳見 [05](docs/tickets/05-windows-install.md#一鍵安裝套件)。
 

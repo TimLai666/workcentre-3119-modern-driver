@@ -211,6 +211,25 @@ fn resolve_axis(input: AxisInput) -> Result<(i32, i32), i32> {
         if position < 0 || position >= input.max_extent {
             return Err(E_INVALIDARG);
         }
+        // Windows clients derive positions from an inch-based region and
+        // round to whole pixels, so explicit values regularly miss the
+        // 1/100-inch hardware step (Windows Scan wrote XPOS=7 at 600 dpi).
+        // Snap to the nearest step; the shift is below one step and far
+        // smaller than the client's own rounding. An explicit extent must
+        // still fit, so a snap upwards falls back to the step below.
+        let step = super::catalog::offset_step(input.target_dpi);
+        let requested = position;
+        position = quantize_position(requested, input.target_dpi)?;
+        let limit = if input.extent.explicit && extent > 0 {
+            input.max_extent.checked_sub(extent).ok_or(E_INVALIDARG)?
+        } else {
+            input.max_extent - 1
+        };
+        if position > limit {
+            // Rounding down never moves further than rounding up did; the
+            // extent check below still rejects a request that cannot fit.
+            position = floor_to_step(requested, step);
+        }
     } else if position < 0 {
         return Err(E_INVALIDARG);
     }
@@ -257,9 +276,9 @@ fn resolve_axis(input: AxisInput) -> Result<(i32, i32), i32> {
         return Err(E_INVALIDARG);
     }
 
-    // Explicit positions retain their exact application value.  The final
-    // catalog/core gate checks the protocol's 1/100-inch alignment.  Only the
-    // dependent position path above is quantized.
+    // Explicit positions are snapped above; dependent positions are quantized
+    // when scaled. The final catalog/core gate re-checks the 1/100-inch
+    // alignment and the extents.
     Ok((position, extent))
 }
 
@@ -409,16 +428,79 @@ mod tests {
     }
 
     #[test]
-    fn explicit_unrepresentable_position_is_rejected() {
+    fn explicit_position_snaps_to_the_hardware_step() {
+        // Windows clients compute XPOS/YPOS from an inch-based region and
+        // round to whole pixels, so they land off the 1/100-inch step (the
+        // Windows Scan app wrote XPOS=7 at 600 dpi, step 6, 2026-09-19).
+        // Snapping moves the origin by less than one step instead of failing
+        // the whole scan.
         let old = settings();
         let current = FlatbedSettings {
             x_resolution: 75,
             x_position: 1,
             ..old
         };
+        let resolved = resolve(&catalog(), old, current, &[WIA_IPS_XRES, WIA_IPS_XPOS]).unwrap();
+        assert_eq!(resolved.x_position, 0);
 
+        let current = FlatbedSettings {
+            x_resolution: 600,
+            y_resolution: 600,
+            x_position: 7,
+            y_position: 0,
+            x_extent: 3729,
+            y_extent: 4015,
+            data_type: 3,
+            depth: 24,
+            ..old
+        };
+        let written = [
+            WIA_IPA_DATATYPE,
+            WIA_IPA_DEPTH,
+            WIA_IPS_XPOS,
+            WIA_IPS_YPOS,
+            WIA_IPS_XEXTENT,
+            WIA_IPS_YEXTENT,
+        ];
+        let old600 = FlatbedSettings {
+            x_resolution: 600,
+            y_resolution: 600,
+            x_position: 0,
+            ..old
+        };
+        let resolved = resolve(&catalog(), old600, current, &written).unwrap();
+        assert_eq!((resolved.x_position, resolved.x_extent), (6, 3729));
+        assert_eq!((resolved.y_position, resolved.y_extent), (0, 4015));
+    }
+
+    #[test]
+    fn snapped_explicit_position_keeps_the_explicit_extent_inside_the_bed() {
+        // 10 200 units = 8.5 in = 637 px at 75 dpi. Position 635 with extent
+        // 2 would snap up to 636 (step 3) and overrun the bed, so it snaps
+        // down to 633 instead.
+        let old = FlatbedSettings {
+            x_resolution: 75,
+            y_resolution: 75,
+            x_extent: 150,
+            y_extent: 225,
+            ..settings()
+        };
+        let current = FlatbedSettings {
+            x_position: 635,
+            x_extent: 2,
+            ..old
+        };
+        let resolved = resolve(&catalog(), old, current, &[WIA_IPS_XPOS, WIA_IPS_XEXTENT]).unwrap();
+        assert_eq!((resolved.x_position, resolved.x_extent), (633, 2));
+
+        // An explicit extent that does not fit after snapping is still an error.
+        let current = FlatbedSettings {
+            x_position: 635,
+            x_extent: 10,
+            ..old
+        };
         assert!(matches!(
-            resolve(&catalog(), old, current, &[WIA_IPS_XRES, WIA_IPS_XPOS]),
+            resolve(&catalog(), old, current, &[WIA_IPS_XPOS, WIA_IPS_XEXTENT]),
             Err(E_INVALIDARG)
         ));
     }

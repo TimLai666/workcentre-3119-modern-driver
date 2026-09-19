@@ -60,6 +60,12 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 
 ## 測試
 
+### Windows 掃描 App 600 dpi 彩色與起點貼齊
+
+2026-09-19 使用者回報 App 選 PNG 600 dpi 會錯誤。wiatrace：App 寫入 600 dpi 後再寫 DATATYPE 3／DEPTH 24／XPOS 7／YPOS 0／XEXTENT 3729／YEXTENT 4015，`drvValidateItemProperties` 回 0x80070057；同一區域在 300 dpi 是 XPOS 3、75 dpi 是 XPOS 0 都成功。原因：XPOS 7 在 600 dpi 是 14 個 1/1200 英寸單位，不是協定要求的 1/100 英寸（12 單位）倍數，而驅動對明確寫入的起點採「無法表示就拒絕」。Windows 用戶端以英寸區域換算再四捨五入成像素，本來就不會對齊驅動的步進，因此 [validation.rs](../../src/com_server/minidrv/properties/validation.rs) 改為把明確起點貼齊最近的硬體步進（位移小於一個步進），貼齊後若明確範圍放不下就改用下一個較小步進，仍放不下才拒絕；範圍值本身不改。測試先以 XPOS 7@600→6、XPOS 1@75→0、邊界退位與放不下拒絕取得 RED 再實作；原本「明確不可表示位置直接拒絕」的測試前提已不成立，改寫為貼齊測試。
+
+實機（套件 0.2.16.0，DLL SHA256 `D4C7D9854C1004388B2C5F6E27D7829707DD36642269BA8068E849A8D4E61D3D`，以套件 `Install` 自動從 0.2.15.0 更新）：App 彩色 600 dpi 整版掃描通過驗證，`drvAcquireItemData` 約 93 秒回 S_OK，產生 `掃描_20260919.png` 5100×6961 24 bpp（132776 bytes，空平台）。要求 7020 列只回 6961 列（11.6 英寸）是既有的平台長度差異，屬 02 幾何驗收，不在本次範圍。
+
 ### 一鍵安裝套件
 
 2026-09-19 使用者要求「所有要做的事都包含在安裝程式裡，一裝即用」。[package.ps1](../../driver/package.ps1) 現在把 [wc3119-setup.ps1](../../driver/wc3119-setup.ps1)、[install.cmd](../../driver/install.cmd)、[uninstall.cmd](../../driver/uninstall.cmd) 與 [INSTALL.txt](../../driver/INSTALL.txt) 一起放進套件；`.cmd` 自行要求 UAC 提權後呼叫 `-Action Install -TrustCertificate -Apply`／`-Action Uninstall -UntrustCertificate -Apply`，結束時停在視窗顯示結果。安裝腳本改動：套件模式（旁邊有 manifest.json）自動以所在目錄為套件、日誌寫 `%ProgramData%\WorkCentre3119Driver\setup-logs`；憑證信任可與安裝同一次執行且已存在則略過；Install 對已裝舊版自動更新、同版只驗證、更新版已裝則拒絕；掃描器未接上時只暫存套件（pnputil 259 視為成功），接上後由 Windows 綁定；MI_00 被其他驅動綁定時明確提示；Uninstall 可一併移除信任。修正一個實跑發現的 bug：安裝函式的日誌輸出曾混進回傳值，改以 script 變數傳回結束碼。
@@ -110,7 +116,7 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 
 另新增 [trace.rs](../../src/com_server/trace.rs)：`catch_hresult` 攔到 panic 時寫 `%SystemRoot%\debug\WIA\wc3119-driver.log`，本輪沒有 panic 記錄，E_UNEXPECTED 來自 `helper_failure` 對 wiasGetItemType 非 S_OK 的映射。`drvUnLockWiaDevice` 在 `drvUnInitializeWia` 之後被呼叫時回 E_UNEXPECTED，服務照常卸載，列為待改善。wiatrace 另警告 DLL 缺少版本資源（Driver version 0.0.0.0），不影響載入。
 
-尚未驗收：Windows 掃描 App 預覽／彩色與取消、拔插／換孔／重開機後再掃、第二台乾淨電腦、解除安裝與移除信任、亮度／對比映射與文件品質、`WIA_DPS_DOCUMENT_HANDLING_STATUS` 目前應用程式讀到 0（服務未以該屬性觸發驅動讀取）。
+尚未驗收：Windows 掃描 App 預覽與取消、拔插／換孔／重開機後再掃、第二台乾淨電腦、解除安裝與移除信任、亮度／對比映射與文件品質、`WIA_DPS_DOCUMENT_HANDLING_STATUS` 目前應用程式讀到 0（服務未以該屬性觸發驅動讀取）。
 
 ### WIA 登錄方案設計
 
