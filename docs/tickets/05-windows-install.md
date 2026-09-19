@@ -60,6 +60,14 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 
 ## 測試
 
+### 全組合驗收與貼齊值寫回
+
+2026-09-19 使用者要求測完所有選項組合。以桌面 WinRT `Windows.Devices.Scanners`（Windows 掃描 App 的同一條路徑）自動跑：6 種解析度 × 灰階／彩色整版，加上 App 選區會產生的英寸起點（0.0117 × 0.0233 英寸、1.5 × 1.0 英寸）在 6 種解析度。檔案格式不在驅動範圍：驅動只提供 DIB，WinRT `IsFormatSupported` 只回 DIB，PNG／JPEG／TIFF／XPS 都是 App 自己轉檔，App 端 PNG 已實掃過。
+
+整版 12 組全部成功（套件 0.2.16.0）：75 dpi 灰階 7.3 秒到 600 dpi 彩色 105 秒，尺寸 648×871 … 5100×6961。選區 6 組第一輪全部失敗：wiatrace 顯示 App 寫 YPOS=1（75 dpi，步進 3），驅動已在內部貼齊成 0，但差異寫入以「舊值」為基準，貼齊後的 0 等於舊值就沒寫回，服務項目仍持有 1，`wiasValidateItemProperties` 依範圍屬性拒絕（0x80070057）。修正：[catalog.rs](../../src/com_server/minidrv/properties/catalog.rs) 新增 `with_service_values`，差異基準的值改用服務目前持有的值（屬性基準仍用舊狀態），先以「YPOS 1→0 仍須寫回」的失敗測試取得 RED 再實作。套件 0.2.17.0（DLL SHA256 `BF5274D9FC5D4C321F2BD8E7838D826B72D1A6147FC53790530724C915405446`）重跑：選區 6 組全部成功（7–12 秒），整版 75 dpi 灰階仍成功。
+
+已知未處理：驗證失敗後驅動會隔離該 COM 物件（`drvUnLockWiaDevice` 回 E_UNEXPECTED），服務隨即把項目視為離線，同一個 App 連線之後的所有寫入都回 WIA_ERROR_OFFLINE，要重新連線才恢復；對 Microsoft 用戶端在修正後不會觸發，但仍列為待改善（失敗時回寫舊值而不隔離）。選區輸出寬度比要求多幾個像素（1.5 英寸在 75 dpi 要求 112、得到 120）屬 02 幾何驗收既有項目。
+
 ### Windows 掃描 App 600 dpi 彩色與起點貼齊
 
 2026-09-19 使用者回報 App 選 PNG 600 dpi 會錯誤。wiatrace：App 寫入 600 dpi 後再寫 DATATYPE 3／DEPTH 24／XPOS 7／YPOS 0／XEXTENT 3729／YEXTENT 4015，`drvValidateItemProperties` 回 0x80070057；同一區域在 300 dpi 是 XPOS 3、75 dpi 是 XPOS 0 都成功。原因：XPOS 7 在 600 dpi 是 14 個 1/1200 英寸單位，不是協定要求的 1/100 英寸（12 單位）倍數，而驅動對明確寫入的起點採「無法表示就拒絕」。Windows 用戶端以英寸區域換算再四捨五入成像素，本來就不會對齊驅動的步進，因此 [validation.rs](../../src/com_server/minidrv/properties/validation.rs) 改為把明確起點貼齊最近的硬體步進（位移小於一個步進），貼齊後若明確範圍放不下就改用下一個較小步進，仍放不下才拒絕；範圍值本身不改。測試先以 XPOS 7@600→6、XPOS 1@75→0、邊界退位與放不下拒絕取得 RED 再實作；原本「明確不可表示位置直接拒絕」的測試前提已不成立，改寫為貼齊測試。

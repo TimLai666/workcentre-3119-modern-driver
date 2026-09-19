@@ -759,6 +759,32 @@ impl PropertyCatalog {
         Ok(selected)
     }
 
+    /// Overlay the setting values the service item holds right now (what the
+    /// application just wrote) onto this baseline. A delta against the
+    /// resolved catalog then republishes every field the resolver changed,
+    /// including a snapped position whose resolved value equals the old one;
+    /// otherwise the application's raw value would stay in the item and fail
+    /// wiasValidateItemProperties against the advertised step.
+    pub(super) fn with_service_values(
+        mut self,
+        current: crate::wia::FlatbedSettings,
+    ) -> Result<Self, i32> {
+        for (id, value) in [
+            (WIA_IPS_XRES, current.x_resolution),
+            (WIA_IPS_YRES, current.y_resolution),
+            (WIA_IPS_XPOS, current.x_position),
+            (WIA_IPS_YPOS, current.y_position),
+            (WIA_IPS_XEXTENT, current.x_extent),
+            (WIA_IPS_YEXTENT, current.y_extent),
+            (WIA_IPA_DATATYPE, current.data_type),
+            (WIA_IPA_DEPTH, current.depth),
+        ] {
+            let index = self.index(id)?;
+            self.initial_values[index] = PropertyValue::Long(value);
+        }
+        Ok(self)
+    }
+
     fn index(&self, id: u32) -> Result<usize, i32> {
         self.ids
             .iter()

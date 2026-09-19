@@ -107,7 +107,10 @@ pub(in crate::com_server::minidrv) unsafe extern "system" fn entry(
                     }
                 }
                 let resolved = super::validation::resolve(&catalog, old, current, &ids)?;
-                let before = catalog.with_settings(old)?;
+                // Attributes baseline from the old state; value baseline from
+                // what the item holds now, so snapped/repaired fields are
+                // written back even when they equal the old value.
+                let before = catalog.with_settings(old)?.with_service_values(current)?;
                 let after = catalog.with_settings(resolved)?;
                 let canonical: Vec<_> = ids.into_iter().map(native::PropSpec::from_id).collect();
                 // SDK publication is not a transaction. A failure after this point

@@ -1228,6 +1228,31 @@ mod tests {
     }
 
     #[test]
+    fn snapped_position_is_republished_even_when_it_equals_the_old_value() {
+        // The application wrote YPOS=1 (service item now holds 1); the resolver
+        // snapped it back to 0, which is also the old value. The delta must
+        // still write 0, or wiasValidateItemProperties sees 1 against step 3
+        // (Windows Scan region write, 2026-09-19).
+        let old = settings(75, 0, 0, 150, 225, 2, 8);
+        let current = crate::wia::FlatbedSettings {
+            y_position: 1,
+            ..old
+        };
+        let catalog = synthetic_dual_mode_catalog();
+        let before = catalog
+            .with_settings(old)
+            .unwrap()
+            .with_service_values(current)
+            .unwrap();
+        let after = catalog.with_settings(old).unwrap();
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut writer = DeltaWriter::new(events.clone());
+        assert_eq!(update_with(&before, &after, &mut writer, || Ok(())), Ok(()));
+        assert_eq!(writer.value_longs, vec![(WIA_IPS_YPOS, 0)]);
+        assert!(writer.attribute_ids.is_empty());
+    }
+
+    #[test]
     fn update_resolution_and_geometry_writes_only_effective_deltas() {
         let before = synthetic_dual_mode_catalog();
         let after = before

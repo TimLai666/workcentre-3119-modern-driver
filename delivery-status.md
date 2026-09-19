@@ -69,6 +69,8 @@ IWiaMiniDrv 的 `drvWriteItemProperties`、`drvAnalyzeItem` 與 `drvDeleteItem` 
 
 ## Verified
 
+2026-09-19 全組合版本：185 個 lib 測試、整合測試、doc-tests、fmt、Clippy、release、DLL 動態載入通過；DLL SHA256 `BF5274D9FC5D4C321F2BD8E7838D826B72D1A6147FC53790530724C915405446`，套件 0.2.17.0。WinRT 自動化：6 解析度 × 灰階／彩色整版 12 組全部成功（0.2.16.0），App 式英寸選區 6 組第一輪全敗（貼齊後的起點沒寫回服務，服務範圍檢查拒絕），修正差異基準後 6 組全部成功。詳見 [05](docs/tickets/05-windows-install.md#全組合驗收與貼齊值寫回)。
+
 2026-09-19 起點貼齊版本：183 個 lib 測試、整合測試、doc-tests、fmt、Clippy、release、DLL 動態載入通過；DLL SHA256 `D4C7D9854C1004388B2C5F6E27D7829707DD36642269BA8068E849A8D4E61D3D`，套件 0.2.16.0 以套件內 `Install` 自動更新。使用者回報 Windows 掃描 App 600 dpi PNG 失敗：wiatrace 顯示 App 寫 XPOS=7（600 dpi，步進 6）被驅動以 E_INVALIDARG 拒絕；明確起點改為貼齊最近步進後，App 彩色 600 dpi 整版掃描成功（5100×6961 24 bpp，約 93 秒）。詳見 [05](docs/tickets/05-windows-install.md#windows-掃描-app-600-dpi-彩色與起點貼齊)。
 
 2026-09-19 一鍵安裝套件：套件目錄自帶 `install.cmd`／`uninstall.cmd`／`wc3119-setup.ps1`／`INSTALL.txt`，兩支腳本 PSParser 無錯誤。開發機把套件複製到 `%TEMP%` 模擬新電腦：`uninstall.cmd` 移除套件、CLSID 與憑證信任（Status：未安裝、信任 0、WIA 0 台）；`install.cmd` 匯入憑證、安裝 0.2.15.0、重啟 stisvc、WIA 1 台、exit 0；重跑走同版驗證路徑；Windows 掃描 App 隨後直接連線並掃描成功。詳見 [05](docs/tickets/05-windows-install.md#一鍵安裝套件)。

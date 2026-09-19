@@ -474,6 +474,40 @@ mod tests {
     }
 
     #[test]
+    fn small_region_after_a_full_bed_scan_is_accepted() {
+        // WinRT region 0.0117 x 0.0233 in, 1.5 x 1.0 in at 75 dpi, written
+        // right after a full-bed scan (2026-09-19 combination run).
+        let old = FlatbedSettings {
+            x_resolution: 75,
+            y_resolution: 75,
+            x_position: 0,
+            y_position: 0,
+            x_extent: 637,
+            y_extent: 877,
+            data_type: 3,
+            depth: 24,
+            ..settings()
+        };
+        let current = FlatbedSettings {
+            y_position: 1,
+            x_extent: 112,
+            y_extent: 75,
+            ..old
+        };
+        let written = [
+            WIA_IPA_DATATYPE,
+            WIA_IPA_DEPTH,
+            WIA_IPS_XPOS,
+            WIA_IPS_YPOS,
+            WIA_IPS_XEXTENT,
+            WIA_IPS_YEXTENT,
+        ];
+        let resolved = resolve(&catalog(), old, current, &written).unwrap();
+        assert_eq!((resolved.y_position, resolved.y_extent), (0, 75));
+        assert_eq!((resolved.x_position, resolved.x_extent), (0, 112));
+    }
+
+    #[test]
     fn snapped_explicit_position_keeps_the_explicit_extent_inside_the_bed() {
         // 10 200 units = 8.5 in = 637 px at 75 dpi. Position 635 with extent
         // 2 would snap up to 636 (step 3) and overrun the bed, so it snaps
