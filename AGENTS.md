@@ -15,7 +15,7 @@
 
 - 根目錄是 Rust Cargo 專案。`src/lib.rs` 負責公開 API、裝置識別與診斷分類，`src/windows.rs` 封裝 Windows 唯讀 API，`src/usb.rs` 封裝 WinUSB session（句柄以讀寫共用開啟，WinUSB 本身每台裝置只允許一個開啟中的句柄，驅動物件從第一次開啟保留到 Release），`src/protocol.rs` 驗證能力回覆，`src/scan.rs` 管理掃描工作及影像解碼，`src/bitmap.rs` 將影像塊編碼成有限記憶體的 BMP 串流。`src/main.rs` 提供 `wc3119 doctor` 與 `wc3119 inquiry`。
 - Rust 核心提供硬體控制、影像資料傳輸與 Windows 驅動整合。預覽畫面、影像編輯、PDF 組頁及儲存操作由呼叫端軟體負責，CLI 僅作為開發、診斷與測試工具。
-- 忠實重現掃描明暗及正確映射 WIA 亮度／對比屬於驅動責任。使用者回報原廠驅動掃描偏亮偏白，原因尚未確認。不得預設壓暗整張影像、強制去背或套用固定 gamma 曲線充當修復。
+- 忠實重現掃描明暗及正確映射 WIA 亮度／對比屬於驅動責任。目前 WIA 亮度／對比（−1000..1000）由 `src/wia.rs` 的 `Tone` 在解碼後以單一查表套用，中性 0 不改任何像素；不得再加第二層轉換。使用者回報原廠驅動掃描偏亮偏白，原因尚未確認。不得預設壓暗整張影像、強制去背或套用固定 gamma 曲線充當修復。
 - 原生 API 的 `unsafe` 必須限縮在封裝內，註明指標、長度、生命週期及資源釋放的依據。
 - `src/com_stream.rs` 封裝原生 IStream 輸出及參考釋放，供 BMP 編碼使用。更動後執行 `cargo test --offline --test com_stream` 與 doc-tests，驗證 Windows 真實記憶體串流、錯誤及執行緒限制；這些測試不登錄 WIA 或操作 USB。
 - `src/wia.rs` 驗證 WIA 純數值設定並轉成掃描要求，`scan_bmp` 會啟動真實 USB 掃描及輸出 BMP。`cargo test --offline --test wia` 只驗證設定與預先取消，不操作硬體。正式屬性同步與剩餘 WIA 服務整合由 05 接續實作。

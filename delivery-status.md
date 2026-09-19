@@ -24,7 +24,7 @@
 | 01 | 唯讀診斷完整情境 | 開發者 | in_progress | 本機問題碼 28 可重現，硬體異常情境未全部驗證 |
 | 02 | 第一張實機掃描 | 開發者 | in_progress | 空平台灰階／彩色及獨立像素比對成功；文件、色彩及精確幾何待驗收 |
 | 03 | 取消與復原 | 開發者 | in_progress | 連續工作前 4 次成功，第 5 次 RGB600 自然逾時，清理後 Gray75 成功；20 次驗收與失同步復原未完成 |
-| 05 | Windows 掃描與安裝 | 開發者 | in_progress | 開發機測試憑證套件安裝成功，WIA 服務載入驅動並完成灰階／彩色掃描與屬性驗證；Windows 掃描 App、取消、拔插、第二台電腦、解除安裝與明暗品質未驗收 |
+| 05 | Windows 掃描與安裝 | 開發者 | in_progress | 開發機測試憑證套件安裝／更新／解除安裝流程可用；WIA 服務載入驅動，Windows 傳真和掃描完成彩色掃描；Windows 掃描 App、取消、拔插、第二台電腦與明暗品質未驗收 |
 | 06 | 列印 | 開發者 | not_started | 尚無 |
 | 07 | 掃描明暗品質 | 開發者 | blocked | 已有空平台影像，缺少可對照原稿；歷史偏白仍未重現 |
 
@@ -70,6 +70,8 @@ IWiaMiniDrv 的 `drvWriteItemProperties`、`drvAnalyzeItem` 與 `drvDeleteItem` 
 | 建立持續完成完整驅動的目標 | 使用者要求逐步完成實作、驗證與推送，需要使用者介入時提出具體需求，可獨立工作繼續推進 | 2026-09-13 | 01、02、03、05、06、07 |
 
 ## Verified
+
+2026-09-19 Windows 傳真和掃描實掃版本：181 個 lib 測試、整合測試、doc-tests、fmt、Clippy、release、DLL 動態載入通過；DLL SHA256 `C18D711611811B7B09EC0A6852E7BCD7E4B56ECDDA35CC7BD37AE273C07838C7`，套件 0.2.14.0。使用者授權啟用「Windows 傳真和掃描」選用功能後，以其「新增掃描」對話框（來源平台、色彩、75 dpi）完成掃描，產生 `Documents\Scanned Documents\影像.jpg` 648×871 24 bpp（9800 bytes，空平台），wiatrace 無錯誤。過程中依實際失敗逐一修正：WIA_IPS_BRIGHTNESS／CONTRAST 由 0..0 改為 Microsoft 規定的 −1000..1000（0 中性），驅動以一次 8 位元查表實作，中性時不改任何像素；補上根項目 WIA_DPS_DOCUMENT_HANDLING_SELECT＝FLATBED、WIA_DPS_SHOW_PREVIEW_CONTROL 與平台項目 WIA_IPS_SHOW_PREVIEW_CONTROL、WIA_IPS_SEGMENTATION、WIA_IPS_ROTATION（只接受 0）。Windows 掃描 App（AppContainer）仍在同一步驗證後回報無法連線，服務端無錯誤。
 
 2026-09-19 彩色支援與腳本復原版本：180 個 lib 測試、整合測試、doc-tests、fmt、Clippy、release、DLL 動態載入通過；DLL SHA256 `7D0476273CB7BEA7DF6391CB79EE1B8B966E353B230C6038CF8633399692F3DC`，套件 0.2.11.0。WIA_IPS_CUR_INTENT 有效旗標改為 COLOR｜GRAYSCALE｜MINIMIZE_SIZE｜MAXIMIZE_QUALITY，寫入 intent 會選定 DATATYPE；WIA_IPA_DEPTH 有效清單固定保留 [8, 24]，只移動 nominal，depth-only 寫入選定對應 DATATYPE。實機：WIA automation 寫 intent=1 → DATATYPE 3／DEPTH 24；WinRT `IsColorModeSupported` 由只有 Grayscale 變為 Color＋Grayscale，`ScanFilesToFolderAsync` 彩色 10.5 秒得 648×871 24 bpp（1693278 bytes）。安裝腳本：`Install`／`Update` 改為先停止 stisvc 再 pnputil；pnputil 回 3010 時以 `/remove-device` → `/scan-devices`，MI_00 未回來則重啟 usbccgp 父裝置，實測可在不重開機下完成更新；Update 中斷遺留的 oem19／oem22 已手動刪除。
 

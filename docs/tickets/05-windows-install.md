@@ -60,6 +60,18 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 
 ## 測試
 
+### Windows 傳真和掃描實掃
+
+2026-09-19：啟用 Windows 選用功能 Print.Fax.Scan 後，以「Windows 傳真和掃描」完成一次平台彩色 75 dpi 掃描（`影像.jpg` 648×871 24 bpp）。這是第一個非本專案、非程式碼呼叫的既有掃描軟體驗收。逐步修正（皆有先失敗的 wiatrace／UI 證據）：
+
+| 症狀 | 原因 | 修正 |
+| --- | --- | --- |
+| 「無法初始化選取的掃描器」，trace 在讀 Brightness 後中止 | WIA_IPS_BRIGHTNESS／CONTRAST 有效範圍 0..0，UI 無法建立滑桿 | 依 Microsoft 契約改為 −1000..1000、中性 0；[wia.rs](../../src/wia.rs) `Tone` 以單一查表實作，中性不改像素，`wire_data` 永不改寫 |
+| 掃描設定檔提示、Document Handling Select／Show preview control／Segmentation 讀到 VT_EMPTY | 舊版 DPS 屬性與 UI 提示屬性缺少 | 補 3088（FLATBED，唯讀）、3103（DONT_SHOW）、6164（DONT_USE_SEGMENTATION_FILTER） |
+| 「將設定套用到驅動程式時發生錯誤」，WriteMultiple 6157 回 E_INVALIDARG | UI 每次掃描前寫 WIA_IPS_ROTATION | 補 6157 清單 [PORTRAIT]，只接受 0 |
+
+亮度／對比查表：`out = clamp(round((in−128)·(contrast+1000)/1000 + 128 + brightness·255/1000))`，單調不減，測試涵蓋中性為 None、±1000 極值、對比 0 收斂到 128、`wire_data` 不變。這是驅動端唯一的明暗轉換，07 的「不預設壓暗」維持不變，實際明暗品質仍待有原稿後驗收。DLL SHA256 `C18D711611811B7B09EC0A6852E7BCD7E4B56ECDDA35CC7BD37AE273C07838C7`，套件 0.2.14.0。Windows 掃描 App 仍失敗（見 delivery-status 阻礙）。
+
 ### 影像裝置介面、句柄保留與 Windows 掃描 App
 
 2026-09-19：為了讓 WinRT `Windows.Devices.Scanners`（Windows 掃描 App 的 API）找到裝置，INF `DeviceInterfaceGUIDs` 加入 `GUID_DEVINTERFACE_IMAGE`，WIA 服務因此能寫入 `DEVPKEY_WIA_DeviceType`，WinRT 選擇器可列舉並連線。副作用：服務會在該介面開啟通知句柄，而提權探針（停止 stisvc 後以 P/Invoke 開啟）證實 WinUSB 每台裝置只允許一個開啟中的句柄，任何第二次開啟都回 ERROR_ACCESS_DENIED；因此 [sti.rs](../../src/com_server/sti.rs) 改為 Initialize 成功即開啟 USB 並保留到 Release，`UnLockDevice` 只清除 STI 鎖旗標；[usb.rs](../../src/usb.rs) 的 CreateFile 改為讀寫共用（對 WinUSB 沒有差別，但不再宣稱 OS 層獨占）。DLL SHA256 `C3DD8218E3B7901C0FDB2589CFD808C546A392272AEF418691E558FFE155ACEE`，套件 0.2.9.0。
