@@ -702,16 +702,22 @@ fn busy_poll_interval(opcode: u8, read_interval: Duration) -> Duration {
     }
 }
 
-fn checkpoint(cancel: &AtomicBool, deadline: Instant) -> io::Result<()> {
-    if cancel.load(Ordering::Relaxed) {
-        Err(io::Error::new(io::ErrorKind::Interrupted, HostCancelled))
-    } else if Instant::now() >= deadline {
+fn checkpoint_deadline(deadline: Instant) -> io::Result<()> {
+    if Instant::now() >= deadline {
         Err(io::Error::new(
             io::ErrorKind::TimedOut,
             "Scan exceeded 120 second deadline",
         ))
     } else {
         Ok(())
+    }
+}
+
+fn checkpoint(cancel: &AtomicBool, deadline: Instant) -> io::Result<()> {
+    if cancel.load(Ordering::Relaxed) {
+        Err(io::Error::new(io::ErrorKind::Interrupted, HostCancelled))
+    } else {
+        checkpoint_deadline(deadline)
     }
 }
 
@@ -770,7 +776,7 @@ fn ready(
         usb,
         opcode,
         synchronized,
-        cancel,
+        Some(cancel),
         deadline,
         diagnostics,
         &mut false,
@@ -781,7 +787,7 @@ fn ready_with_attempt(
     usb: &mut impl Transport,
     opcode: u8,
     synchronized: &mut bool,
-    cancel: &AtomicBool,
+    cancel: Option<&AtomicBool>,
     deadline: Instant,
     diagnostics: &mut ScanDiagnostics,
     attempted: &mut bool,
@@ -789,7 +795,11 @@ fn ready_with_attempt(
     *attempted = false;
     diagnostics.set_opcode(opcode);
     loop {
-        checkpoint(cancel, deadline)?;
+        if let Some(cancel) = cancel {
+            checkpoint(cancel, deadline)?;
+        } else {
+            checkpoint_deadline(deadline)?;
+        }
         // Set before write: even a failed USB call may have reached the device.
         // Keep true across Busy replies and later cancellation checkpoints.
         *attempted = true;
@@ -1117,7 +1127,7 @@ fn run_prepared_job_observed_with_health(
         usb,
         0x16,
         &mut synchronized,
-        cancel,
+        Some(cancel),
         deadline,
         diagnostics,
         &mut reservation_attempted,
@@ -1143,6 +1153,7 @@ fn run_prepared_job_observed_with_health(
         );
     }
     // Ownership is confirmed only after RESERVE succeeds. Never release another owner's busy device.
+    let mut first_metadata_failed_after_deferred_cancel = false;
     let result = (|| {
         diagnostics.set_stage(ScanStage::SetWindow);
         diagnostics.set_opcode(0x24);
@@ -1168,9 +1179,28 @@ fn run_prepared_job_observed_with_health(
         };
         loop {
             diagnostics.set_stage(ScanStage::ReadMetadata);
-            let b = match ready(usb, 0x28, &mut synchronized, cancel, deadline, diagnostics) {
+            // START is confirmed here. Defer host cancellation only until the first
+            // band metadata so READ_IMAGE can drain through the normal bounded path.
+            let b = match ready_with_attempt(
+                usb,
+                0x28,
+                &mut synchronized,
+                (summary.bands != 0).then_some(cancel),
+                deadline,
+                diagnostics,
+                &mut false,
+            ) {
                 Ok(reply) => reply,
-                Err(error) => return Err(diagnostics.error(error, "READ metadata")),
+                Err(error) => {
+                    if summary.bands == 0 && cancel.load(Ordering::Relaxed) {
+                        first_metadata_failed_after_deferred_cancel = true;
+                        return Err(diagnostics.error(
+                            error,
+                            "READ metadata after host cancellation; reconnect scanner before another scan",
+                        ));
+                    }
+                    return Err(diagnostics.error(error, "READ metadata"));
+                }
             };
             let band = match BandInfo::parse(&b, request.mode) {
                 Ok(band) => band,
@@ -1256,7 +1286,7 @@ fn run_prepared_job_observed_with_health(
     diagnostics.set_stage(ScanStage::Cleanup);
     let cleanup = finish(usb, result.is_err(), &mut synchronized, diagnostics);
     let cleanup = cleanup.map_err(|error| diagnostics.error(error, "cleanup"));
-    let health = if cleanup.is_ok() {
+    let health = if cleanup.is_ok() && !first_metadata_failed_after_deferred_cancel {
         SessionHealth::Ready
     } else {
         SessionHealth::NeedsReconnect
@@ -2012,18 +2042,20 @@ mod tests {
         }
     }
 
+    // Cancellation during START Busy remains immediate; only first metadata after confirmed START defers it.
     #[test]
-    fn profile_keeps_busy_wait_and_cleanup_when_cancelled_without_pixels() {
+    fn profile_cancels_if_start_is_still_busy_and_cleans_up_without_pixels() {
         let cancel = AtomicBool::new(false);
         let mut inner = synthetic();
-        inner.replies[4] = reply(0x20);
-        inner.replies[4][1] = 8;
+        inner.replies[3] = reply(0x20);
+        inner.replies[3][1] = 8;
+        inner.replies[4] = reply(0);
         inner.replies[5] = reply(0);
         let mut usb = BusyThenCancel {
             inner,
             cancel: &cancel,
             read_calls: 0,
-            cancel_on_read: 5,
+            cancel_on_read: 4,
         };
         let mut profile = ScanProfile::default();
         let error = run_prepared_job_profiled(
@@ -2036,12 +2068,115 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(is_host_cancelled(&error));
         assert_eq!(profile.busy_replies, 1);
         assert!(!profile.busy_sleep.is_zero());
-        assert!(profile.stages["read-metadata"] >= profile.busy_sleep);
+        assert!(profile.stages["start"] >= profile.busy_sleep);
         assert!(profile.stages.contains_key("cleanup"));
-        assert_eq!(usb.inner.writes, [0x12, 0x16, 0x24, 0x31, 0x28, 0x06, 0x17]);
+        assert_eq!(usb.inner.writes, [0x12, 0x16, 0x24, 0x31, 0x06, 0x17]);
     }
+
+    #[test]
+    fn host_cancel_after_metadata_busy_waits_for_first_band_then_drains_and_aborts() {
+        let cancel = AtomicBool::new(false);
+        let mut inner = synthetic();
+        inner.replies[4] = reply(0x20);
+        inner.replies[4][1] = 8;
+        let raw = inner.replies[5].clone();
+        let mut band = reply(0x81);
+        band[4..8].copy_from_slice(&18u32.to_be_bytes());
+        band[8..10].copy_from_slice(&1u16.to_be_bytes());
+        band[10..12].copy_from_slice(&2u16.to_be_bytes());
+        inner.replies[5] = band;
+        inner.replies[6] = raw;
+        inner.replies.push_back(reply(0));
+        inner.replies.push_back(reply(0));
+        let mut usb = BusyThenCancel {
+            inner,
+            cancel: &cancel,
+            read_calls: 0,
+            cancel_on_read: 5,
+        };
+        let mut profile = ScanProfile::default();
+        let mut delivered = 0;
+        let (result, health) = run_prepared_job_profiled_with_health(
+            &mut usb,
+            &cancel,
+            &mut |_| {
+                delivered += 1;
+                Ok(())
+            },
+            |_| Ok(request()),
+            &mut profile,
+            Duration::from_millis(1),
+        );
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(
+            usb.inner.writes,
+            [0x12, 0x16, 0x24, 0x31, 0x28, 0x28, 0x29, 0x06, 0x17]
+        );
+        assert!(is_host_cancelled(&error));
+        assert_eq!(delivered, 0);
+        assert_eq!(health, SessionHealth::Ready);
+        assert_eq!(profile.busy_replies, 1);
+        assert!(usb.inner.replies.is_empty());
+    }
+
+    #[test]
+    fn host_cancelled_first_metadata_device_error_requires_reconnect_after_cleanup() {
+        let cancel = AtomicBool::new(false);
+        let mut inner = synthetic();
+        inner.replies[4] = reply(0x20);
+        inner.replies[4][1] = 8;
+        inner.replies[5] = reply(0x20);
+        inner.replies[5][1] = 4;
+        inner.replies[6] = reply(0);
+        inner.replies.push_back(reply(0));
+        let mut usb = BusyThenCancel {
+            inner,
+            cancel: &cancel,
+            read_calls: 0,
+            cancel_on_read: 5,
+        };
+        let (result, health) = run_job_with_health(&mut usb, request(), &cancel, &mut |_| {
+            panic!("No image metadata or band was available")
+        });
+        let error = result.unwrap_err();
+        assert_eq!(health, SessionHealth::NeedsReconnect);
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(!is_host_cancelled(&error));
+        assert!(error.to_string().contains("Scanner cancelled the job"));
+        assert!(error.to_string().contains("reconnect"));
+        assert_eq!(
+            usb.inner.writes,
+            [0x12, 0x16, 0x24, 0x31, 0x28, 0x28, 0x06, 0x17]
+        );
+        assert!(usb.inner.replies.is_empty());
+    }
+
+    #[test]
+    fn deferred_first_metadata_wait_still_stops_at_deadline() {
+        let mut usb = synthetic();
+        let mut synchronized = true;
+        let mut diagnostics = ScanDiagnostics::new();
+        let mut attempted = false;
+        let error = ready_with_attempt(
+            &mut usb,
+            0x28,
+            &mut synchronized,
+            None,
+            Instant::now() - Duration::from_millis(1),
+            &mut diagnostics,
+            &mut attempted,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(error.to_string().contains("120 second deadline"));
+        assert!(!attempted);
+        assert!(usb.writes.is_empty());
+    }
+
     #[test]
     fn consumer_failure_aborts_and_releases_without_success() {
         let mut usb = synthetic();

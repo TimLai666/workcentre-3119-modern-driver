@@ -2,6 +2,51 @@
 
 觀測日期：2026-09-13、2026-09-14、2026-09-26。此檔省略 USB 序號與完整實例路徑。
 
+## 0.2.18 WIA 連續 20 次整版掃描
+
+2026-09-26，使用已安裝的 0.2.18.0 與同一個 WIA automation 裝置／平台物件，循環 RGB600、RGB600、RGB300、Gray600 五輪。20 次全部完成，累計傳輸 1435.381 秒，沒有重試、服務重啟或重新連接。DLL SHA256 為 `5B227D444CCA40E6BA7C5F2BD2DD18177EA56F07368E15F67B6219A0FF970D11`。
+
+| 模式 | 次數 | 每次耗時 | 實際影像尺寸 |
+| --- | --- | --- | --- |
+| 彩色 600 dpi | 10 | 92.441–105.317 秒 | 5100×6961、24 bpp |
+| 彩色 300 dpi | 5 | 39.653–39.893 秒 | 2556×3476、24 bpp |
+| 灰階 600 dpi | 5 | 42.041–42.309 秒 | 5100×6959、8 bpp |
+
+範圍依當下 WIA 根項目回報的 8500×11700 千分之一英吋換算；600 dpi 寫入並讀回 5100×7020，300 dpi 為 2550×3510。輸出保留裝置實際尺寸，未裁切、補列或調整明暗。範圍單位依 [Microsoft WIA_DPS_HORIZONTAL_BED_SIZE](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/wia-dps-horizontal-bed-size)。此輪只驗證整版傳輸、模式切換及有限記憶體，不保存像素，不能代替文件品質或精確幾何驗收。
+
+同一 WIA 服務程序的 private bytes 從 3,653,632 降至 3,190,784 bytes。第一張進行中開始每 500 ms 外部取樣，共 2694 筆，觀測到的 private bytes 峰值 5,038,080 bytes（約 4.80 MiB）、working set 峰值 17,461,248 bytes。取樣未涵蓋第一張開頭，峰值只代表取樣範圍；20 次之間未見持續增長，不是永久無洩漏的證明。
+
+正式證據在 `artifacts/wia-stability-fullbed-20260926/`：`run.ps1`、`results/runs.jsonl`、`results/complete.txt`、`memory-samples.csv` 與 `verified-summary.json`。先前 `artifacts/wia-stability-20260926/` 的 20 次是小選區：WIA automation 在切換 dpi 後仍回報初始 `SubTypeMax=637×877`，測試工具誤用該值。該組保留 `assessment.txt`，不計入整版驗收。600 dpi 歷史中斷此次未重現，原因仍未查明，不能宣稱已修復。
+
+## 首塊 metadata Ready 後取消的對照
+
+2026-09-26，新增僅在測試建置啟用的 `metadata_ready_after_busy`。第一次合法 READ Busy 在 502 ms 記錄 pending，但不設主機取消旗標；6195 ms 收到並驗證第一塊 metadata 後才設旗標，沿用既有 READ_IMAGE 將 921472 bytes 排空，未向影像消費端交付任何一塊。ABORT／RELEASE 都回 status=0、message=0，工作 7043 ms 以主機取消返回；同一 USB session 的 RGB75 重掃 19314 ms 完成 648×871、2 塊。整組 26.38 秒通過並有 `complete.txt`。
+
+這與舊版 metadata Busy 當下取消後卡住、第一塊交付後取消可重掃的紀錄形成階段對照。它支持延後至首塊可讀並排空的處理方向，但不揭露韌體內部根因，也不代表正式驅動已套用修復。既有 120 秒工作期限、10 秒排空期限及命令順序不變。測試前暫停 stisvc，結束後恢復原本 Running；沒有重新安裝、重設 USB 或重插。
+
+私人證據在 `artifacts/cancel-ready-20260926/`，包含服務前後狀態、測試輸出及 `results/diagnostics.log`。測試執行檔 SHA256：`A8679B2AB7D6F1A7CC08A844188AF0D07F03F9B2F3B998ED9F468E281796E162`。此為合成取消旗標加真實 USB，不是 Windows 取消事件驗收。
+
+## 0.2.19 核心取消修復驗收
+
+2026-09-26，正式核心在 START 成功後延後處理首塊前的主機取消，沿用 120 秒工作期限等候 metadata，讀完已知長度後才中止並釋放。若取消仍待處理、metadata 等待卻以逾時或裝置錯誤結束，即使清理回覆成功也隔離 session，要求重連；此異常分類有合成回歸測試，尚未製造實機逾時驗收。
+
+| 精確階段 | 取消結果 | 同 USB session 重掃 | 整組結果 |
+| --- | --- | --- | --- |
+| metadata_busy | 245 ms 設取消；6796 ms 結束，921472 bytes 排空，零影像交付 | RGB75，19115 ms，648×871、2 塊 | 25.93 秒，complete.txt 存在 |
+| first_band | 6662 ms 設取消；6749 ms 結束 | RGB75，19104 ms，648×871、2 塊 | 25.87 秒，complete.txt 存在 |
+
+兩組均逐一重新列舉唯一 MI_00，ABORT／RELEASE 成功，未重插或重設 USB。測試期間暫停 WIA，結束均恢復原本 Running。私人證據分別在 `artifacts/cancel-core-hardware-20260926/` 與 `artifacts/cancel-core-first-band-20260926/`。測試執行檔 SHA256：`D4B990B540FFA26A95F0335D58AA3178F55C51DCC93B039EFFC1F0DBEA32F25B`；對應 release DLL SHA256：`7345169FEF9AA9647C648B0EB8EF3F6CE0DC4ED8B943E16CEF5E615EC792ACD0`。此處是核心 USB 驗收，安裝及 Windows API 驗收另列。
+
+原本失敗的 `actual_wia_dispatch_cancels_from_parallel_thread_and_rescans` 也以同一測試執行檔從閒置裝置重跑通過。另一執行緒在 500 ms 通知取消，7223 ms 返回 S_FALSE，零影像 bytes；同一驅動物件接續彩色與灰階成功，整組 42.64 秒並建立 `complete.txt`。合成服務 helper／設定／callback 搭配真正 USB、Windows 項目與 IStream，不能替代真實 WIA 服務取消。私人證據：`artifacts/cancel-core-parallel-idle-20260926/`。
+
+此前緊接 first_band 重掃便啟動的 `artifacts/cancel-core-parallel-20260926/` 未符合閒置前提：500 ms 取消發生在 RESERVE Busy，未取得保留權，610 ms 結束且沒有完成標記。保留該失敗，不把未取得保留權時的隔離行為當成已修復。這個分支沒有送 ABORT 取得別人的保留權，仍須依原始錯誤及重連要求處理。
+
+## 0.2.18 Windows 掃描 API 取消與重掃
+
+2026-09-26，以 Windows PowerShell 5.1 呼叫 WinRT `ImageScanner.ScanFilesToFolderAsync`，同一個 ImageScanner 物件依序執行 RGB75 取消、RGB75 重掃及 Gray75 對照。第一輪在 508 ms 呼叫原始非同步操作的 `Cancel`，575 ms 觀察到 `Canceled`；彩色重掃 19051 ms、灰階 17851 ms 完成，BMP 標頭均為 648×871，分別 24／8 bpp。沒有重啟服務或重插。這是 Windows 掃描所用 API 的實際取消結果，不是 App 按鈕互動，也不能以 API 返回時間推論機構停止時間。
+
+此輪仍使用已安裝的 0.2.18.0，不包含之後的核心延後取消修正。私人證據：`artifacts/wia-cancel-20260926/run-d/` 的 `results.json`、`complete.txt` 與兩張 BMP。前面 run-a／run-b 是掃描前的診斷腳本相容性失敗；run-c 在啟動後因腳本型別錯誤退出，WIA trace 確認驅動其後以 `0x800706E5` 結束。三輪均不計成功驗收，保留失敗紀錄。
+
 ## 0.2.18 WIA 意圖切換與更新後掃描
 
 2026-09-26，本機更新 0.2.18.0 成功後，以 WIA automation 同一連線寫入彩色／灰階意圖並重複寫入，DATATYPE／DEPTH 分別維持 3／24 與 2／8，舊版只改色深的錯誤未再發生。彩色 75 dpi 10.534 秒、灰階 75 dpi 17.924 秒，各完成 648×871 BMP；Pillow 完整解碼及目視檢查為空平台與少量細點，不能驗收偏白或文字品質。安裝後 DLL 雜湊與已測套件一致，父裝置及 MI_01 的服務、INF、問題碼、類別及 Parent 與備份相符。掃描後 stisvc Running、MI_00 問題碼 0、WIA 1 台。詳細更新與私人證據位置見 [05 審查修復](tickets/05-windows-install.md#2026-09-26-審查修復02180)。

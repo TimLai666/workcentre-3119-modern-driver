@@ -3,12 +3,13 @@
 //! The ignored test in this module is deliberately lower than the WIA/STI
 //! layers. It keeps one opened `UsbSession`, arms cancellation at either the
 //! first valid READ metadata Busy reply or the first delivered image band,
-//! and then asks the core to rescan only when cleanup reports `Ready`.
+//! and then asks the core to rescan only when cleanup reports `Ready`. The
+//! metadata-ready phase waits for a valid READ metadata Good after a Busy.
 //!
 //! Exact opt-in invocation on the Windows host:
 //!
 //! ```text
-//! $env:WC3119_TEST_CANCEL_PHASE = "metadata_busy" # or "first_band"
+//! $env:WC3119_TEST_CANCEL_PHASE = "metadata_busy" # or "metadata_ready_after_busy" or "first_band"
 //! $env:WC3119_TEST_STI_PATH = "<fresh MI_00 WinUSB interface path>"
 //! $env:WC3119_TEST_OUTPUT_DIR = "<fresh nonexistent directory>"
 //! cargo test --offline --lib scan::hardware::actual_cancel_phase_then_same_session_rescan -- --ignored --exact --nocapture
@@ -39,6 +40,7 @@ use std::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CancelPhase {
     MetadataBusy,
+    MetadataReadyAfterBusy,
     FirstBand,
 }
 
@@ -46,10 +48,11 @@ impl CancelPhase {
     fn parse(value: &str) -> io::Result<Self> {
         match value {
             "metadata_busy" => Ok(Self::MetadataBusy),
+            "metadata_ready_after_busy" => Ok(Self::MetadataReadyAfterBusy),
             "first_band" => Ok(Self::FirstBand),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "WC3119_TEST_CANCEL_PHASE must be metadata_busy or first_band",
+                "WC3119_TEST_CANCEL_PHASE must be metadata_busy, metadata_ready_after_busy or first_band",
             )),
         }
     }
@@ -57,6 +60,7 @@ impl CancelPhase {
     const fn name(self) -> &'static str {
         match self {
             Self::MetadataBusy => "metadata_busy",
+            Self::MetadataReadyAfterBusy => "metadata_ready_after_busy",
             Self::FirstBand => "first_band",
         }
     }
@@ -199,9 +203,34 @@ struct TriggerState {
     claimed: AtomicBool,
     phase: Mutex<Option<&'static str>>,
     at_ms: Mutex<Option<u128>>,
+    pending_at_ms: Mutex<Option<u128>>,
 }
 
 impl TriggerState {
+    fn mark_pending(&self, phase: CancelPhase, log: &EventLog) -> io::Result<bool> {
+        let mut pending = self
+            .pending_at_ms
+            .lock()
+            .map_err(|_| io::Error::other("trigger pending mutex poisoned"))?;
+        if pending.is_some() {
+            return Ok(false);
+        }
+        let at_ms = log.elapsed_ms();
+        *pending = Some(at_ms);
+        log.record(format!(
+            "cancel_pending phase={} pending_at_ms={at_ms}",
+            phase.name()
+        ))?;
+        Ok(true)
+    }
+
+    fn pending_at_ms(&self) -> io::Result<Option<u128>> {
+        Ok(*self
+            .pending_at_ms
+            .lock()
+            .map_err(|_| io::Error::other("trigger pending mutex poisoned"))?)
+    }
+
     fn claim(&self, phase: CancelPhase, cancel: &AtomicBool, log: &EventLog) -> io::Result<bool> {
         if self
             .claimed
@@ -222,8 +251,13 @@ impl TriggerState {
             .at_ms
             .lock()
             .map_err(|_| io::Error::other("trigger timing mutex poisoned"))? = Some(at_ms);
+        let time_field = if phase == CancelPhase::MetadataReadyAfterBusy {
+            "cancel_at_ms"
+        } else {
+            "at_ms"
+        };
         log.record(format!(
-            "cancel_trigger phase={} at_ms={at_ms}",
+            "cancel_trigger phase={} {time_field}={at_ms}",
             phase.name()
         ))?;
         Ok(true)
@@ -388,6 +422,30 @@ impl<T: Transport> Transport for ObservedTransport<'_, T> {
             self.trigger
                 .claim(CancelPhase::MetadataBusy, self.cancel, &self.log)?;
         }
+        if self.phase == Some(CancelPhase::MetadataReadyAfterBusy)
+            && !self.trigger.claimed()
+            && opcode == Some(0x28)
+        {
+            let message = response.get(3).copied();
+            match (&status, message) {
+                (Ok(super::ReplyStatus::Busy), Some(0x20 | 0x80 | 0x81)) => {
+                    self.trigger
+                        .mark_pending(CancelPhase::MetadataReadyAfterBusy, &self.log)?;
+                }
+                (Ok(super::ReplyStatus::Good), Some(message))
+                    if matches!(message, 0x80 | 0x81)
+                        && self.trigger.pending_at_ms()?.is_some()
+                        && super::BandInfo::parse(response, ColorMode::Rgb).is_ok() =>
+                {
+                    self.trigger.claim(
+                        CancelPhase::MetadataReadyAfterBusy,
+                        self.cancel,
+                        &self.log,
+                    )?;
+                }
+                _ => {}
+            }
+        }
         self.log.record(format!(
             "control_reply opcode={} status_byte={} message={} bytes={} elapsed_call_ms={} command_elapsed_ms={}",
             Self::opcode_text(opcode),
@@ -477,7 +535,7 @@ fn test_inputs() -> io::Result<(CancelPhase, Vec<u16>, PathBuf)> {
     let phase = CancelPhase::parse(&std::env::var("WC3119_TEST_CANCEL_PHASE").map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "set WC3119_TEST_CANCEL_PHASE to metadata_busy or first_band",
+            "set WC3119_TEST_CANCEL_PHASE to metadata_busy, metadata_ready_after_busy or first_band",
         )
     })?)?;
     let path = std::env::var_os("WC3119_TEST_STI_PATH").ok_or_else(|| {
@@ -591,6 +649,11 @@ fn run_hardware_phase(phase: CancelPhase, path: &[u16], output: &Path) -> io::Re
             phase.name()
         )));
     }
+    if phase == CancelPhase::MetadataReadyAfterBusy && first_stats.bands != 0 {
+        return Err(io::Error::other(
+            "metadata-ready cancellation delivered an image band to the sink",
+        ));
+    }
     match &first.0 {
         Err(error) if super::is_host_cancelled(error) => {}
         Err(error) => {
@@ -618,6 +681,12 @@ fn run_hardware_phase(phase: CancelPhase, path: &[u16], output: &Path) -> io::Re
         "cancel_trigger_verified phase={} at_ms={}",
         trigger_details.0, trigger_details.1
     ))?;
+    if let Some(pending_at_ms) = trigger.pending_at_ms()? {
+        log.record(format!(
+            "cancel_timing_verified phase={} pending_at_ms={} cancel_at_ms={}",
+            trigger_details.0, pending_at_ms, trigger_details.1
+        ))?;
+    }
 
     let rescan_cancel = AtomicBool::new(false);
     let rescan_trigger = Arc::new(TriggerState::default());
@@ -898,4 +967,104 @@ fn completion_marker_is_absent_until_commit_and_never_replaces_existing_file() {
     fs::remove_file(existing_marker).unwrap();
     fs::remove_dir(existing).unwrap();
     fs::remove_dir(root).unwrap();
+}
+
+#[cfg(test)]
+fn band_reply(message: u8, length: u32, rows: u16, width: u16) -> Vec<u8> {
+    let mut bytes = reply(0, message);
+    bytes[4..8].copy_from_slice(&length.to_be_bytes());
+    bytes[8..10].copy_from_slice(&rows.to_be_bytes());
+    bytes[10..12].copy_from_slice(&width.to_be_bytes());
+    bytes
+}
+
+#[test]
+fn metadata_ready_phase_waits_for_busy_then_valid_good_once() {
+    let phase = CancelPhase::parse("metadata_ready_after_busy").unwrap();
+    let log = EventLog::memory();
+    let trigger = Arc::new(TriggerState::default());
+    let cancel = AtomicBool::new(false);
+    let mut inner = Synthetic {
+        replies: VecDeque::from([
+            reply(8, 0x20),
+            band_reply(0x80, 3, 1, 1),
+            band_reply(0x81, 3, 1, 1),
+        ]),
+    };
+    let mut observed = ObservedTransport::new(
+        &mut inner,
+        &cancel,
+        Some(phase),
+        Arc::clone(&trigger),
+        log.clone(),
+    );
+    let mut buffer = vec![0; 32];
+    observed.write(&[0x1b, 0xa8, 0x28, 0]).unwrap();
+    observed.read(&mut buffer).unwrap();
+    assert!(!trigger.claimed());
+    assert!(!cancel.load(Ordering::SeqCst));
+    observed.write(&[0x1b, 0xa8, 0x28, 0]).unwrap();
+    observed.read(&mut buffer).unwrap();
+    assert!(trigger.claimed());
+    assert!(cancel.load(Ordering::SeqCst));
+    observed.write(&[0x1b, 0xa8, 0x28, 0]).unwrap();
+    observed.read(&mut buffer).unwrap();
+    let text = log.memory_text();
+    assert_eq!(text.matches("cancel_pending ").count(), 1);
+    assert!(text.contains("cancel_pending phase=metadata_ready_after_busy pending_at_ms="));
+    assert_eq!(text.matches("cancel_trigger ").count(), 1);
+    assert!(text.contains("cancel_trigger phase=metadata_ready_after_busy cancel_at_ms="));
+}
+
+#[test]
+fn metadata_ready_phase_good_without_prior_busy_does_not_trigger() {
+    let phase = CancelPhase::parse("metadata_ready_after_busy").unwrap();
+    let trigger = Arc::new(TriggerState::default());
+    let cancel = AtomicBool::new(false);
+    let mut inner = Synthetic {
+        replies: VecDeque::from([band_reply(0x80, 3, 1, 1)]),
+    };
+    let mut observed = ObservedTransport::new(
+        &mut inner,
+        &cancel,
+        Some(phase),
+        Arc::clone(&trigger),
+        EventLog::memory(),
+    );
+    observed.write(&[0x1b, 0xa8, 0x28, 0]).unwrap();
+    observed.read(&mut [0; 32]).unwrap();
+    assert!(!trigger.claimed());
+    assert!(!cancel.load(Ordering::SeqCst));
+}
+
+#[test]
+fn metadata_ready_phase_rejects_malformed_unrelated_and_invalid_band() {
+    let phase = CancelPhase::parse("metadata_ready_after_busy").unwrap();
+    let mut malformed = band_reply(0x80, 3, 1, 1);
+    malformed[2] = 0;
+    for (opcode, candidate) in [
+        (0x28, malformed),
+        (0x16, band_reply(0x80, 3, 1, 1)),
+        (0x28, band_reply(0x80, 3, 1, 0)),
+        (0x28, reply(0, 0x20)),
+    ] {
+        let trigger = Arc::new(TriggerState::default());
+        let cancel = AtomicBool::new(false);
+        let mut inner = Synthetic {
+            replies: VecDeque::from([reply(8, 0x20), candidate]),
+        };
+        let mut observed = ObservedTransport::new(
+            &mut inner,
+            &cancel,
+            Some(phase),
+            Arc::clone(&trigger),
+            EventLog::memory(),
+        );
+        observed.write(&[0x1b, 0xa8, 0x28, 0]).unwrap();
+        observed.read(&mut [0; 32]).unwrap();
+        observed.write(&[0x1b, 0xa8, opcode, 0]).unwrap();
+        observed.read(&mut [0; 32]).unwrap();
+        assert!(!trigger.claimed(), "opcode=0x{opcode:02x}");
+        assert!(!cancel.load(Ordering::SeqCst), "opcode=0x{opcode:02x}");
+    }
 }

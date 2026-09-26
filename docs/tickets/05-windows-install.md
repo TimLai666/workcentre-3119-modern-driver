@@ -1,7 +1,17 @@
 # 05 — 使用者可以安裝驅動並透過 Windows 掃描
 
 Epic：Windows 整合。User Story：一般掃描軟體能發現及使用 3119。
-Blocked by：02 的文件／幾何及 03 的復原驗收。07 的歷史偏白調查依使用者 2026-09-26 指示暫停。Status：進行中，測試憑證套件已在開發機完成 WIA、Windows 掃描 App、更新、解除安裝及重開機實測；第二台電腦、換孔、拔插與服務取消仍待驗收。
+Blocked by：02 的文件／幾何及 03 的其他復原驗收。07 的歷史偏白調查依使用者 2026-09-26 指示暫停。Status：進行中，測試憑證套件已在開發機完成 WIA、Windows 掃描 App、更新、解除安裝及重開機實測；0.2.19 的 Windows 掃描 API 取消與重掃通過，第二台電腦、換孔及拔插仍待驗收。
+
+## 2026-09-26 取消修復與更新（0.2.19.0）
+
+正式核心修正首塊前取消，硬體對照及合成測試見 [03](03-recover-scan.md)。250 個 Rust 測試、fmt、Clippy、release、capture_scan 4 個範例測試及 release 建置、當次 DLL 動態載入均通過。Inf2Cat 無錯誤或警告，沿用既有專案測試憑證簽署，套件不依賴額外 Visual C++ 執行階段。
+
+套件 `artifacts/wia-package-0.2.19.0-20260926T050130Z/` 經預檢後以 `wc3119-setup.ps1 -Action Update -Apply` 更新本機，exit 0，舊 0.2.18.0 的 oem22.inf 已移除。父裝置與 MI_01 和備份相符，stisvc 恢復 Running，WIA 可見一台。備份與日誌在 `artifacts/wia-setup-update-20260926T050601Z/`、`artifacts/cancel-core-update-20260926/`。已安裝 DLL 與受測 release／套件一致，SHA256：`7345169FEF9AA9647C648B0EB8EF3F6CE0DC4ED8B943E16CEF5E615EC792ACD0`。
+
+更新後以真正 WinRT `ImageScanner` 同一物件完成 RGB75 取消、彩色重掃及灰階對照：563 ms 發送取消、628 ms 觀察到 `Canceled`；後兩張分別 19115／17966 ms 成功，BMP 均 648×871，色深 24／8 bpp，已實際開啟檢查為空平台，不能驗收文件品質。`artifacts/wia-cancel-20260926/run-e-v0219/complete.txt` 存在。這是 Windows 掃描所用 API 驗收，沒有重做 App 按鈕互動；API 取消時間也不代表機構已停止。
+
+可攜套件另存 `artifacts/workcentre-3119-0.2.19.0-windows-x64.zip`，SHA256：`15B2C1B39E5B945B3D21D91AA3AC5BD0E9035B0CCC4A40BC60F173C1D0E705AD`。第二台電腦仍需實際安裝並掃描，不能由套件產出或本機更新推論跨機驗收通過。
 
 ## 交付與流程
 
