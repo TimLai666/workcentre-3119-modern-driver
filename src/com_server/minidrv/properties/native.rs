@@ -679,6 +679,7 @@ mod tests {
     const WIA_PROP_LIST: u32 = 0x20;
     const WIA_IPA_DATATYPE: u32 = 4103;
     const WIA_IPA_DEPTH: u32 = 4104;
+    const WIA_IPS_CUR_INTENT: u32 = 6146;
     const WIA_IPA_CHANNELS_PER_PIXEL: u32 = 4109;
     const WIA_IPA_PIXELS_PER_LINE: u32 = 4112;
     const WIA_IPA_NUMBER_OF_LINES: u32 = 4114;
@@ -1225,6 +1226,62 @@ mod tests {
         // The depth list stays complete; the rewrite only moves the nominal.
         assert_eq!(writer.list_values, vec![(WIA_IPA_DEPTH, vec![8, 24])]);
         assert_eq!(&*events.borrow(), &["values", "attributes", "finalize"]);
+    }
+
+    #[test]
+    fn image_type_intent_switches_publish_datatype_and_depth() {
+        let catalog = synthetic_dual_mode_catalog();
+        for (old, intent, expected_type, expected_depth) in [
+            (settings(75, 0, 0, 637, 877, 2, 8), 1, 3, 24),
+            (settings(75, 0, 0, 637, 877, 3, 24), 2, 2, 8),
+        ] {
+            let current = old;
+            let mut written = vec![WIA_IPS_CUR_INTENT];
+            let (before, after) =
+                crate::com_server::minidrv::properties::validation::prepare_catalogs(
+                    &catalog,
+                    old,
+                    current,
+                    Some(intent),
+                    &mut written,
+                )
+                .unwrap();
+            let mut writer = DeltaWriter::new(Rc::new(RefCell::new(Vec::new())));
+
+            assert_eq!(update_with(&before, &after, &mut writer, || Ok(())), Ok(()));
+            assert!(
+                writer
+                    .value_longs
+                    .contains(&(WIA_IPA_DATATYPE, expected_type))
+            );
+            assert!(
+                writer
+                    .value_longs
+                    .contains(&(WIA_IPA_DEPTH, expected_depth))
+            );
+        }
+    }
+
+    #[test]
+    fn unchanged_color_intent_emits_no_native_delta() {
+        let current = settings(75, 0, 0, 637, 877, 3, 24);
+        let catalog = synthetic_dual_mode_catalog();
+        let mut written = vec![WIA_IPS_CUR_INTENT];
+        let (before, after) = crate::com_server::minidrv::properties::validation::prepare_catalogs(
+            &catalog,
+            current,
+            current,
+            Some(1),
+            &mut written,
+        )
+        .unwrap();
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut writer = DeltaWriter::new(events.clone());
+
+        assert_eq!(update_with(&before, &after, &mut writer, || Ok(())), Ok(()));
+        assert!(writer.value_longs.is_empty());
+        assert!(writer.attribute_ids.is_empty());
+        assert!(events.borrow().is_empty());
     }
 
     #[test]
