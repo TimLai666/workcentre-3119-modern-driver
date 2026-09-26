@@ -2,6 +2,22 @@
 
 觀測日期：2026-09-13、2026-09-14、2026-09-26。此檔省略 USB 序號與完整實例路徑。
 
+## 0.2.19 睡眠喚醒後掃描
+
+2026-09-26，使用者讓電腦在掃描閒置時睡眠再喚醒。Windows System 的 Power-Troubleshooter 事件 1 記錄睡眠時間 07:07:34 UTC、喚醒時間 07:07:54 UTC。喚醒後即時診斷確認父裝置 usbccgp、MI_00 WINUSB、MI_01 usbprint 均已啟動且問題碼 0，stisvc Running。
+
+WinRT ImageScanner 重新列舉到唯一掃描器，同一個新建物件依序完成 RGB75 取消、RGB75 重掃及 Gray75。564 ms 提出取消，633 ms 觀察到 Canceled；重掃與灰階分別 19215／17899 ms 完成，BMP 均 648×871、24／8 bpp，已開啟檢查為空平台。`complete.txt` 存在，結束後 stisvc Running；全程沒有手動重啟服務、重新安裝或重插。
+
+私人證據在 `artifacts/sleep-wake-20260926/`（系統事件、PnP、診斷及 BMP 標頭）與 `artifacts/wia-cancel-20260926/sleep-wake-v0219/`（掃描結果與影像）。本次證明閒置睡眠後新建用戶端可掃描，不涵蓋掃描途中睡眠、睡眠前持有的 ImageScanner 物件，或所有省電模式。API 的 Canceled 返回時間不代表機構已停止，空平台也不代表文件品質驗收。
+
+## 0.2.19 實體換孔後掃描
+
+2026-09-26，使用者確認已將掃描器換到另一個 USB 接孔。與換孔前保存的 PnP 資料比對，MI_00 的 USB 位置從 `USB(10)#USB(1)` 變為 `USB(11)#USB(3)`，裝置實例 ID 沒有改變。重新列舉後自動套用既有 0.2.19.0，MI_00 為 Image／WINUSB，父裝置為 usbccgp，MI_01 為 usbprint，三者問題碼均為 0。沒有重新安裝或手動重啟服務。
+
+透過真正 WinRT ImageScanner 重新發現裝置，同一物件依序完成 RGB75 取消、RGB75 重掃與 Gray75。500 ms 發送取消，556 ms 觀察到 Canceled；後兩張分別 19179／17518 ms 完成，BMP 均 648×871、24／8 bpp，已開啟檢查為空平台。`complete.txt` 存在，測試後 stisvc Running。已安裝 DLL SHA256 與 0.2.19 更新時受測版本一致。
+
+私人證據在 `artifacts/port-change-20260926/`（PnP 比對、診斷、BMP 標頭及離線檢查）與 `artifacts/wia-cancel-20260926/port-change-v0219/`（掃描結果、影像與完成標記）。本次驗證閒置時實體拔插換孔後自動辨識與掃描，不涵蓋傳輸中拔線、睡眠喚醒、第二台電腦或其他所有 USB 控制器。
+
 ## 0.2.18 WIA 連續 20 次整版掃描
 
 2026-09-26，使用已安裝的 0.2.18.0 與同一個 WIA automation 裝置／平台物件，循環 RGB600、RGB600、RGB300、Gray600 五輪。20 次全部完成，累計傳輸 1435.381 秒，沒有重試、服務重啟或重新連接。DLL SHA256 為 `5B227D444CCA40E6BA7C5F2BD2DD18177EA56F07368E15F67B6219A0FF970D11`。
