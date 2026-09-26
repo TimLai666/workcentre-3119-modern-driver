@@ -70,7 +70,7 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 
 完整 `cargo test --offline` 為 244 個通過（含 187 lib 與 2 doc-tests），fmt、Clippy all-targets、release、capture_scan 範例測試／release 通過；當次 release DLL 動態載入另行通過。DLL SHA256：`5B227D444CCA40E6BA7C5F2BD2DD18177EA56F07368E15F67B6219A0FF970D11`。
 
-套件 `wia-package-0.2.18.0-20260926T032234Z` 已用既有測試憑證產生並簽署 catalog，Inf2Cat 無錯誤或警告，本機 Update 預檢通過。實際更新及更新後 WIA 掃描正在驗收，不能以打包完成代替。私人日誌保存在 `artifacts/review-fixes-20260926-105015/`，意圖回歸的先失敗／後通過證據在 `artifacts/intent-fix-20260926/`。
+套件 `wia-package-0.2.18.0-20260926T032234Z` 已用既有測試憑證產生並簽署 catalog，Inf2Cat 無錯誤或警告，本機 Update 預檢通過。啟動更新的 UAC 回報「操作被使用者取消」，安裝腳本未開始；本機更新及更新後 WIA 掃描仍未驗收，不能以打包完成代替。私人日誌保存在 `artifacts/review-fixes-20260926-105015/`，意圖回歸的先失敗／後通過證據在 `artifacts/intent-fix-20260926/`。
 
 本輪不宣稱修復首塊前取消、600 dpi 連續穩定性或歷史偏白。第二台乾淨電腦、換孔與原稿品質仍待驗收。既有 STI 鎖定的並行時序疑點尚缺服務排程證據，不能列為已確認缺陷。
 

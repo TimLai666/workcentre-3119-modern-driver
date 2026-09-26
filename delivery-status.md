@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-2026-09-26：已修正 WIA 意圖切換漏寫色彩類型、安裝失敗未復原服務、套件依賴額外 Visual C++ 執行階段三項審查問題。0.2.18.0 已完成測試簽署與更新預檢；本機更新正等待 Windows UAC，更新後 WIA 掃描尚未驗證。以下 2026-09-19 段落保留當時狀態，後續完成的解除安裝證據見 Verified。
+2026-09-26：已修正 WIA 意圖切換漏寫色彩類型、安裝失敗未復原服務、套件依賴額外 Visual C++ 執行階段三項審查問題。0.2.18.0 已完成測試簽署與更新預檢；啟動本機更新時 Windows UAC 回報「操作被使用者取消」，因此沒有開始安裝，更新後 WIA 掃描尚未驗證。以下 2026-09-19 段落保留當時狀態，後續完成的解除安裝證據見 Verified。
 
 2026-09-19：開發機已用測試憑證簽署的 WIA 套件安裝本驅動，Windows 的 WIA 服務首次成功載入、鎖定並透過既有 WIA 用戶端（WIA automation）完成灰階與彩色 75 dpi 全平台掃描，屬性驗證也經服務拒絕無效 dpi。修正過程確認服務要求 COM aggregation、傳 STI 版本 3、port name 為 AUTO、相容模式項目不能查型別。WinRT `Windows.Devices.Scanners` 桌面程序可列舉、連線並完成掃描（Windows 掃描 App 使用的 API）。Windows 掃描 App 曾在 AppContainer 內連線失敗，2026-09-19 以 cdb 附加 RuntimeBroker 追到 App 連線後把 DesiredResolution 設為 100×100 dpi，而 WIA_IPS_YRES 有效清單只列目前值，WinRT 在客戶端就回 E_INVALIDARG；改為 X／Y 都列完整清單後，Windows 掃描 App 已連線並完成掃描（套件 0.2.15.0）。取消、拔插、第二台電腦與解除安裝驗收仍未完成。精確階段取消對照已加入測試建置，第一塊影像後取消並以同一 USB session 重掃通過；首塊前取消的復原缺口仍由 03 追蹤。
 
