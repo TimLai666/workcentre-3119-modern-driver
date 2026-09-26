@@ -1,5 +1,7 @@
 Xerox WorkCentre 3119 掃描器驅動（Windows 11 x64）
 
+不需要另外安裝 Visual C++ Redistributable。
+
 安裝
   1. 用 USB 線接上 WorkCentre 3119 並開機（沒接也可以先裝，接上後 Windows 會自動載入）。
   2. 對 install.cmd 按兩下，同意「使用者帳戶控制」提示。

@@ -32,6 +32,10 @@ Windows Kits\10\bin\<version>\x86 when omitted.
 Only stage the package (INF + DLL + hashes). Use when the WDK is not installed
 yet; the staged package cannot be installed until a signed catalog exists.
 
+.PARAMETER DumpbinPath
+Path to the Visual Studio dumpbin.exe used to verify the staged DLL imports.
+Auto-detected from PATH or a standard Visual Studio 2022 installation.
+
 .EXAMPLE
 ./driver/package.ps1 -NewTestCertificate
 
@@ -44,7 +48,8 @@ param(
     [ValidatePattern('^[0-9A-Fa-f]{40}$')][string]$CertificateThumbprint,
     [switch]$NewTestCertificate,
     [string]$Inf2Cat,
-    [switch]$SkipCatalog
+    [switch]$SkipCatalog,
+    [string]$DumpbinPath
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -56,6 +61,46 @@ if (-not $OutputRoot) { $OutputRoot = Join-Path $projectRoot 'artifacts' }
 
 if (-not (Test-Path $dll)) { throw "Release DLL is missing; run cargo build --offline --release first: $dll" }
 if (-not (Test-Path $inf)) { throw "INF is missing: $inf" }
+
+if (-not $DumpbinPath) {
+    $dumpbinCommand = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
+    if ($dumpbinCommand) {
+        $DumpbinPath = $dumpbinCommand.Source
+    } else {
+        $vsRoot = Join-Path $env:ProgramFiles 'Microsoft Visual Studio\2022'
+        $dumpbinCandidates = @(Get-ChildItem -Path (Join-Path $vsRoot '*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe') `
+            -ErrorAction SilentlyContinue | Sort-Object FullName -Descending)
+        if ($dumpbinCandidates.Count -gt 0) { $DumpbinPath = $dumpbinCandidates[0].FullName }
+    }
+}
+if (-not $DumpbinPath -or -not (Test-Path -LiteralPath $DumpbinPath -PathType Leaf)) {
+    throw 'dumpbin.exe not found. Install Visual Studio C++ build tools, add dumpbin.exe to PATH, or pass -DumpbinPath.'
+}
+
+function Assert-NoVisualCppRuntimeImports {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $dumpbinOutput = @(& $DumpbinPath /DEPENDENTS $Path 2>&1)
+    $dumpbinExitCode = $LASTEXITCODE
+    if ($dumpbinExitCode -ne 0) {
+        throw "dumpbin.exe /DEPENDENTS failed for package DLL '$Path' with exit code $dumpbinExitCode."
+    }
+
+    $dependencies = @()
+    foreach ($line in $dumpbinOutput) {
+        if ([string]$line -match '^\s*([A-Za-z0-9_.+-]+\.dll)\s*$') { $dependencies += $Matches[1] }
+    }
+    if ($dependencies.Count -eq 0) {
+        throw "dumpbin.exe returned no DLL dependency names for package DLL '$Path'; its imports cannot be verified."
+    }
+
+    $runtimePattern = '^(?:VCRUNTIME|MSVCP|MSVCR|CONCRT|VCOMP|MFC|MFCS|ATL)\d+[A-Z0-9_]*\.DLL$|^(?:MSVCPRTD|MSVCRTD)\.DLL$'
+    $runtimeImports = @($dependencies | Where-Object { $_ -match $runtimePattern })
+    if ($runtimeImports.Count -gt 0) {
+        throw ("Package DLL imports Visual C++ runtime DLL(s): {0}. Rebuild with the repository crt-static setting." -f `
+            ($runtimeImports -join ', '))
+    }
+}
 
 $infText = Get-Content $inf -Raw
 if ($infText -notmatch '(?m)^DriverVer\s*=\s*(\d\d/\d\d/\d{4}),(\d+\.\d+\.\d+\.\d+)\s*$') { throw 'INF has no DriverVer line' }
@@ -71,7 +116,9 @@ $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
 $package = Join-Path $OutputRoot "wia-package-$driverVersion-$stamp"
 New-Item -ItemType Directory -Path $package | Out-Null
 Copy-Item $inf (Join-Path $package 'wc3119-wia.inf')
-Copy-Item $dll (Join-Path $package 'workcentre_3119.dll')
+$packageDll = Join-Path $package 'workcentre_3119.dll'
+Copy-Item $dll $packageDll
+Assert-NoVisualCppRuntimeImports -Path $packageDll
 # The package is self-contained: the setup script runs in package mode next
 # to manifest.json, and the .cmd wrappers give the end user one-click
 # install/uninstall with UAC elevation.
@@ -83,7 +130,7 @@ $manifest = [ordered]@{
     driverVersion = $driverVersion
     driverDate    = $driverDate
     builtUtc      = $stamp
-    dllSha256     = (Get-FileHash (Join-Path $package 'workcentre_3119.dll')).Hash
+    dllSha256     = (Get-FileHash $packageDll).Hash
     infSha256     = (Get-FileHash (Join-Path $package 'wc3119-wia.inf')).Hash
     catalog       = $null
     certificate   = $null
@@ -135,9 +182,8 @@ if ($signature.SignerCertificate.Thumbprint -ne $certificate.Thumbprint) { throw
 $manifest.catalog = [ordered]@{ name = $catalogName; sha256 = (Get-FileHash $catalog).Hash }
 $manifest.certificate = [ordered]@{ subject = $certificate.Subject; thumbprint = $certificate.Thumbprint; notAfter = $certificate.NotAfter.ToString('o') }
 $manifest | ConvertTo-Json | Set-Content (Join-Path $package 'manifest.json') -Encoding UTF8
-Remove-Item (Join-Path $package 'workcentre_3119.dll') -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false | Out-Null
-Copy-Item $dll (Join-Path $package 'workcentre_3119.dll')
-if ((Get-FileHash (Join-Path $package 'workcentre_3119.dll')).Hash -ne $manifest.dllSha256) { throw 'DLL changed during packaging' }
+Assert-NoVisualCppRuntimeImports -Path $packageDll
+if ((Get-FileHash $packageDll).Hash -ne $manifest.dllSha256) { throw 'DLL changed during packaging' }
 Write-Output "Signed package: $package"
 Write-Output "Signer: $($certificate.Subject) $($certificate.Thumbprint)"
 Write-Output 'Next: copy the directory to the target PC and run install.cmd (or wc3119-setup.ps1 -Action Install -TrustCertificate -Apply) after authorization.'

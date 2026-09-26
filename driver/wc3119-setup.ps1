@@ -212,11 +212,44 @@ function Invoke-Pnputil([string[]]$Arguments) {
     if ($code -notin @(0, 259, 3010)) { throw "pnputil failed with $code; see $logDir\pnputil.txt" }
     return $code
 }
-function Stop-WiaService {
+function Stop-WiaService([string]$Message = 'Stopping the Windows Image Acquisition service (stisvc) before the driver change') {
     # The loaded driver holds the single WinUSB handle; while it is open PnP
     # cannot restart the devnode and pnputil answers 3010 (reboot required).
-    Write-Log 'Stopping the Windows Image Acquisition service (stisvc) before the driver change'
-    Stop-Service stisvc -Force -ErrorAction Stop
+    Write-Log $Message
+    $status = [string](Get-Service stisvc -ErrorAction Stop).Status
+    if ($status -eq 'Running') {
+        Stop-Service stisvc -Force -ErrorAction Stop
+    } elseif ($status -ne 'Stopped') {
+        throw "Cannot safely stop stisvc while its state is $status"
+    }
+}
+function Restore-WiaServiceState([bool]$WasRunning) {
+    $status = [string](Get-Service stisvc -ErrorAction Stop).Status
+    if ($WasRunning -and $status -ne 'Running') {
+        Start-Service stisvc -ErrorAction Stop
+    } elseif (-not $WasRunning -and $status -ne 'Stopped') {
+        Stop-Service stisvc -Force -ErrorAction Stop
+    }
+}
+function Invoke-WiaServiceOperation([scriptblock]$Operation, [bool]$StopFirst = $true, [string]$StopMessage = 'Stopping the Windows Image Acquisition service (stisvc) before the driver change') {
+    $status = [string](Get-Service stisvc -ErrorAction Stop).Status
+    if ($status -notin @('Running', 'Stopped')) {
+        throw "Cannot safely change stisvc while its state is $status"
+    }
+    $wasRunning = $status -eq 'Running'
+    try {
+        if ($StopFirst) { Stop-WiaService $StopMessage }
+        & $Operation
+    } catch {
+        $operationError = $_
+        try {
+            Restore-WiaServiceState $wasRunning
+        } catch {
+            $recoveryMessage = $_.Exception.Message
+            try { Write-Log "Secondary failure restoring stisvc: $recoveryMessage" | Out-Null } catch {}
+        }
+        throw $operationError
+    }
 }
 function Complete-PendingDeviceChange {
     # pnputil answered 3010: the devnode could not be restarted in place.
@@ -250,14 +283,17 @@ function Complete-PendingDeviceChange {
     return $false
 }
 function Restart-WiaService {
-    # COM keeps the previous in-process server mapped inside the WIA service,
-    # and a driver that failed to load is dropped from the service's device
-    # list until it re-enumerates. Restarting stisvc makes it load the DLL
-    # that the CLSID now points at. Applications must not be scanning.
-    Write-Log 'Restarting the Windows Image Acquisition service (stisvc)'
-    Restart-Service stisvc -Force -ErrorAction Stop
-    $deadline = (Get-Date).AddSeconds(20)
-    while ((Get-Date) -lt $deadline -and (Get-WiaDeviceCount) -lt 1) { Start-Sleep -Milliseconds 500 }
+    $operation = {
+        # COM keeps the previous in-process server mapped inside the WIA service,
+        # and a driver that failed to load is dropped from the service's device
+        # list until it re-enumerates. Restarting stisvc makes it load the DLL
+        # that the CLSID now points at. Applications must not be scanning.
+        Write-Log 'Restarting the Windows Image Acquisition service (stisvc)'
+        Restart-Service stisvc -Force -ErrorAction Stop
+        $deadline = (Get-Date).AddSeconds(20)
+        while ((Get-Date) -lt $deadline -and (Get-WiaDeviceCount) -lt 1) { Start-Sleep -Milliseconds 500 }
+    }
+    Invoke-WiaServiceOperation -Operation $operation -StopFirst $false
 }
 function Verify-Installed($Expected) {
     $packages = @(Get-ProjectPackages | Where-Object Version -eq $Expected.Version)
@@ -331,25 +367,59 @@ function Install-Package($Info, $Superseded) {
     $script:installExit = 1
     Save-Backup
     $scanner = Get-ScannerOrNull
-    if ($scanner) { Stop-WiaService }
-    $code = Invoke-Pnputil @('/add-driver', (Join-Path $Info.Dir 'wc3119-wia.inf'), '/install')
-    Assert-ProtectedUnchanged
-    if ($scanner) {
-        if ($code -eq 3010 -and -not (Complete-PendingDeviceChange)) {
-            Start-Service stisvc -ErrorAction SilentlyContinue
-            Write-Log 'Windows still requests a reboot before the new driver is in use; not rebooting automatically. Re-run after the reboot to verify and clean up.'
-            $script:installExit = 3010
-            return
+    $operation = {
+        $code = Invoke-Pnputil @('/add-driver', (Join-Path $Info.Dir 'wc3119-wia.inf'), '/install')
+        Assert-ProtectedUnchanged
+        if ($scanner) {
+            if ($code -eq 3010 -and -not (Complete-PendingDeviceChange)) {
+                Start-Service stisvc -ErrorAction Stop
+                Write-Log 'Windows still requests a reboot before the new driver is in use; not rebooting automatically. Re-run after the reboot to verify and clean up.'
+                $script:installExit = 3010
+                return
+            }
+            Restart-WiaService
         }
-        Restart-WiaService
+        Verify-Installed $Info
+        foreach ($old in @($Superseded)) {
+            Invoke-Pnputil @('/delete-driver', $old.Published) | Out-Null
+            Write-Log "Removed superseded package $($old.Published) ($($old.Version))"
+        }
+        Show-ScanAppHints
+        $script:installExit = 0
     }
-    Verify-Installed $Info
-    foreach ($old in @($Superseded)) {
-        Invoke-Pnputil @('/delete-driver', $old.Published) | Out-Null
-        Write-Log "Removed superseded package $($old.Published) ($($old.Version))"
+    if ($scanner) { Invoke-WiaServiceOperation -Operation $operation }
+    else { & $operation }
+}
+function Invoke-DriverUninstall($Installed) {
+    Save-Backup
+    $operation = {
+        $codes = @()
+        foreach ($item in $Installed) { $codes += Invoke-Pnputil @('/delete-driver', $item.Published, '/uninstall', '/force') }
+        # Re-enumerate so the devnode leaves the transient no-driver state
+        # without a reboot when Windows allows it.
+        Invoke-Pnputil @('/scan-devices') | Out-Null
+        if ($codes -contains 3010) {
+            $scanner = @(Get-PnpDevice -PresentOnly | Where-Object InstanceId -match $scannerPattern)
+            if ($scanner.Count -eq 1) { Invoke-Pnputil @('/remove-device', $scanner[0].InstanceId) | Out-Null; Start-Sleep -Seconds 2; Invoke-Pnputil @('/scan-devices') | Out-Null }
+        }
+        Start-Service stisvc -ErrorAction Stop
+        # INF AddReg entries under HKCR are not removed by device uninstall.
+        if (Test-Path "Registry::HKEY_CLASSES_ROOT\CLSID\$driverClsid") {
+            Remove-Item "Registry::HKEY_CLASSES_ROOT\CLSID\$driverClsid" -Recurse
+            Write-Log "Removed HKCR\CLSID\$driverClsid"
+        }
+        Assert-ProtectedUnchanged
+        if (@(Get-ProjectPackages).Count -ne 0) { throw 'Driver store still lists a project package' }
+        $scanner = Get-ScannerOrNull
+        if ($scanner) {
+            $properties = Get-Properties $scanner.InstanceId
+            Write-Log ("MI_00 after uninstall: service={0} class={1} problem={2}" -f $properties['DEVPKEY_Device_Service'], $properties['DEVPKEY_Device_ClassGuid'], $properties['DEVPKEY_Device_ProblemCode'])
+            if ("$($properties['DEVPKEY_Device_ClassGuid'])".ToLower() -eq $imageClass) { Write-Log 'Devnode still carries the Image class; re-pair with examples/winusb_setup.rs if WinUSB-only access is wanted' }
+        }
+        if ($UntrustCertificate) { Revoke-Trust; Write-Log 'Uninstalled and certificate trust removed.' }
+        else { Write-Log 'Uninstalled. Certificate trust is kept; remove it with -UntrustCertificate -Apply if no longer needed.' }
     }
-    Show-ScanAppHints
-    $script:installExit = 0
+    Invoke-WiaServiceOperation -Operation $operation -StopMessage 'Stopping the Windows Image Acquisition service (stisvc)'
 }
 
 try {
@@ -423,36 +493,7 @@ try {
             }
             if (-not $Apply) { Write-Log ("Preflight passed. Would delete {0} and the CLSID key; MI_00 returns to no driver (problem 28) until re-paired" -f (($installed | ForEach-Object Published) -join ', ')); exit 0 }
             if (-not (Test-Admin)) { throw 'Elevation is required' }
-            Save-Backup
-            # The WIA service keeps the driver DLL and the WinUSB handle open;
-            # stop it first so pnputil can unload the device cleanly.
-            Write-Log 'Stopping the Windows Image Acquisition service (stisvc)'
-            Stop-Service stisvc -Force -ErrorAction Stop
-            $codes = @()
-            foreach ($item in $installed) { $codes += Invoke-Pnputil @('/delete-driver', $item.Published, '/uninstall', '/force') }
-            # Re-enumerate so the devnode leaves the transient no-driver state
-            # without a reboot when Windows allows it.
-            Invoke-Pnputil @('/scan-devices') | Out-Null
-            if ($codes -contains 3010) {
-                $scanner = @(Get-PnpDevice -PresentOnly | Where-Object InstanceId -match $scannerPattern)
-                if ($scanner.Count -eq 1) { Invoke-Pnputil @('/remove-device', $scanner[0].InstanceId) | Out-Null; Start-Sleep -Seconds 2; Invoke-Pnputil @('/scan-devices') | Out-Null }
-            }
-            Start-Service stisvc -ErrorAction SilentlyContinue
-            # INF AddReg entries under HKCR are not removed by device uninstall.
-            if (Test-Path "Registry::HKEY_CLASSES_ROOT\CLSID\$driverClsid") {
-                Remove-Item "Registry::HKEY_CLASSES_ROOT\CLSID\$driverClsid" -Recurse
-                Write-Log "Removed HKCR\CLSID\$driverClsid"
-            }
-            Assert-ProtectedUnchanged
-            if (@(Get-ProjectPackages).Count -ne 0) { throw 'Driver store still lists a project package' }
-            $scanner = Get-ScannerOrNull
-            if ($scanner) {
-                $properties = Get-Properties $scanner.InstanceId
-                Write-Log ("MI_00 after uninstall: service={0} class={1} problem={2}" -f $properties['DEVPKEY_Device_Service'], $properties['DEVPKEY_Device_ClassGuid'], $properties['DEVPKEY_Device_ProblemCode'])
-                if ("$($properties['DEVPKEY_Device_ClassGuid'])".ToLower() -eq $imageClass) { Write-Log 'Devnode still carries the Image class; re-pair with examples/winusb_setup.rs if WinUSB-only access is wanted' }
-            }
-            if ($UntrustCertificate) { Revoke-Trust; Write-Log 'Uninstalled and certificate trust removed.' }
-            else { Write-Log 'Uninstalled. Certificate trust is kept; remove it with -UntrustCertificate -Apply if no longer needed.' }
+            Invoke-DriverUninstall $installed
             exit 0
         }
     }

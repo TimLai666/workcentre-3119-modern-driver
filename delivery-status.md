@@ -2,6 +2,8 @@
 
 ## Current Phase
 
+2026-09-26：已修正 WIA 意圖切換漏寫色彩類型、安裝失敗未復原服務、套件依賴額外 Visual C++ 執行階段三項審查問題。0.2.18.0 已完成測試簽署與更新預檢；本機更新正等待 Windows UAC，更新後 WIA 掃描尚未驗證。以下 2026-09-19 段落保留當時狀態，後續完成的解除安裝證據見 Verified。
+
 2026-09-19：開發機已用測試憑證簽署的 WIA 套件安裝本驅動，Windows 的 WIA 服務首次成功載入、鎖定並透過既有 WIA 用戶端（WIA automation）完成灰階與彩色 75 dpi 全平台掃描，屬性驗證也經服務拒絕無效 dpi。修正過程確認服務要求 COM aggregation、傳 STI 版本 3、port name 為 AUTO、相容模式項目不能查型別。WinRT `Windows.Devices.Scanners` 桌面程序可列舉、連線並完成掃描（Windows 掃描 App 使用的 API）。Windows 掃描 App 曾在 AppContainer 內連線失敗，2026-09-19 以 cdb 附加 RuntimeBroker 追到 App 連線後把 DesiredResolution 設為 100×100 dpi，而 WIA_IPS_YRES 有效清單只列目前值，WinRT 在客戶端就回 E_INVALIDARG；改為 X／Y 都列完整清單後，Windows 掃描 App 已連線並完成掃描（套件 0.2.15.0）。取消、拔插、第二台電腦與解除安裝驗收仍未完成。精確階段取消對照已加入測試建置，第一塊影像後取消並以同一 USB session 重掃通過；首塊前取消的復原缺口仍由 03 追蹤。
 
 ## Stage Objective
@@ -37,19 +39,19 @@
 - 使用者確認平台沒有文件，無法完成文字、色彩、精確幾何與淺色細節驗收。取消／復原與 WIA 的獨立開發可繼續。
 - RGB600 兩次停止影像進度後達到 120 秒工作期限，沒有 USB API 讀寫或清理錯誤。第二次第 20 塊後約 102 秒收到 678 次 Busy（0x08）回覆，未包含可解釋的 scanner state。仍需區分命令時序與裝置內部停止進度的原因，不能只延長期限當成修復。
 - 原始影像傳輸中斷若失去框架同步，目前僅釋放 OS 資源並回報需重插，沒有證明可直接重掃。正式整合前須完成重連狀態與異常復原，並驗證暖機、拔線、睡眠及 20 次連續掃描。
-- 開發機配對不等於正式套件。自訂 INF 沒有簽章 catalog，跨電腦安裝、換孔與 WIA 尚未驗證。
+- 已有測試憑證簽署的 WIA 套件及開發機整合證據；跨電腦安裝、換孔與拔插仍未驗證，不能以本機成功代替。
 - 既有 MIT 授權保留。若選擇移植 SANE 的 GPL 實作，須先確認具體的授權與分發方案。本次沒有移植。
 - 偏亮偏白問題缺少有內容的原稿可比較，目前無法確定原因。USB 與解碼數值已比對相同，沒有加入固定壓暗處理。
 
 ## Next Verifiable Output
 
-兩條可平行工作：05 的 WIA INF 設計稿與備份／復原方案已寫成，簽署路線已定為免費測試憑證，安裝／更新／解除安裝腳本已寫好；接下來安裝 WDK、打包，取得授權後依 driver/README.md 順序信任憑證、安裝並實測 Windows 掃描；03 依精確階段取消日誌查明首塊前取消的裝置時序，再修正及重跑失敗驗收。屬性初始化、相依驗證、讀取通知、錯誤字串、格式列舉、能力列舉、同步命令與取消事件入口已接上，不重做。硬體能力須來自實際裝置，服務 context 必須由 Windows 提供，不可用假指標替代。硬體測試仍序列執行，重新列舉裝置並使用新輸出目錄。
+05 接續第二台乾淨電腦、換孔與拔插驗收；03 依精確階段取消日誌查明首塊前取消的裝置時序，再修正及重跑失敗驗收。WDK、測試憑證、WIA 登錄與開發機安裝／更新／解除安裝已有實跑證據，不重做初期方案。硬體能力須來自實際裝置，服務 context 必須由 Windows 提供。硬體測試仍序列執行，重新列舉裝置並使用新輸出目錄。
 
-IWiaMiniDrv 的 `drvWriteItemProperties`、`drvAnalyzeItem` 與 `drvDeleteItem` 仍回不支援；WIA 2.0 串流路徑不呼叫前者，後兩者不適用單一平台項目。STI 已宣告 STI_GENCAP_WIA，但服務是否據此載入 minidriver 仍待登錄後實測。COM aggregation 的實際需求、服務管理的並行載入／卸載排程、項目參考所有權與 runtime 前置條件仍須驗證。取消通知是否派送到同一 instance 與相同裝置 ID 也要由服務實測。600×800 選取區仍回傳 600×801，不可將輸出尺寸任意當成 WIA 選取範圍。WinUSB 共存、服務帳號存取及 Windows 掃描消費 BMP 仍需整合驗證。跨工作隔離依 03 補完，不以介面到達時間戳記當成實體重插證據。準備具體安裝、備份及復原方案後，才提出必要的系統變更授權。平台有文件後補做 02／07 品質對照。
+IWiaMiniDrv 的 `drvWriteItemProperties`、`drvAnalyzeItem` 與 `drvDeleteItem` 仍回不支援；WIA 2.0 串流路徑不呼叫前者，後兩者不適用單一平台項目。STI 宣告、COM aggregation、服務帳號存取 WinUSB 及 Windows 掃描取得影像已有實測。服務管理的並行載入／卸載排程、取消通知是否派送到同一 instance 與相同裝置 ID 仍須驗收。600×800 選取區仍回傳 600×801，不可將輸出尺寸任意當成 WIA 選取範圍。跨工作隔離依 03 補完，不以介面到達時間戳記當成實體重插證據。平台有文件後補做 02／07 品質對照。
 
 ## Next Ticket
 
-[05 — Windows 掃描與安裝](docs/tickets/05-windows-install.md)，先做不需系統登錄的實作與測試。[03 — 取消與復原](docs/tickets/03-recover-scan.md) 的跨工作隔離及 20 次驗收持續追蹤。02／07 缺少原稿，01 的硬體異常情境亦保留。
+[05 — Windows 掃描與安裝](docs/tickets/05-windows-install.md) 的跨電腦與拔插驗收，以及 [03 — 取消與復原](docs/tickets/03-recover-scan.md) 的跨工作隔離及 20 次驗收持續追蹤。02／07 缺少原稿，01 的硬體異常情境亦保留。
 
 ## Decision Log
 
@@ -68,6 +70,8 @@ IWiaMiniDrv 的 `drvWriteItemProperties`、`drvAnalyzeItem` 與 `drvDeleteItem` 
 | 建立持續完成完整驅動的目標 | 使用者要求逐步完成實作、驗證與推送，需要使用者介入時提出具體需求，可獨立工作繼續推進 | 2026-09-13 | 01、02、03、05、06、07 |
 
 ## Verified
+
+2026-09-26 審查修復：244 個 Rust 測試、fmt、Clippy、release、capture_scan 範例測試／建置、當次 DLL 動態載入通過；安裝復原 13 個案例與打包依賴 5 個情境在 PowerShell 5.1／pwsh 通過。舊版實際 WIA 的 intent-only 寫入可重現 DATATYPE=2／DEPTH=24 不一致；新版原生回歸已通過，服務實測須待 UAC 完成。套件 0.2.18.0 的 Inf2Cat 與既有測試憑證簽署通過，DLL SHA256 `5B227D444CCA40E6BA7C5F2BD2DD18177EA56F07368E15F67B6219A0FF970D11`。詳見 [05 審查修復](docs/tickets/05-windows-install.md#2026-09-26-審查修復02180)。
 
 2026-09-19 全組合版本：185 個 lib 測試、整合測試、doc-tests、fmt、Clippy、release、DLL 動態載入通過；DLL SHA256 `BF5274D9FC5D4C321F2BD8E7838D826B72D1A6147FC53790530724C915405446`，套件 0.2.17.0。WinRT 自動化：6 解析度 × 灰階／彩色整版 12 組全部成功（0.2.16.0），App 式英寸選區 6 組第一輪全敗（貼齊後的起點沒寫回服務，服務範圍檢查拒絕），修正差異基準後 6 組全部成功。詳見 [05](docs/tickets/05-windows-install.md#全組合驗收與貼齊值寫回)。
 

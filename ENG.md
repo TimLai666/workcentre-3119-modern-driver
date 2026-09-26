@@ -130,6 +130,8 @@ WIA 選取範圍 `XEXTENT/YEXTENT` 與輸出尺寸屬性用途不同。正式屬
 
 原生更新沿用 `native.rs` 的 ABI 與暫存所有權，只發佈改變的數值／有效範圍，最後呼叫 `wiasValidateItemProperties`。固定選項先驗證，格式 GUID 另由核心檢查。SDK 寫入沒有已確認的整批回復保證，因此初始化或相依更新開始發佈後若失敗，會在同一次借用結束前隔離 COM 物件，保留原始錯誤。此 Failed 狀態不能在同一物件重新初始化，須由服務釋放並建立新物件；實際服務復原流程尚待驗收。一般無效輸入在發佈前拒絕，不隔離連線。設定仍由 WIA 服務儲存。[SDK 最終驗證](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wiamdef/nf-wiamdef-wiasvalidateitemproperties)
 
+`prepare_catalogs` 保留從服務讀取的 `current` 快照，另以 `target` 套用 `WIA_IPS_CUR_INTENT`。差異比較必須以服務實際現值為準，不能把意圖推導出的 DATATYPE 當成已寫入服務的值，否則只寫彩色意圖時會漏寫 DATATYPE、只更新 DEPTH。原生回歸測試與正式入口共用這段設定解析及前後屬性建立流程，驗證雙向色彩切換與不變意圖的寫入集合。
+
 WIA 服務實際提供的 old 值、名稱存取、應用程式可見的相依範圍、多用戶端排程與失敗後重新載入仍待整合驗收。SDK-only probe 確認名稱形式的 PROPSPEC 不會讓 `wiasCreatePropContext` 將對應數值 ID 標為 changed，因此本實作保留原始寫入集合並明確解析已登錄名稱，不依賴該 helper 替驅動解析名稱。
 
 ### COM DLL 載入與驗證
@@ -150,7 +152,7 @@ DLL 的動態測試獨立宣告 SDK ABI，使用 `LoadLibraryExW`／`GetProcAddr
 
 物件與 server lock 共用一個原子 hold 計數，避免分開讀取兩個計數時誤判可卸載。最後一個參考先釋放物件配置再減少 hold；參考計數飽和後永久保留，不能溢位釋放。LockServer 以 module 為範圍，跨 factory 解鎖的測試是額外容錯測試，一般呼叫端仍應使用原 factory 平衡 lock／unlock。[Microsoft ATL module lock](https://learn.microsoft.com/en-us/cpp/atl/reference/ccomclassfactory-class?view=msvc-170)
 
-MSVC 建置由 `build.rs` 傳入 `driver/com-exports.def`，兩個 COM 入口標示 PRIVATE，保留 DLL export 並排除 import library 項目。2026-09-13 實際 exports 恰為上述兩個入口，沒有 LNK4104 警告。此建置仍依賴 `VCRUNTIME140.dll` 與 Windows 系統 runtime，正式套件須處理 runtime 前置條件，不能由開發機載入成功推論乾淨電腦可用。[Microsoft LNK4104](https://learn.microsoft.com/en-us/cpp/error-messages/tool-errors/linker-tools-warning-lnk4104?view=msvc-170)
+MSVC 建置由 `build.rs` 傳入 `driver/com-exports.def`，兩個 COM 入口標示 PRIVATE，保留 DLL export 並排除 import library 項目。`.cargo/config.toml` 僅對 `x86_64-pc-windows-msvc` 啟用 `+crt-static`，將 C 執行階段靜態連結，避免要求目標電腦另裝 `VCRUNTIME140.dll`。2026-09-26 的 release DLL 依賴檢查確認只匯入 Windows 系統 DLL，動態載入測試通過；第二台乾淨電腦的完整安裝與掃描仍須另行驗收。[Microsoft LNK4104](https://learn.microsoft.com/en-us/cpp/error-messages/tool-errors/linker-tools-warning-lnk4104?view=msvc-170)
 
 正式整合還須驗證 COM 管理的 `CoGetClassObject`／`CoFreeUnusedLibraries` 並行載入排程；WIA 要求 aggregation 已由實機 wiatrace 確認並實作。現在的直接 DLL 測試由呼叫端持有 loader reference，不涵蓋上述排程。WIA 初始化應依 SDK 的 `IStiUSD::Initialize`、`GetCapabilities` 及 `IWiaMiniDrv::drvInitializeWia` 實作；保留 WIA 提供的 COM 物件需取得參考，借用的裝置參數登錄句柄不得關閉。[Microsoft 初始化](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/stiusd/nf-stiusd-istiusd-initialize)、[WIA 載入流程](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/loading-and-unloading-a-wia-minidriver)
 

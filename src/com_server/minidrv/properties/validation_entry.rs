@@ -93,25 +93,14 @@ pub(in crate::com_server::minidrv) unsafe extern "system" fn entry(
                     .collect();
                 validate_specs(context, &fixed)?;
                 let mut ids = ids;
-                let (old, mut current) = read_settings_pair(context, &ids)?;
-                // A written intent selects the data type on the application's
-                // behalf; the dependent depth/size then follow as for an
-                // explicit WIA_IPA_DATATYPE write.
-                if ids.contains(&super::WIA_IPS_CUR_INTENT) {
-                    let intent = read_long(context, super::WIA_IPS_CUR_INTENT)?;
-                    if let Some(data_type) = super::validation::data_type_for_intent(intent)? {
-                        current.data_type = data_type;
-                        if !ids.contains(&WIA_IPA_DATATYPE) {
-                            ids.push(WIA_IPA_DATATYPE);
-                        }
-                    }
-                }
-                let resolved = super::validation::resolve(&catalog, old, current, &ids)?;
-                // Attributes baseline from the old state; value baseline from
-                // what the item holds now, so snapped/repaired fields are
-                // written back even when they equal the old value.
-                let before = catalog.with_settings(old)?.with_service_values(current)?;
-                let after = catalog.with_settings(resolved)?;
+                let (old, current) = read_settings_pair(context, &ids)?;
+                let intent = if ids.contains(&super::WIA_IPS_CUR_INTENT) {
+                    Some(read_long(context, super::WIA_IPS_CUR_INTENT)?)
+                } else {
+                    None
+                };
+                let (before, after) =
+                    super::validation::prepare_catalogs(&catalog, old, current, intent, &mut ids)?;
                 let canonical: Vec<_> = ids.into_iter().map(native::PropSpec::from_id).collect();
                 // SDK publication is not a transaction. A failure after this point
                 // may leave partial item state; the lifecycle guard then rejects

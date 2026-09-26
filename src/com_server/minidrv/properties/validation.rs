@@ -42,6 +42,29 @@ pub(super) fn data_type_for_intent(intent: i32) -> Result<Option<i32>, i32> {
     }
 }
 
+/// Resolve settings and build the native delta catalogs from one service snapshot.
+pub(super) fn prepare_catalogs(
+    catalog: &PropertyCatalog,
+    old: FlatbedSettings,
+    current: FlatbedSettings,
+    intent: Option<i32>,
+    written: &mut Vec<u32>,
+) -> Result<(PropertyCatalog, PropertyCatalog), i32> {
+    let mut target = current;
+    if let Some(intent) = intent
+        && let Some(data_type) = data_type_for_intent(intent)?
+    {
+        target.data_type = data_type;
+        if !written.contains(&super::WIA_IPA_DATATYPE) {
+            written.push(super::WIA_IPA_DATATYPE);
+        }
+    }
+    let resolved = resolve(catalog, old, target, written)?;
+    let before = catalog.with_settings(old)?.with_service_values(current)?;
+    let after = catalog.with_settings(resolved)?;
+    Ok((before, after))
+}
+
 pub(super) fn resolve(
     catalog: &PropertyCatalog,
     old: FlatbedSettings,

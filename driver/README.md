@@ -42,7 +42,9 @@
 - 事件只宣告連線與斷線，和 `drvGetCapabilities` 一致。驅動不會自己發送事件。
 - `DeviceInterfaceGUIDs` 同時列出專案 GUID 與 `GUID_DEVINTERFACE_IMAGE`。WinUSB 會登錄這兩個介面，後者讓 WIA 服務寫入 `DEVPKEY_WIA_DeviceType`，也讓 WinRT `Windows.Devices.Scanners`（Windows 掃描 App 用的 API）能以介面類別找到裝置。代價是 WIA 服務會試著在那個介面上開啟通知句柄，而 WinUSB 只允許一個句柄，所以驅動在 `IStiUSD::Initialize` 就先開啟並保留 USB 句柄（見 ENG.md）。
 
-還沒查證、必須靠實測確認的前提有四項：`Image` 類別搭配 WinUSB 函式驅動，類別安裝程式會不會接受並建立 StillImage 裝置介面；WIA 服務帳號 `NT Authority\LocalService` 能不能開啟 WinUSB 裝置介面；DLL 目前還會匯入 `VCRUNTIME140.dll` 與 UCRT，服務帳號載入時的 runtime 前置條件是什麼；`stisvc` 目前是 Stopped，實測時服務會由 PnP 事件啟動。
+2026-09-19 已在開發機驗證 Image 類別搭配 WinUSB、WIA 服務以 LocalService 存取裝置，以及既有掃描軟體取得影像。2026-09-26 改以 `.cargo/config.toml` 對 x64 MSVC 靜態連結 C 執行階段，release DLL 不再匯入 `VCRUNTIME140.dll`。這些證據不取代第二台乾淨電腦的安裝與掃描驗收。
+
+`package.ps1` 會用 Visual Studio 的 `dumpbin.exe` 檢查已複製進套件的 DLL，拒絕 Visual C++ 動態執行階段依賴；工具失敗或無法解析依賴時也停止打包。找不到工具時可用 `-DumpbinPath` 指定。簽章 catalog 與 manifest 使用同一份 DLL，簽署後再核對匯入及雜湊，不重新從建置目錄複製。
 
 ### 簽署（免費路線）
 
@@ -55,6 +57,8 @@
 ### 套件、安裝、更新、解除安裝
 
 一般使用者只需要套件目錄。`package.ps1` 會把 `wc3119-setup.ps1`、`install.cmd`、`uninstall.cmd` 與 `INSTALL.txt` 一起放進 `artifacts/wia-package-<版本>-<時間>/`，整個目錄複製到目標電腦後，對 `install.cmd` 按兩下（UAC 提權）就會信任憑證、安裝或更新套件、重啟 WIA 服務並驗證，`uninstall.cmd` 則反向移除套件、CLSID 與憑證信任。套件模式下腳本以自己所在的目錄當作 `-Package`，日誌寫在 `%ProgramData%\WorkCentre3119Driver\setup-logs`。掃描器沒接上時只會先把驅動放進驅動存放區，接上之後 Windows 會自動綁定。同一個版本重跑只做檢查。MI_00 如果被別的掃描驅動綁走，腳本會停下來並提示先移除那個驅動。2026-09-19 在開發機以 `uninstall.cmd`（含移除信任）接 `install.cmd` 完整實跑過一次，之後 Windows 掃描 App 掃描成功。
+
+安裝、更新、解除安裝或服務重啟失敗時，腳本會嘗試復原 `stisvc` 原本的 Running／Stopped 狀態。若復原也失敗，日誌保留次要錯誤，原始錯誤仍回報給呼叫端；這不代表已改動的驅動套件會自動還原。
 
 以下是開發者用法。兩支腳本都在本目錄，預設只做預檢，加 `-Apply` 才會改系統，而且需要提升權限的 PowerShell。在儲存庫內執行時，每次都會在 Git 排除的 `artifacts/wia-setup-*` 留下日誌與備份。
 

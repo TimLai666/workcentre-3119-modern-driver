@@ -9,7 +9,7 @@ Class       = Image
 ClassGUID   = {6BDD1FC6-810F-11D0-BEC7-08002BE2092F}
 Provider    = %Provider%
 CatalogFile = wc3119-wia.cat
-DriverVer   = 09/19/2026,0.2.17.0
+DriverVer   = 09/26/2026,0.2.18.0
 PnpLockdown = 1
 
 [SourceDisksNames]

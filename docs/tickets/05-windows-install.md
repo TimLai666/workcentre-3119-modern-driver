@@ -1,7 +1,7 @@
 # 05 — 使用者可以安裝驅動並透過 Windows 掃描
 
 Epic：Windows 整合。User Story：一般掃描軟體能發現及使用 3119。
-Blocked by：02 的掃描契約。Status：進行中，開發機 MI_00 WinUSB 配對及 INQUIRY 已驗證；正式模型套件、跨電腦換孔／拔插／重開機及 WIA 尚未驗證。
+Blocked by：02／07 的文件品質及 03 的復原驗收。Status：進行中，測試憑證套件已在開發機完成 WIA、Windows 掃描 App、更新、解除安裝及重開機實測；第二台電腦、換孔、拔插與服務取消仍待驗收。
 
 ## 交付與流程
 
@@ -10,6 +10,8 @@ Blocked by：02 的掃描契約。Status：進行中，開發機 MI_00 WinUSB �
 開發機配對工具是單一 devnode 的驗證工具，不是上述模型套件或正式交付物。
 
 ## 已查證的整合限制
+
+以下保留初期設計與當時未驗證的前提；服務載入、COM aggregation、WinUSB 存取與既有掃描軟體整合已由下方 2026-09-19 實測紀錄更新，不再是目前阻礙。
 
 2026-09-13，查核本機 Windows SDK 10.0.26100.0 的 `stiusd.h`、`wiamindr_lh.h`、`wia_lh.h` 與 `C:\Windows\INF\sti.inf`。標準 `STI.USBSection.Services` 會指定 `usbscan.sys`；目前 MI_00 使用 WinUSB，因此不能直接把標準 STI USB 安裝段加入既有 INF 並假設傳輸方式不變。[Microsoft WIA INF 規則](https://learn.microsoft.com/en-us/windows-hardware/drivers/image/inf-files-for-wia-devices)
 
@@ -59,6 +61,18 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 - 在安全設定維持啟用的 Windows 11 x64 驗證簽署套件。簽署、付費與對外送審先取得明確授權。
 
 ## 測試
+
+### 2026-09-26 審查修復（0.2.18.0）
+
+- **只寫彩色意圖時漏寫 DATATYPE**：舊版 0.2.17.0 經真正 WIA 服務重現，起始 DATATYPE=2／DEPTH=8，僅寫 CUR_INTENT=1 後成為 2／24。原因是意圖推導覆寫了差異比較用的服務現值。現在保留現值快照，另建目標設定；正式入口與原生回歸測試共用 `prepare_catalogs`。同一個回歸測試先因缺少 DATATYPE 寫入失敗，再於修正後通過，涵蓋雙向切換及重複意圖。
+- **安裝失敗留下停止的 WIA 服務**：Install／Update／Uninstall／直接重啟以同一 guard 保留原本的 Running／Stopped 狀態。失敗時嘗試復原，次要復原失敗只記錄，不取代原始 ErrorRecord。13 個合成案例在 PowerShell 5.1 與 pwsh 通過；舊版隔離測試可重現 pnputil 失敗後 Running 變成 Stopped。這不是驅動套件的自動回復，也沒有在真實系統刻意注入安裝失敗。
+- **缺少 Visual C++ 執行階段**：x64 MSVC 改為靜態連結 C 執行階段；打包檢查同一份 staged DLL 的匯入及雜湊。舊版實際 DLL 因 VCRUNTIME140.dll 被拒絕，新版通過。5 個合成情境涵蓋系統 DLL、VCRUNTIME、MSVCP、工具非零退出、空輸出，兩版 PowerShell 均通過。
+
+完整 `cargo test --offline` 為 244 個通過（含 187 lib 與 2 doc-tests），fmt、Clippy all-targets、release、capture_scan 範例測試／release 通過；當次 release DLL 動態載入另行通過。DLL SHA256：`5B227D444CCA40E6BA7C5F2BD2DD18177EA56F07368E15F67B6219A0FF970D11`。
+
+套件 `wia-package-0.2.18.0-20260926T032234Z` 已用既有測試憑證產生並簽署 catalog，Inf2Cat 無錯誤或警告，本機 Update 預檢通過。實際更新及更新後 WIA 掃描正在驗收，不能以打包完成代替。私人日誌保存在 `artifacts/review-fixes-20260926-105015/`，意圖回歸的先失敗／後通過證據在 `artifacts/intent-fix-20260926/`。
+
+本輪不宣稱修復首塊前取消、600 dpi 連續穩定性或歷史偏白。第二台乾淨電腦、換孔與原稿品質仍待驗收。既有 STI 鎖定的並行時序疑點尚缺服務排程證據，不能列為已確認缺陷。
 
 ### 全組合驗收與貼齊值寫回
 
