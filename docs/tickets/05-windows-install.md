@@ -70,7 +70,9 @@ Rust 已實作 [BMP 串流編碼](../../src/bitmap.rs)，沿用現有掃描 call
 
 完整 `cargo test --offline` 為 244 個通過（含 187 lib 與 2 doc-tests），fmt、Clippy all-targets、release、capture_scan 範例測試／release 通過；當次 release DLL 動態載入另行通過。DLL SHA256：`5B227D444CCA40E6BA7C5F2BD2DD18177EA56F07368E15F67B6219A0FF970D11`。
 
-套件 `wia-package-0.2.18.0-20260926T032234Z` 已用既有測試憑證產生並簽署 catalog，Inf2Cat 無錯誤或警告，本機 Update 預檢通過。啟動更新的 UAC 回報「操作被使用者取消」，安裝腳本未開始；本機更新及更新後 WIA 掃描仍未驗收，不能以打包完成代替。私人日誌保存在 `artifacts/review-fixes-20260926-105015/`，意圖回歸的先失敗／後通過證據在 `artifacts/intent-fix-20260926/`。
+套件 `wia-package-0.2.18.0-20260926T032234Z` 已用既有測試憑證產生並簽署 catalog，Inf2Cat 無錯誤或警告，本機 Update 預檢通過。第一次 UAC 回報取消，使用者要求重試後更新成功（exit 0），安裝 oem22.inf 並移除舊 0.2.17.0；pnputil 先回 3010，既有重新列舉流程完成後不需重開機。掃描後 Status 確認 0.2.18.0、MI_00 問題碼 0、stisvc Running、WIA 1 台，安裝 DLL 雜湊與套件一致，父裝置及 MI_01 屬性與更新前備份相符。
+
+真正 WIA automation 僅寫 CUR_INTENT，依序 1、1、2、2，回讀彩色 DATATYPE=3／DEPTH=24、灰階 2／8 全數相符。接著同一連線完成彩色及灰階 75 dpi 實掃，分別為 648×871、24 bpp、1693278 bytes／10.534 秒，以及 648×871、8 bpp、565486 bytes／17.924 秒。BMP 為由上往下排列（標頭高度 −871）；Pillow 完整解碼、無損 PNG 像素比對及目視檢查通過，影像皆為空平台與少量細點。這是 WIA 服務實掃，並未重跑 Windows 掃描 App 的 UI 或全部解析度。私人日誌與影像保存在 `artifacts/review-fixes-20260926-105015/`，更新備份在 `artifacts/wia-setup-update-20260926T033042Z/`，意圖回歸的先失敗／後通過證據在 `artifacts/intent-fix-20260926/`。
 
 本輪不宣稱修復首塊前取消、600 dpi 連續穩定性或歷史偏白。第二台乾淨電腦、換孔與原稿品質仍待驗收。既有 STI 鎖定的並行時序疑點尚缺服務排程證據，不能列為已確認缺陷。
 

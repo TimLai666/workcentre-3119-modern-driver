@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-2026-09-26：已修正 WIA 意圖切換漏寫色彩類型、安裝失敗未復原服務、套件依賴額外 Visual C++ 執行階段三項審查問題。0.2.18.0 已完成測試簽署與更新預檢；啟動本機更新時 Windows UAC 回報「操作被使用者取消」，因此沒有開始安裝，更新後 WIA 掃描尚未驗證。以下 2026-09-19 段落保留當時狀態，後續完成的解除安裝證據見 Verified。
+2026-09-26：已修正 WIA 意圖切換漏寫色彩類型、安裝失敗未復原服務、套件依賴額外 Visual C++ 執行階段三項審查問題。使用者要求重試 UAC 後，0.2.18.0 已在本機完成更新；WIA automation 只寫意圖的雙向／重複切換及彩色、灰階 75 dpi 實掃均通過。父裝置與 MI_01 核對備份相符。影像仍為空平台，不代表偏白或文件品質已修復。以下 2026-09-19 段落保留當時狀態，後續完成的解除安裝證據見 Verified。
 
 2026-09-19：開發機已用測試憑證簽署的 WIA 套件安裝本驅動，Windows 的 WIA 服務首次成功載入、鎖定並透過既有 WIA 用戶端（WIA automation）完成灰階與彩色 75 dpi 全平台掃描，屬性驗證也經服務拒絕無效 dpi。修正過程確認服務要求 COM aggregation、傳 STI 版本 3、port name 為 AUTO、相容模式項目不能查型別。WinRT `Windows.Devices.Scanners` 桌面程序可列舉、連線並完成掃描（Windows 掃描 App 使用的 API）。Windows 掃描 App 曾在 AppContainer 內連線失敗，2026-09-19 以 cdb 附加 RuntimeBroker 追到 App 連線後把 DesiredResolution 設為 100×100 dpi，而 WIA_IPS_YRES 有效清單只列目前值，WinRT 在客戶端就回 E_INVALIDARG；改為 X／Y 都列完整清單後，Windows 掃描 App 已連線並完成掃描（套件 0.2.15.0）。取消、拔插、第二台電腦與解除安裝驗收仍未完成。精確階段取消對照已加入測試建置，第一塊影像後取消並以同一 USB session 重掃通過；首塊前取消的復原缺口仍由 03 追蹤。
 
@@ -71,7 +71,7 @@ IWiaMiniDrv 的 `drvWriteItemProperties`、`drvAnalyzeItem` 與 `drvDeleteItem` 
 
 ## Verified
 
-2026-09-26 審查修復：244 個 Rust 測試、fmt、Clippy、release、capture_scan 範例測試／建置、當次 DLL 動態載入通過；安裝復原 13 個案例與打包依賴 5 個情境在 PowerShell 5.1／pwsh 通過。舊版實際 WIA 的 intent-only 寫入可重現 DATATYPE=2／DEPTH=24 不一致；新版原生回歸已通過，服務實測須待 UAC 完成。套件 0.2.18.0 的 Inf2Cat 與既有測試憑證簽署通過，DLL SHA256 `5B227D444CCA40E6BA7C5F2BD2DD18177EA56F07368E15F67B6219A0FF970D11`。詳見 [05 審查修復](docs/tickets/05-windows-install.md#2026-09-26-審查修復02180)。
+2026-09-26 審查修復：244 個 Rust 測試、fmt、Clippy、release、capture_scan 範例測試／建置、當次 DLL 動態載入通過；安裝復原 13 個案例與打包依賴 5 個情境在 PowerShell 5.1／pwsh 通過。舊版實際 WIA 的 intent-only 寫入可重現 DATATYPE=2／DEPTH=24 不一致；0.2.18.0 更新後僅寫意圖即可得到彩色 3／24、灰階 2／8，重複寫入也通過。實掃各得 648×871 BMP，彩色 10.534 秒、灰階 17.924 秒，Pillow 解碼與空平台目視檢查通過。套件及安裝後 DLL SHA256 均為 `5B227D444CCA40E6BA7C5F2BD2DD18177EA56F07368E15F67B6219A0FF970D11`。詳見 [05 審查修復](docs/tickets/05-windows-install.md#2026-09-26-審查修復02180)。
 
 2026-09-19 全組合版本：185 個 lib 測試、整合測試、doc-tests、fmt、Clippy、release、DLL 動態載入通過；DLL SHA256 `BF5274D9FC5D4C321F2BD8E7838D826B72D1A6147FC53790530724C915405446`，套件 0.2.17.0。WinRT 自動化：6 解析度 × 灰階／彩色整版 12 組全部成功（0.2.16.0），App 式英寸選區 6 組第一輪全敗（貼齊後的起點沒寫回服務，服務範圍檢查拒絕），修正差異基準後 6 組全部成功。詳見 [05](docs/tickets/05-windows-install.md#全組合驗收與貼齊值寫回)。
 
